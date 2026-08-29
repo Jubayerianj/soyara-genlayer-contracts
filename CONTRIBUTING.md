@@ -11,11 +11,12 @@ We are committed to providing a friendly, safe, and welcoming environment for ev
 
 ## 🛠 Development Workflow
 
-1. **Fork & Branch**
+1. Fork & Branch
+
    - Fork this repository.
    - Create a feature branch: `git checkout -b feature/my-new-feature` or `bugfix/issue-description`.
 
-2. **Smart Contracts (Solidity & Foundry)**
+2. Smart Contracts (Solidity & Foundry)**
    - Run tests before submitting PRs:
      ```bash
      cd "Dex Solidity contracts/aggregator"
@@ -23,18 +24,18 @@ We are committed to providing a friendly, safe, and welcoming environment for ev
      ```
    - Ensure formatting is consistent.
 
-3. **Intelligent Contracts (GenLayer / Python)**
+3. Intelligent Contracts (GenLayer / Python)**
    - Maintain strict typing in `AgentValidator.py` and `LiquidityValidator.py`.
    - Ensure non-deterministic prompt evaluations adhere to GenLayer's equivalence principle rules (`gl.eq_principle.strict_eq`).
 
-4. **Frontend (Next.js)**
+4. Frontend (Next.js)
    - Run linter and tests:
      ```bash
      cd frontend/flipswap
      npm run lint
      ```
 
-5. **Submitting Changes**
+5. Submitting Changes
    - Provide clear, descriptive commit messages following the [Conventional Commits](https://www.conventionalcommits.org/) standard:
      - `feat: add support for new routing strategy`
      - `fix: correct tick calculation boundary in LiquidityValidator`
@@ -43,6 +44,3 @@ We are committed to providing a friendly, safe, and welcoming environment for ev
 
 ---
 
-## 🛡️ Security Vulnerabilities
-
-If you discover a potential security issue in the contracts or validator logic, please do not open a public issue. Contact the core maintainers directly or report through our official security disclosure channels.
