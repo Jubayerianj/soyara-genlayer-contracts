@@ -34,7 +34,7 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 | **Wrapped Native** | `WETH ` | `0x315374AA9b5536037Cc1Efeea2439CCC0913A77e` |
 | **Aggregator Entrypoint** | `AGGFlowEntrypoint` | `0xF69E64804000d28aA695eB5c594B996100fb3B49` |
 | **Aggregator Router** | `AGGFlowRouter` | `0x0624E93350bFfc5B3570589FCae68e2CaBe6c620` |
-| **Rewards & NFTs** | `SuperContributorNFT` | `0xA2eC9aAf2235C66491767e69eBBD885469697B3E` |
+
 
 ### V2 Pair Init Code Hash
 ```
