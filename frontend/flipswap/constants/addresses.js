@@ -16,7 +16,7 @@ export const CONTRACT_ADDRESSES = {
     aggregatorRouter: '0xDF474006aa807598B616500d146FfF661d644138',
     aggregatorEntrypoint: '0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3',
     dexFeeVault: '0x48234eD645676b794a4CbC7483513e58cB04e22E',
-    // Uniswap V3
+    // SoyaraDex V3
     v3Factory: "0xBd959038300aF0C8dd1873E497d6D0a565b4E246",
     v3Router: "0xdf69970B2fE416339187aA41D39882e864984CE9",
     v3NftDescriptor: "0xef334fcAA42A17CF8f76627408Ee0cE91eBaE6E4",

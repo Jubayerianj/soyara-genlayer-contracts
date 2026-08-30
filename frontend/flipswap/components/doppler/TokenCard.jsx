@@ -162,7 +162,7 @@ export default function TokenCard({ token, onMigrate }) {
               e.stopPropagation();
               onMigrate?.(token.address);
             }}
-            title="Graduate & Migrate Liquidity to Uniswap V2"
+            title="Graduate & Migrate Liquidity to SoyaraDex V2"
           >
             Graduate
           </button>

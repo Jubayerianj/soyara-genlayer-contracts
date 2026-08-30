@@ -101,7 +101,7 @@ export default function MemefolioStats({ stats, onClaim, isClaiming, onRefresh, 
           />
         </div>
         <span className={styles.statSubtitle}>
-          {stats.graduatedCount} of {stats.totalCreated} migrated to Uniswap V2 LP
+          {stats.graduatedCount} of {stats.totalCreated} migrated to SoyaraDex V2 LP
         </span>
       </div>
     </div>

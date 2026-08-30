@@ -210,7 +210,7 @@ const BOT_TEMPLATES = [
     id: 'arbitrage',
     name: 'AI Cross-Pool Arbitrage Bot',
     badge: 'High Frequency',
-    desc: 'Scans Uniswap V2 classic and V3 concentrated pools for price spreads, requests GenVM validation proof, and executes atomic multi-hop arbitrage.',
+    desc: 'Scans SoyaraDex V2 classic and V3 concentrated pools for price spreads, requests GenVM validation proof, and executes atomic multi-hop arbitrage.',
     code: `// Template: AI Cross-Pool Arbitrage Bot
 async function runArbitrageScanner() {
   const v2Price = await getV2Price('USDC', 'WGEN');
@@ -259,7 +259,7 @@ async function executeDCACycle(tokenTarget, budgetUSDC) {
     id: 'rebalance',
     name: 'V3 Concentrated Liquidity Rebalancer',
     badge: 'Liquidity Management',
-    desc: 'Monitors out-of-range Uniswap V3 LP positions and calls LiquidityValidator.py to re-center concentrated tick boundaries with zero loss.',
+    desc: 'Monitors out-of-range SoyaraDex V3 LP positions and calls LiquidityValidator.py to re-center concentrated tick boundaries with zero loss.',
     code: `// Template: V3 Concentrated Liquidity Rebalancer
 async function rebalanceV3Position(positionId) {
   const currentTick = await getPoolTick(WGEN_ADDR, USDC_ADDR);

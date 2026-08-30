@@ -81,7 +81,7 @@ export default function EarningsCard({
             </div>
             <h4>Trading Fee Cuts</h4>
             <p>
-              When traders buy & sell your token along the Uniswap V3 bonding curve, protocol & integrator fees accumulate automatically in zkLTC inside the Airlock contract.
+              When traders buy & sell your token along the SoyaraDex V3 bonding curve, protocol & integrator fees accumulate automatically in zkLTC inside the Airlock contract.
             </p>
           </div>
 
@@ -101,7 +101,7 @@ export default function EarningsCard({
             </div>
             <h4>Post-Graduation Liquidity</h4>
             <p>
-              After reaching graduation target, liquidity transitions into the Uniswap V2 pair with LP locked, generating ongoing liquidity stability.
+              After reaching graduation target, liquidity transitions into the SoyaraDex V2 pair with LP locked, generating ongoing liquidity stability.
             </p>
           </div>
         </div>

@@ -2,9 +2,9 @@
 
 This is a production-ready Goldsky Subgraph for the **Doppler Protocol** on **LitVM**, tracking:
 - Every token deployment from `Airlock`
-- Real-time Uniswap V3 bonding curve swaps, liquidity, and sqrtPrice
+- Real-time SoyaraDex V3 bonding curve swaps, liquidity, and sqrtPrice
 
-- Post-graduation Uniswap V2 pair swaps and reserves
+- Post-graduation SoyaraDex V2 pair swaps and reserves
 - Rolling OHLCV candlestick data (`TokenDayData` & `TokenHourData`)
 - Creator portfolios & claimable integrator fees (`MemefolioCreator`)
 

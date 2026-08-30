@@ -43,7 +43,7 @@ export default function MigratePanel({ prefilledAsset = '' }) {
       <p className={styles.description}>
         After a bonding curve fills completely, anyone can trigger the graduation.
         This calls <code>Airlock.migrate(asset)</code> which moves liquidity to the configured migrator
-        (Uniswap V2 on LitvmSwap).
+        (SoyaraDex V2 on LitvmSwap).
       </p>
 
       {/* Address input */}

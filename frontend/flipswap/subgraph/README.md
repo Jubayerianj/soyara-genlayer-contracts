@@ -3,9 +3,9 @@
 This folder contains a reusable Graph subgraph for:
 
 - `AGGFlowEntrypoint` aggregator swaps and fee collection
-- Uniswap V2 factory + dynamically created pairs
-- Uniswap V3 factory + dynamically created pools
-- Uniswap V3 position manager NFT activity
+- SoyaraDex V2 factory + dynamically created pairs
+- SoyaraDex V3 factory + dynamically created pools
+- SoyaraDex V3 position manager NFT activity
 - user, token, referral, and daily campaign analytics
 
 ## What it indexes
@@ -14,10 +14,10 @@ This folder contains a reusable Graph subgraph for:
   - `AGGFlowSwap`
   - `FeeCollected`
   - `RouterUpdated`
-- Uniswap V2:
+- SoyaraDex V2:
   - `PairCreated`
   - pair `Swap`, `Mint`, `Burn`, `Sync`
-- Uniswap V3:
+- SoyaraDex V3:
   - `PoolCreated`
   - pool `Initialize`, `Swap`, `Mint`, `Burn`
   - position manager `Transfer`, `IncreaseLiquidity`, `DecreaseLiquidity`, `Collect`

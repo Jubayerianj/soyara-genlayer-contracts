@@ -326,7 +326,7 @@ export default function LaunchForm({ onSuccess }) {
       <section className={styles.section}>
         <h3 className={styles.sectionTitle}>2. Bonding Curve & Target Market Cap</h3>
         <p className={styles.sectionDesc}>
-          Select your target starting market cap and graduation threshold on the Uniswap V3 bonding curve.
+          Select your target starting market cap and graduation threshold on the SoyaraDex V3 bonding curve.
         </p>
 
         <div className={styles.presetsGrid}>
@@ -419,9 +419,9 @@ export default function LaunchForm({ onSuccess }) {
               onChange={() => setForm((f) => ({ ...f, useNoOpMigrator: false }))}
             />
             <div>
-              <strong>🎓 Migrate to Uniswap V2 (Standard & Recommended)</strong>
+              <strong>🎓 Migrate to SoyaraDex V2 (Standard & Recommended)</strong>
               <p>
-                When the bonding curve hits 100%, accumulated liquidity is automatically extracted from V3 and seeded into a Uniswap V2 pair with LP locked permanently on LitvmSwap.
+                When the bonding curve hits 100%, accumulated liquidity is automatically extracted from V3 and seeded into a SoyaraDex V2 pair with LP locked permanently on LitvmSwap.
               </p>
             </div>
           </label>
@@ -434,9 +434,9 @@ export default function LaunchForm({ onSuccess }) {
               onChange={() => setForm((f) => ({ ...f, useNoOpMigrator: true }))}
             />
             <div>
-              <strong>🔒 Keep in Uniswap V3 (No V2 Migration)</strong>
+              <strong>🔒 Keep in SoyaraDex V3 (No V2 Migration)</strong>
               <p>
-                Liquidity remains permanently locked inside the Uniswap V3 concentrated position after graduation.
+                Liquidity remains permanently locked inside the SoyaraDex V3 concentrated position after graduation.
               </p>
             </div>
           </label>

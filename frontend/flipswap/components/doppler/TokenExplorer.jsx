@@ -260,7 +260,7 @@ export default function TokenExplorer({ onMigrate }) {
             priceETH = priceUSD / ZKLTC_USD;
           }
 
-          // Check on-chain Uniswap V2 Pair for pool liquidity & DEX price
+          // Check on-chain SoyaraDex V2 Pair for pool liquidity & DEX price
           try {
             const pair = await publicClient.readContract({
               address: V2_FACTORY,
@@ -373,7 +373,7 @@ export default function TokenExplorer({ onMigrate }) {
                 let priceUSD = 0.00000009087;
                 let marketCapUSD = 90.87;
 
-                // Read exact on-chain slot0 from Uniswap V3 Pool
+                // Read exact on-chain slot0 from SoyaraDex V3 Pool
                 if (t.v3Pool && t.v3Pool !== '0x0000000000000000000000000000000000000000') {
                   try {
                     const slot0 = await publicClient.readContract({
@@ -849,7 +849,7 @@ export default function TokenExplorer({ onMigrate }) {
                                 e.stopPropagation();
                                 onMigrate?.(token.address);
                               }}
-                              title="Graduate Liquidity to Uniswap V2"
+                              title="Graduate Liquidity to SoyaraDex V2"
                             >
                               Graduate
                             </button>

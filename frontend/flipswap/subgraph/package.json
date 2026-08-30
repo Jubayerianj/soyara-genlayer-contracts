@@ -2,7 +2,7 @@
   "name": "flipswap-subgraph",
   "version": "1.0.0",
   "private": true,
-  "description": "Reusable Graph subgraph for FlipSwap aggregator + Uniswap V2 + Uniswap V3 analytics.",
+  "description": "Reusable Graph subgraph for FlipSwap aggregator + SoyaraDex V2 + SoyaraDex V3 analytics.",
   "license": "UNLICENSED",
   "scripts": {
     "prepare:litvm": "node ./scripts/build-manifest.js 4441",

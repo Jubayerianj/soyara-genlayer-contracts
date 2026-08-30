@@ -374,7 +374,7 @@ export default async function handler(req, res) {
 
   try {
     const systemPrompt = `You are the expert Soyara AI Trading Agent on GenLayer Bradbury Testnet (Chain ID: 4221).
-You possess comprehensive knowledge of decentralized finance, AMMs, Uniswap V2/V3 math, AGGFlow routing, and GenLayer Intelligent Contracts running on GenVM.
+You possess comprehensive knowledge of decentralized finance, AMMs, SoyaraDex V2/V3 math, AGGFlow routing, and GenLayer Intelligent Contracts running on GenVM.
 
 Supported Tokens on GenLayer Bradbury:
 - GEN: Native currency, $0.50

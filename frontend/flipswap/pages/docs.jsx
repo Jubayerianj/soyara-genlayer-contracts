@@ -341,7 +341,7 @@ export default function DocsPage() {
                       <div className={styles.cardBadge}>Tier 3: EVM Settlement</div>
                       <h3 className={styles.cardTitle}>AGGFlow Bytecode Router</h3>
                       <p className={styles.cardDesc}>
-                        High-efficiency EVM contracts execute compiled swap bytecode across Uniswap V2 pools, Uniswap V3 concentrated liquidity, and 1:1 WGEN wrapper contracts with atomic rollback safety.
+                        High-efficiency EVM contracts execute compiled swap bytecode across SoyaraDex V2 pools, SoyaraDex V3 concentrated liquidity, and 1:1 WGEN wrapper contracts with atomic rollback safety.
                       </p>
                     </div>
                   </div>
@@ -368,8 +368,8 @@ export default function DocsPage() {
    ┌───────────────────────────────────────────────────────────┐
    │ EVM Settlement: AgentExecutor.sol → AGGFlowEntrypoint.sol │
    │  ├─ Multi-Hop Path Decomposition                          │
-   │  ├─ Uniswap V2 Classic Pools (0.30% fee)                  │
-   │  ├─ Uniswap V3 Concentrated Liquidity (0.05% - 1.00%)     │
+   │  ├─ SoyaraDex V2 Classic Pools (0.30% fee)                  │
+   │  ├─ SoyaraDex V3 Concentrated Liquidity (0.05% - 1.00%)     │
    │  └─ Native GEN ↔ WGEN 1:1 Zero-Fee Atomic Wrap            │
    └───────────────────────────────────────────────────────────┘
                 │
@@ -925,7 +925,7 @@ if __name__ == "__main__":
                 <div className={styles.subSection}>
                   <h2 className={styles.h2}>Atomic Execution & Rollback Protection</h2>
                   <p className={styles.p}>
-                    When an execution proposal passes consensus on <code className={styles.inlineCode}>AgentValidator.py</code>, the user or agent executes against <code className={styles.inlineCode}>AGGFlowEntrypoint</code> (<code className={styles.inlineCode}>{CONTRACT_ADDRESSES[4221].aggregatorEntrypoint}</code>). The transaction executes the compiled bytecode program across Uniswap V2, V3, and WGEN contracts in a single atomic transaction. If realized slippage or final output falls below the guaranteed minimum, the transaction reverts completely, protecting user funds.
+                    When an execution proposal passes consensus on <code className={styles.inlineCode}>AgentValidator.py</code>, the user or agent executes against <code className={styles.inlineCode}>AGGFlowEntrypoint</code> (<code className={styles.inlineCode}>{CONTRACT_ADDRESSES[4221].aggregatorEntrypoint}</code>). The transaction executes the compiled bytecode program across SoyaraDex V2, V3, and WGEN contracts in a single atomic transaction. If realized slippage or final output falls below the guaranteed minimum, the transaction reverts completely, protecting user funds.
                   </p>
                 </div>
               </article>
@@ -958,13 +958,13 @@ if __name__ == "__main__":
                           <td><code className={styles.inlineCode}>0x00</code></td>
                           <td><code className={styles.inlineCode}>PT_UNIV2</code></td>
                           <td><code className={styles.inlineCode}>0x00 + pool(20B) + dir(1B) + fee(3B)</code></td>
-                          <td>Executes Uniswap V2 constant-product swap (<code className={styles.inlineCode}>x * y = k</code>).</td>
+                          <td>Executes SoyaraDex V2 constant-product swap (<code className={styles.inlineCode}>x * y = k</code>).</td>
                         </tr>
                         <tr>
                           <td><code className={styles.inlineCode}>0x01</code></td>
                           <td><code className={styles.inlineCode}>PT_UNIV3</code></td>
                           <td><code className={styles.inlineCode}>0x01 + pool(20B) + dir(1B)</code></td>
-                          <td>Executes Uniswap V3 concentrated liquidity swap.</td>
+                          <td>Executes SoyaraDex V3 concentrated liquidity swap.</td>
                         </tr>
                         <tr>
                           <td><code className={styles.inlineCode}>0x02</code></td>
@@ -1277,31 +1277,31 @@ print("Validation Result:", res)`}
                         <td><a href={`https://explorer-bradbury.genlayer.com/address/${CONTRACT_ADDRESSES[4221].aggregatorRouter}`} target="_blank" rel="noopener noreferrer" className={styles.link}>Explorer <ExternalLink size={12} /></a></td>
                       </tr>
                       <tr>
-                        <td><strong>Uniswap V3 Factory</strong></td>
+                        <td><strong>SoyaraDex V3 Factory</strong></td>
                         <td><code className={styles.inlineCode}>{CONTRACT_ADDRESSES[4221].v3Factory}</code></td>
                         <td>EVM V3 Factory</td>
                         <td><a href={`https://explorer-bradbury.genlayer.com/address/${CONTRACT_ADDRESSES[4221].v3Factory}`} target="_blank" rel="noopener noreferrer" className={styles.link}>Explorer <ExternalLink size={12} /></a></td>
                       </tr>
                       <tr>
-                        <td><strong>Uniswap V3 Router</strong></td>
+                        <td><strong>SoyaraDex V3 Router</strong></td>
                         <td><code className={styles.inlineCode}>{CONTRACT_ADDRESSES[4221].v3Router}</code></td>
                         <td>EVM V3 SwapRouter</td>
                         <td><a href={`https://explorer-bradbury.genlayer.com/address/${CONTRACT_ADDRESSES[4221].v3Router}`} target="_blank" rel="noopener noreferrer" className={styles.link}>Explorer <ExternalLink size={12} /></a></td>
                       </tr>
                       <tr>
-                        <td><strong>Uniswap V3 Position Mgr</strong></td>
+                        <td><strong>SoyaraDex V3 Position Mgr</strong></td>
                         <td><code className={styles.inlineCode}>{CONTRACT_ADDRESSES[4221].v3PositionManager}</code></td>
                         <td>EVM V3 NFT Manager</td>
                         <td><a href={`https://explorer-bradbury.genlayer.com/address/${CONTRACT_ADDRESSES[4221].v3PositionManager}`} target="_blank" rel="noopener noreferrer" className={styles.link}>Explorer <ExternalLink size={12} /></a></td>
                       </tr>
                       <tr>
-                        <td><strong>Uniswap V2 Factory</strong></td>
+                        <td><strong>SoyaraDex V2 Factory</strong></td>
                         <td><code className={styles.inlineCode}>{CONTRACT_ADDRESSES[4221].factory}</code></td>
                         <td>EVM V2 Factory</td>
                         <td><a href={`https://explorer-bradbury.genlayer.com/address/${CONTRACT_ADDRESSES[4221].factory}`} target="_blank" rel="noopener noreferrer" className={styles.link}>Explorer <ExternalLink size={12} /></a></td>
                       </tr>
                       <tr>
-                        <td><strong>Uniswap V2 Router</strong></td>
+                        <td><strong>SoyaraDex V2 Router</strong></td>
                         <td><code className={styles.inlineCode}>{CONTRACT_ADDRESSES[4221].router}</code></td>
                         <td>EVM V2 Router</td>
                         <td><a href={`https://explorer-bradbury.genlayer.com/address/${CONTRACT_ADDRESSES[4221].router}`} target="_blank" rel="noopener noreferrer" className={styles.link}>Explorer <ExternalLink size={12} /></a></td>

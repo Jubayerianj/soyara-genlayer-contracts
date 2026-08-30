@@ -29,7 +29,7 @@ export default function EmptyMemefolio() {
           <div className={`${styles.featureIcon} ${styles.blue}`}>
             <Zap size={20} />
           </div>
-          <h3>Uniswap V3 Fair Launch</h3>
+          <h3>SoyaraDex V3 Fair Launch</h3>
           <p>
             Zero initial capital required to bootstrap liquidity. Single-sided token deposit on LitVM V3.
           </p>
@@ -51,7 +51,7 @@ export default function EmptyMemefolio() {
           </div>
           <h3>Automatic V2 Graduation</h3>
           <p>
-            When the bonding curve fills, liquidity automatically migrates to a Uniswap V2 pair with LP locked.
+            When the bonding curve fills, liquidity automatically migrates to a SoyaraDex V2 pair with LP locked.
           </p>
         </div>
       </div>

@@ -1,6 +1,6 @@
 // constants/doppler/abis/UniswapV2MigratorSplit.js
 // ABI for src/migrators/UniswapV2MigratorSplit.sol
-// Migrates graduated Doppler liquidity into a Uniswap V2 pool on LitVM, splitting fees between protocol and LP.
+// Migrates graduated Doppler liquidity into a SoyaraDex V2 pool on LitVM, splitting fees between protocol and LP.
 
 const UNISWAP_V2_MIGRATOR_SPLIT_ABI = [
   // ── Events ──────────────────────────────────────────────────────────────────

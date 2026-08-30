@@ -1,5 +1,5 @@
 // utils/v3.js
-// Uniswap V3 Pool fetching & exact curve Quoting for LitVM DEX & Doppler single-sided bonding curves
+// SoyaraDex V3 Pool fetching & exact curve Quoting for LitVM DEX & Doppler single-sided bonding curves
 
 import { SqrtPriceMath } from '@uniswap/v3-sdk';
 import JSBI from 'jsbi';
@@ -174,7 +174,7 @@ export async function fetchV3Pool(publicClient, poolAddress, tokenA, tokenB, cha
 }
 
 /**
- * Exact curve-integrated quoting for Uniswap V3 concentrated liquidity bonding curves
+ * Exact curve-integrated quoting for SoyaraDex V3 concentrated liquidity bonding curves
  */
 export function getV3Quote(pool, tokenIn, amountInWei) {
   try {
@@ -195,7 +195,7 @@ export function getV3Quote(pool, tokenIn, amountInWei) {
       if (zeroForOne) {
         // token0 (WETH) -> token1 (MEME)
         const dx = Number(formatUnits(amountInWei, dec0)) * feeMultiplier;
-        // Exact Uniswap V3 integration: dy = L * (sqrtP - (L * sqrtP) / (L + dx * sqrtP))
+        // Exact SoyaraDex V3 integration: dy = L * (sqrtP - (L * sqrtP) / (L + dx * sqrtP))
         const denominator = L + dx * sqrtP;
         const sqrtPNew = denominator > 0 ? (L * sqrtP) / denominator : sqrtP;
         let dy = L * (sqrtP - sqrtPNew);

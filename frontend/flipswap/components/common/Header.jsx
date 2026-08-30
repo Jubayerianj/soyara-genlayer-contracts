@@ -19,6 +19,7 @@ function GlobalMenu() {
   const router = useRouter()
 
   const menuItems = [
+    { label: 'Intro Animation', href: '/intro', icon: <Sparkles size={16} /> },
     { label: 'Swap', href: '/swap', icon: <Zap size={16} /> },
     { label: 'AI Trading', href: '/ai', icon: <Bot size={16} /> },
     { label: 'Pools', href: '/pools', icon: <Droplets size={16} /> },
