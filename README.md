@@ -23,7 +23,7 @@
 ### Key Highlights
 - **GenLayer AI Consensus**: Python-based Intelligent Contracts running on GenVM evaluate execution intents using Optimistic Democracy consensus.
 - **Hybrid Security Pipeline**: Two-stage validation combining deterministic constraints (slippage caps, whitelist controls, zero-calldata guarantees) with consensus-backed logic verification.
-- **Multi-AMM Aggregator**: Built-in AGGFlow router providing optimized trade routes across Uniswap V2 and V3 liquidity pools.
+- **Multi-AMM Aggregator**: Built-in AGGFlow router providing optimized trade routes across SoyaraDex V2 and V3 liquidity pools.
 - **Modern Full-Stack Experience**: High-performance Next.js application with Wagmi, Viem, RainbowKit, live indexing, and real-time swap analytics.
 
 ---
@@ -61,7 +61,7 @@
                                            │                                       │
                                            ▼                                       ▼
                                ┌───────────────────────┐               ┌───────────────────────┐
-                               │   Uniswap V2 Pools    │               │   Uniswap V3 Pools    │
+                               │   SoyaraDex V2 Pools    │               │   SoyaraDex V3 Pools    │
                                └───────────────────────┘               └───────────────────────┘
 ```
 
@@ -74,11 +74,11 @@
 ├── Dex Solidity contracts/
 │   ├── aggregator/                     # Foundry project for AGGFlow router & entrypoint
 │   ├── v2 dex contracts/
-│   │   ├── v2-core-master/             # Uniswap V2 Factory & ERC20 Pair contracts
-│   │   └── v2-periphery-master/        # Uniswap V2 Router & Library contracts
+│   │   ├── v2-core-master/             # SoyaraDex V2 Factory & ERC20 Pair contracts
+│   │   └── v2-periphery-master/        # SoyaraDex V2 Router & Library contracts
 │   └── v3 dex contracts/
-│       ├── v3-core-main/               # Uniswap V3 Factory & Pool contracts
-│       └── v3-periphery-main/          # Uniswap V3 Position Manager & SwapRouter
+│       ├── v3-core-main/               # SoyaraDex V3 Factory & Pool contracts
+│       └── v3-periphery-main/          # SoyaraDex V3 Position Manager & SwapRouter
 │
 ├── genlayer-inteligent-contracts/
 │   ├── AgentValidator.py               # GenLayer Intelligent Contract for swap proposals
@@ -114,8 +114,8 @@ Validates proposal metadata before executing trades:
 
 ### 2. `LiquidityValidator.py`
 Validates automated liquidity management:
-- **Uniswap V2**: Verifies ratio bounds and non-zero liquidity amounts.
-- **Uniswap V3**: Validates fee tiers (`500`, `3000`, `10000`), price tick constraints (`tickLower < tickUpper`), and range boundaries (`[-887272, 887272]`).
+- **SoyaraDex V2**: Verifies ratio bounds and non-zero liquidity amounts.
+- **SoyaraDex V3**: Validates fee tiers (`500`, `3000`, `10000`), price tick constraints (`tickLower < tickUpper`), and range boundaries (`[-887272, 887272]`).
 
 ### 3. `AgentExecutor.sol`
 The EVM gatekeeper that accepts validated intents and calls liquidity routers:
@@ -162,7 +162,7 @@ npm run dev
 cd "Dex Solidity contracts/aggregator"
 forge build
 
-# Uniswap V2 Core
+# SoyaraDex V2 Core
 cd "../v2 dex contracts/v2-core-master"
 npm install
 npx hardhat compile

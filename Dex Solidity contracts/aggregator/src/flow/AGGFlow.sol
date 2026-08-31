@@ -497,7 +497,7 @@ contract AGGFlowRouter is ReentrancyGuardTransient {
         IUniswapV2Pair(pool).swap(amt0Out, amt1Out, address(this), "");
     }
 
-    // ───── Uniswap V3 style ----------------------------------------------------
+    // ───── SoyaraDex V3 style ----------------------------------------------------
     address private lastPool = IMPOSSIBLE;
     address private lastTokenIn = IMPOSSIBLE;
 

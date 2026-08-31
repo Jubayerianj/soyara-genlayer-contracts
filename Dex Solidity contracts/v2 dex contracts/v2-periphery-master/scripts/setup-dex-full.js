@@ -103,7 +103,7 @@ async function main() {
 
   // 3. ADD LIQUIDITY ON V2
   console.log("\n==================================================");
-  console.log("3️⃣  ADDING LIQUIDITY ON UNISWAP V2");
+  console.log("3️⃣  ADDING LIQUIDITY ON SoyaraDex V2");
   console.log("==================================================");
 
   const V2Router = await ethers.getContractFactory("SwappingDexV2Router02");
@@ -194,7 +194,7 @@ async function main() {
 
   // 4. ADD LIQUIDITY ON V3
   console.log("\n==================================================");
-  console.log("4️⃣  ADDING LIQUIDITY ON UNISWAP V3");
+  console.log("4️⃣  ADDING LIQUIDITY ON SoyaraDex V3");
   console.log("==================================================");
 
   // PositionManager ABI

@@ -2,7 +2,7 @@
 const { ethers } = require("hardhat");
 
 async function main() {
-  console.log("🚀 Starting Uniswap V3 Lens Contracts Deployment...\n");
+  console.log("🚀 Starting SoyaraDex V3 Lens Contracts Deployment...\n");
   
   // GenLayer addresses
   const WETH9 = "0x315374AA9b5536037Cc1Efeea2439CCC0913A77e";

@@ -30,7 +30,7 @@ async function main() {
   const network = await ethers.provider.getNetwork();
   const chainId = network.chainId;
   const networkName = network.name;
-  console.log(`🚀 UNISWAP V2 ROUTER DEPLOYMENT (${networkName})\n`);
+  console.log(`🚀 SoyaraDex V2 ROUTER DEPLOYMENT (${networkName})\n`);
   
   console.log("Deployer:", deployer.address);
   console.log("Factory:", FACTORY_ADDRESS);

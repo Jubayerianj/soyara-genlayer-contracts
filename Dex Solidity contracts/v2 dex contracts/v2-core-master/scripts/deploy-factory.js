@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 
 async function main() {
-  console.log("🚀 UNISWAP V2 CORE - FACTORY DEPLOYMENT");
+  console.log("🚀 SoyaraDex V2 CORE - FACTORY DEPLOYMENT");
   console.log("=".repeat(45) + "\n");
   
   const [deployer] = await ethers.getSigners();
@@ -184,7 +184,7 @@ async function main() {
     
     // ===== 6. PRINT SUMMARY =====
     console.log("=".repeat(60));
-    console.log("🎉 UNISWAP V2 FACTORY DEPLOYMENT COMPLETE!");
+    console.log("🎉 SoyaraDex V2 FACTORY DEPLOYMENT COMPLETE!");
     console.log("=".repeat(60));
     console.log(`🏭 Factory Address: ${factoryAddress}`);
     console.log(`🔑 Init Code Hash: ${initCodeHash.slice(0, 20)}...`);

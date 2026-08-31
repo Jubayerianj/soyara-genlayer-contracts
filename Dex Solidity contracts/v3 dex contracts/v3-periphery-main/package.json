@@ -1,6 +1,6 @@
 {
   "name": "@uniswap/v3-periphery",
-  "description": "🎚 Peripheral smart contracts for interacting with Uniswap V3",
+  "description": "🎚 Peripheral smart contracts for interacting with SoyaraDex V3",
   "license": "GPL-2.0-or-later",
   "publishConfig": {
     "access": "public"

@@ -67,7 +67,7 @@ interface IAGGFlowEntrypoint {
     ) external payable returns (uint256 amountOut);
 }
 
-/// @notice Minimal Uniswap V2 Router interface
+/// @notice Minimal SoyaraDex V2 Router interface
 interface IUniswapV2Router {
     function addLiquidity(
         address tokenA, address tokenB,
@@ -84,7 +84,7 @@ interface IUniswapV2Router {
     ) external returns (uint256 amountA, uint256 amountB);
 }
 
-/// @notice Minimal Uniswap V3 NonfungiblePositionManager interface
+/// @notice Minimal SoyaraDex V3 NonfungiblePositionManager interface
 interface IV3PositionManager {
     struct MintParams {
         address token0;
@@ -141,10 +141,10 @@ contract AgentExecutor is ReentrancyGuard, Ownable {
     /// @notice AGGFlowEntrypoint for swaps
     address public aggFlowEntrypoint;
 
-    /// @notice Uniswap V2 Router
+    /// @notice SoyaraDex V2 Router
     address public v2Router;
 
-    /// @notice Uniswap V3 NonfungiblePositionManager
+    /// @notice SoyaraDex V3 NonfungiblePositionManager
     address public v3PositionManager;
 
     /// @notice Maximum slippage in basis points (300 = 3%)
