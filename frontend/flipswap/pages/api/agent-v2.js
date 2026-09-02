@@ -213,6 +213,15 @@ function buildProposalObject(action, params) {
     const tokenAObj = getTokenObject(tokenA);
     const tokenBObj = getTokenObject(tokenB);
 
+    const decimalsA = tokenAObj?.decimals || 18;
+    const decimalsB = tokenBObj?.decimals || 18;
+
+    const slippageFactor = 0.995; // 0.50% slippage (50 bps, strictly within GenLayer 300 bps cap)
+    const amountARaw = (BigInt(Math.floor(amountA * 1e6)) * BigInt(10 ** (decimalsA - 6))).toString();
+    const amountBRaw = (BigInt(Math.floor(amountB * 1e6)) * BigInt(10 ** (decimalsB - 6))).toString();
+    const minAmountARaw = (BigInt(Math.floor(amountA * slippageFactor * 1e6)) * BigInt(10 ** (decimalsA - 6))).toString();
+    const minAmountBRaw = (BigInt(Math.floor(amountB * slippageFactor * 1e6)) * BigInt(10 ** (decimalsB - 6))).toString();
+
     return {
       action: 'ADD_LIQUIDITY',
       tokenA,
@@ -223,6 +232,16 @@ function buildProposalObject(action, params) {
       tokenBAddress: tokenBObj?.address || '0x0000000000000000000000000000000000000000',
       amountA,
       amountB,
+      amountARaw,
+      amountBRaw,
+      minAmountA: (amountA * slippageFactor).toFixed(4),
+      minAmountB: (amountB * slippageFactor).toFixed(4),
+      minAmountARaw,
+      minAmountBRaw,
+      amount0Desired: amountARaw,
+      amount1Desired: amountBRaw,
+      amount0Min: minAmountARaw,
+      amount1Min: minAmountBRaw,
       amountIn: amountA,
       minAmountOut: amountB,
       expectedOutput: `LP Position (${tokenA}-${tokenB})`,
@@ -391,24 +410,14 @@ Key Deployed Contracts:
 - AGGFlow Entrypoint: ${CONTRACT_ADDRESSES[4221].aggregatorEntrypoint}
 
 Behavior Guidelines:
-1. When discussing trades, quotes, or routes, ALWAYS use the provided tools to obtain numeric data.
-2. Provide rich, insightful, educational, and relevant DeFi explanations. Never reply with short generic boilerplate.
-3. If the user asks about GenLayer, Intelligent Contracts, consensus, fees, or slippage, give detailed, clear explanations.
+1. When discussing trades, quotes, or routes, use the provided tools to obtain numeric data.
+2. Provide rich, concise, and expert DeFi explanations.
+3. If the user asks about GenLayer, Intelligent Contracts, consensus, fees, or slippage, give clear, accurate explanations.
 4. When a trade or liquidity action is intended, calculate accurate quotes and prepare a structured proposal.
 5. Format responses with clean markdown headings, bold accents, and bullet points.`;
 
-    const contents = [
-      {
-        role: 'user',
-        parts: [{ text: systemPrompt }]
-      },
-      {
-        role: 'model',
-        parts: [{ text: "Understood. I am the Soyara AI Trading Agent on GenLayer. I will provide insightful, accurate, and deeply relevant DeFi analysis and execute trades via GenLayer Intelligent Contracts." }]
-      }
-    ];
-
-    for (const msg of history.slice(-8)) {
+    const contents = [];
+    for (const msg of history.slice(-4)) {
       contents.push({
         role: msg.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: msg.content }]
@@ -425,18 +434,22 @@ Behavior Guidelines:
     let finalReply = '';
     let proposal = null;
 
-    const GEMINI_MODELS = ['models/gemini-3.6-flash', 'models/gemini-3.7-flash', 'models/gemini-3.5-flash'];
-    const activeModel = GEMINI_MODELS[0];
+    // Use high-speed flash-lite for sub-2s latency
+    const FAST_MODELS = ['models/gemini-3.5-flash-lite', 'models/gemini-3.5-flash'];
+    const activeModel = FAST_MODELS[0];
 
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 2; i++) {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/${activeModel}:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(4500),
         body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
           contents: currentContents,
           tools: tools,
           generationConfig: {
             temperature: 0.2,
+            maxOutputTokens: 600,
           }
         })
       });
@@ -512,7 +525,7 @@ Behavior Guidelines:
       toolsUsed
     });
   } catch (error) {
-    console.error('Agent API fallback to deep discussion engine:', error.message);
+    console.error('Agent API fast fallback:', error.message);
     const fallback = generateComprehensiveDiscussion(message);
     return res.status(200).json(fallback);
   }

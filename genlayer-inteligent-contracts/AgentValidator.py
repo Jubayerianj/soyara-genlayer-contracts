@@ -62,7 +62,9 @@ APPROVED_ROUTERS: dict = {
     "V2Router":              "0xF456737D17C2Bbb348fd4F7D1b000D62A46FB3b5",
     "V3Router":              "0xdf69970B2fE416339187aA41D39882e864984CE9",
     "V3PositionManager":     "0x779380011B5F2aB40985D810B5c7641539beD870",
-    "AgentExecutor":         "0x0000000000000000000000000000000000000000",
+    # NOTE: AgentExecutor address must be updated to the deployed address before mainnet.
+    # Do NOT use address(0) here — zero address also equals NATIVE_ZERO.
+    # "AgentExecutor": "0x<DEPLOYED_ADDRESS>",
 }
 
 ALLOWED_ACTIONS: set = {"SWAP", "ADD_LIQUIDITY", "REMOVE_LIQUIDITY"}
@@ -200,10 +202,19 @@ class AgentValidator(gl.Contract):
             return det
 
         # --- Phase 2: LLM coherence review (non-deterministic, consensus via eq_principle) ---
-        llm = gl.eq_principle.strict_eq(
-            lambda: self._llm_review(action, slippage_bps, amount_in, min_amount_out, extra_data)
-        )
-        if not llm["approved"]:
+        try:
+            llm = gl.eq_principle.strict_eq(
+                lambda: self._llm_review(action, slippage_bps, amount_in, min_amount_out, extra_data)
+            )
+        except Exception as err:
+            self.rejected_count = self.rejected_count + u256(1)
+            return {
+                "approved": False,
+                "reason": f"Consensus equivalence evaluation failed: {str(err)[:100]}",
+                "proposal_id": "",
+            }
+
+        if not llm.get("approved", False):
             self.rejected_count = self.rejected_count + u256(1)
             return llm
 
@@ -272,12 +283,21 @@ class AgentValidator(gl.Contract):
         if amt_out < 0:
             return self._reject("min_amount_out cannot be negative")
 
-        # 8 — Deadline must be non-zero
+        # 8 — Deadline must be non-zero and not already expired
         if int(deadline) == 0:
             return self._reject("Deadline cannot be zero — provide a Unix timestamp")
 
-        # All deterministic checks passed
-        pid = f"{action[:3]}-{token_in[:6]}-{token_out[:6]}-{amount_in[:10]}-{int(slippage_bps)}"
+        import time as _time
+        current_time = int(_time.time())
+        if int(deadline) < current_time:
+            return self._reject(
+                f"Deadline {int(deadline)} has already expired (current: {current_time})"
+            )
+
+        # All deterministic checks passed — build a collision-resistant proposal ID
+        import hashlib as _hashlib
+        pid_src = f"{action}:{token_in}:{token_out}:{amount_in}:{min_amount_out}:{int(slippage_bps)}:{int(deadline)}"
+        pid = _hashlib.sha256(pid_src.encode()).hexdigest()[:24]
         return {"approved": True, "reason": "Deterministic rules passed", "proposal_id": pid}
 
     # -----------------------------------------------------------------------
@@ -328,16 +348,24 @@ Reply with ONLY a single valid JSON object, no markdown:
             # Strip any accidental markdown fences
             clean = result.strip().replace("```json", "").replace("```", "").strip()
             parsed = json.loads(clean)
+            approved = bool(parsed.get("approved", False))
+            reason = str(parsed.get("reason", "LLM review complete"))[:200]
+            if not approved:
+                return {
+                    "approved": False,
+                    "reason": reason if reason else "LLM review rejected proposal",
+                    "proposal_id": "",
+                }
             return {
-                "approved":    bool(parsed.get("approved", True)),
-                "reason":      str(parsed.get("reason", "LLM review complete"))[:200],
+                "approved": True,
+                "reason": reason,
                 "proposal_id": "",
             }
-        except Exception:
-            # LLM failure → conservative approve (deterministic rules already passed)
+        except Exception as err:
+            # LLM or parsing failure → MUST fail closed
             return {
-                "approved":    True,
-                "reason":      "LLM review inconclusive — deterministic rules passed",
+                "approved": False,
+                "reason": f"LLM consensus validation unavailable: {str(err)[:100]}",
                 "proposal_id": "",
             }
 

@@ -28,37 +28,34 @@ export default async function handler(req, res) {
       });
     }
 
-    // If live call returned successfully
+    // Live validation response from GenLayer Intelligent Contract
     return res.status(200).json({
-      approved: validationResult.approved,
+      approved: Boolean(validationResult.approved),
       reason: validationResult.reason,
-      proposal_id: validationResult.proposalId,
+      proposal_id: validationResult.proposalId || '',
       genlayer_contract: validationResult.contractAddress,
       contract_name: validationResult.contractName,
       network: validationResult.network,
       chainId: validationResult.chainId,
       timestamp: validationResult.timestamp,
       consensus_mode: 'Optimistic Democracy (GenVM)',
-      live_execution: true,
+      live_execution: Boolean(validationResult.success),
       details: validationResult.details || null,
     });
   } catch (error) {
     console.error('API /genlayer-validate error:', error);
     
-    // Perform deterministic safety rule verification as backup
-    const validActions = ['SWAP', 'ADD_LIQUIDITY', 'REMOVE_LIQUIDITY'];
-    const approved = validActions.includes(action) && Number(proposal.slippageBps || 30) <= 300;
-
-    return res.status(200).json({
-      approved,
-      reason: approved 
-        ? 'Deterministic safety validation passed on GenLayer ruleset' 
-        : (error.message || 'Validation rejected'),
-      proposal_id: `prop_fallback_${Date.now().toString(36)}`,
+    // FAIL CLOSED: Never fail open when consensus is unavailable
+    return res.status(503).json({
+      approved: false,
+      reason: `Consensus unavailable: ${error?.shortMessage || error?.message || 'GenLayer Intelligent Contract validation failed'}`,
+      proposal_id: '',
       genlayer_contract: action === 'SWAP' ? GENLAYER_CONFIG.agentValidator : GENLAYER_CONFIG.liquidityValidator,
+      contract_name: action === 'SWAP' ? 'AgentValidator (GenLayer IC)' : 'LiquidityValidator (GenLayer IC)',
       network: GENLAYER_CONFIG.chainName,
       chainId: GENLAYER_CONFIG.chainId,
-      consensus_mode: 'Deterministic Ruleset',
+      timestamp: new Date().toISOString(),
+      consensus_mode: 'Optimistic Democracy (GenVM)',
       live_execution: false,
     });
   }

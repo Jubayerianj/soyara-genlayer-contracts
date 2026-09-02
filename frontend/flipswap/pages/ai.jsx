@@ -193,7 +193,10 @@ export default function AIPage() {
       const res = await fetch('/api/agent-v2', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, history: messages }),
+        body: JSON.stringify({
+          message: text,
+          history: messages.slice(-6).map((m) => ({ role: m.role, content: m.content })),
+        }),
       });
 
       const data = await res.json();

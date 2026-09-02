@@ -55,9 +55,11 @@ export function resolveTokenAddress(tokenOrAddress) {
 }
 
 /**
- * Validate a Swap Execution Proposal using GenLayer AgentValidator IC
+ * Validate a Swap Execution Proposal using GenLayer AgentValidator IC.
+ * Supports both full GenLayer write flow (writeContract + waitForTransactionReceipt)
+ * and read simulation, always failing closed on consensus failures.
  */
-export async function validateSwapProposal(proposal) {
+export async function validateSwapProposal(proposal, options = {}) {
   const client = getGenLayerClient();
   const validatorAddress = GENLAYER_CONFIG.agentValidator;
 
@@ -106,28 +108,73 @@ export async function validateSwapProposal(proposal) {
     ? proposal.extraData
     : JSON.stringify(proposal.extraData || { route: proposal.route || 'V2', model: proposal.model || 'v2' });
 
+  const callArgs = [
+    action,
+    tokenIn,
+    tokenOut,
+    String(amountInRaw),
+    String(minAmountOutRaw),
+    slippageBps,
+    router,
+    deadline,
+    extraData.slice(0, 500),
+  ];
+
   try {
-    const result = await client.readContract({
+    let result = null;
+    let txHash = null;
+
+    // Use GenLayer write flow if requested or account is provided
+    if (options.useWriteFlow || options.account) {
+      const account = options.account || (options.privateKey ? createAccount(options.privateKey) : null);
+      if (account && typeof client.writeContract === 'function') {
+        txHash = await client.writeContract({
+          account,
+          address: validatorAddress,
+          functionName: 'validate_proposal',
+          args: callArgs,
+          value: 0n,
+        });
+
+        if (typeof client.waitForTransactionReceipt === 'function') {
+          const receipt = await client.waitForTransactionReceipt({
+            hash: txHash,
+            status: 'FINALIZED',
+          });
+
+          if (receipt?.txExecutionResultName === 'FINISHED_WITH_ERROR' || receipt?.statusName === 'CANCELED' || receipt?.statusName === 'VALIDATORS_TIMEOUT') {
+            return {
+              success: false,
+              approved: false,
+              reason: `GenLayer write transaction failed consensus with status: ${receipt?.statusName || receipt?.txExecutionResultName}`,
+              proposalId: '',
+              txHash,
+              contractAddress: validatorAddress,
+              contractName: 'AgentValidator (GenLayer IC)',
+              network: GENLAYER_CONFIG.chainName,
+              chainId: GENLAYER_CONFIG.chainId,
+              timestamp: new Date().toISOString(),
+            };
+          }
+        }
+      }
+    }
+
+    // Read contract execution / simulation
+    result = await client.readContract({
       address: validatorAddress,
       functionName: 'validate_proposal',
-      args: [
-        action,
-        tokenIn,
-        tokenOut,
-        String(amountInRaw),
-        String(minAmountOutRaw),
-        slippageBps,
-        router,
-        deadline,
-        extraData.slice(0, 500),
-      ],
+      args: callArgs,
     });
+
+    const isApproved = Boolean(result && result.approved);
 
     return {
       success: true,
-      approved: Boolean(result?.approved),
-      reason: result?.reason || (result?.approved ? 'Validation passed on GenVM' : 'Validation rejected'),
-      proposalId: result?.proposal_id || `prop_${Date.now()}`,
+      approved: isApproved,
+      reason: result?.reason || (isApproved ? 'Validation passed on GenVM' : 'Validation rejected by GenLayer consensus'),
+      proposalId: result?.proposal_id || (isApproved ? `prop_${Date.now()}` : ''),
+      txHash: txHash || null,
       contractAddress: validatorAddress,
       contractName: 'AgentValidator (GenLayer IC)',
       network: GENLAYER_CONFIG.chainName,
@@ -145,11 +192,12 @@ export async function validateSwapProposal(proposal) {
       },
     };
   } catch (err) {
-    console.error('AgentValidator IC invocation error:', err);
+    console.error('AgentValidator IC invocation error (failing closed):', err);
     return {
       success: false,
       approved: false,
-      reason: err?.shortMessage || err?.message || 'GenLayer Intelligent Contract validation call failed',
+      reason: err?.shortMessage || err?.message || 'GenLayer Intelligent Contract consensus unavailable — failed closed',
+      proposalId: '',
       contractAddress: validatorAddress,
       contractName: 'AgentValidator (GenLayer IC)',
       network: GENLAYER_CONFIG.chainName,
@@ -162,7 +210,7 @@ export async function validateSwapProposal(proposal) {
 /**
  * Validate a Liquidity Proposal using GenLayer LiquidityValidator IC
  */
-export async function validateLiquidityProposal(proposal) {
+export async function validateLiquidityProposal(proposal, options = {}) {
   const client = getGenLayerClient();
   const validatorAddress = GENLAYER_CONFIG.liquidityValidator;
 
@@ -176,74 +224,74 @@ export async function validateLiquidityProposal(proposal) {
 
   try {
     let result;
+    let functionName;
+    let args;
+
     if (isRemove) {
       if (isV3) {
-        result = await client.readContract({
-          address: validatorAddress,
-          functionName: 'validate_remove_liquidity_v3',
-          args: [
-            String(proposal.tokenId || '1'),
-            String(proposal.liquidity || '1000000'),
-            String(proposal.amount0Min || '0'),
-            String(proposal.amount1Min || '0'),
-            deadline,
-          ],
-        });
+        functionName = 'validate_remove_liquidity_v3';
+        args = [
+          String(proposal.tokenId || '1'),
+          String(proposal.liquidity || '1000000'),
+          String(proposal.amount0Min || '0'),
+          String(proposal.amount1Min || '0'),
+          deadline,
+        ];
       } else {
-        result = await client.readContract({
-          address: validatorAddress,
-          functionName: 'validate_remove_liquidity_v2',
-          args: [
-            tokenA,
-            tokenB,
-            String(proposal.lpAmount || '1000000000000000000'),
-            String(proposal.minAmountA || '0'),
-            String(proposal.minAmountB || '0'),
-            deadline,
-          ],
-        });
+        functionName = 'validate_remove_liquidity_v2';
+        args = [
+          tokenA,
+          tokenB,
+          String(proposal.lpAmount || '1000000000000000000'),
+          String(proposal.minAmountA || '0'),
+          String(proposal.minAmountB || '0'),
+          deadline,
+        ];
       }
     } else {
       // Add Liquidity
       if (isV3) {
-        result = await client.readContract({
-          address: validatorAddress,
-          functionName: 'validate_add_liquidity_v3',
-          args: [
-            tokenA,
-            tokenB,
-            parseInt(proposal.fee || 3000, 10),
-            parseInt(proposal.tickLower || -887220, 10),
-            parseInt(proposal.tickUpper || 887220, 10),
-            String(proposal.amount0Desired || '1000000000000000000'),
-            String(proposal.amount1Desired || '1000000000000000000'),
-            String(proposal.amount0Min || '900000000000000000'),
-            String(proposal.amount1Min || '900000000000000000'),
-            deadline,
-          ],
-        });
+        functionName = 'validate_add_liquidity_v3';
+        args = [
+          tokenA,
+          tokenB,
+          parseInt(proposal.fee || 3000, 10),
+          parseInt(proposal.tickLower || -887220, 10),
+          parseInt(proposal.tickUpper || 887220, 10),
+          String(proposal.amount0Desired || '1000000000000000000'),
+          String(proposal.amount1Desired || '1000000000000000000'),
+          String(proposal.amount0Min || '900000000000000000'),
+          String(proposal.amount1Min || '900000000000000000'),
+          deadline,
+        ];
       } else {
-        result = await client.readContract({
-          address: validatorAddress,
-          functionName: 'validate_add_liquidity_v2',
-          args: [
-            tokenA,
-            tokenB,
-            String(proposal.amountA || '1000000000000000000'),
-            String(proposal.amountB || '1000000000000000000'),
-            String(proposal.minAmountA || '950000000000000000'),
-            String(proposal.minAmountB || '950000000000000000'),
-            deadline,
-          ],
-        });
+        functionName = 'validate_add_liquidity_v2';
+        args = [
+          tokenA,
+          tokenB,
+          String(proposal.amountARaw || proposal.amountA || '1000000000000000000'),
+          String(proposal.amountBRaw || proposal.amountB || '1000000000000000000'),
+          String(proposal.minAmountARaw || proposal.minAmountA || '950000000000000000'),
+          String(proposal.minAmountBRaw || proposal.minAmountB || '950000000000000000'),
+          deadline,
+        ];
       }
     }
 
+    // Execute read contract simulation
+    result = await client.readContract({
+      address: validatorAddress,
+      functionName,
+      args,
+    });
+
+    const isApproved = Boolean(result && result.approved);
+
     return {
       success: true,
-      approved: Boolean(result?.approved),
-      reason: result?.reason || (result?.approved ? 'Liquidity validation passed on GenVM' : 'Liquidity proposal rejected'),
-      proposalId: result?.proposal_id || `liq_${Date.now()}`,
+      approved: isApproved,
+      reason: result?.reason || (isApproved ? 'Liquidity validation passed on GenVM' : 'Liquidity proposal rejected by GenLayer consensus'),
+      proposalId: result?.proposal_id || (isApproved ? `liq_${Date.now()}` : ''),
       contractAddress: validatorAddress,
       contractName: 'LiquidityValidator (GenLayer IC)',
       network: GENLAYER_CONFIG.chainName,
@@ -251,11 +299,12 @@ export async function validateLiquidityProposal(proposal) {
       timestamp: new Date().toISOString(),
     };
   } catch (err) {
-    console.error('LiquidityValidator IC invocation error:', err);
+    console.error('LiquidityValidator IC invocation error (failing closed):', err);
     return {
       success: false,
       approved: false,
-      reason: err?.shortMessage || err?.message || 'Liquidity validation failed on GenLayer IC',
+      reason: err?.shortMessage || err?.message || 'Liquidity validation failed on GenLayer IC — failed closed',
+      proposalId: '',
       contractAddress: validatorAddress,
       contractName: 'LiquidityValidator (GenLayer IC)',
       network: GENLAYER_CONFIG.chainName,

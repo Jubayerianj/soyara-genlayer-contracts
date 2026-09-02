@@ -9,7 +9,8 @@
     "lint": "next lint",
     "test-mongodb": "node scripts/test-mongodb.js",
     "init-db": "node scripts/init-database.js",
-    "create-indexes": "node scripts/create-indexes.js"
+    "create-indexes": "node scripts/create-indexes.js",
+    "test:settlement": "node scripts/test-agent-settlement-e2e.mjs"
   },
   "dependencies": {
     "@base-org/account": "^2.5.1",

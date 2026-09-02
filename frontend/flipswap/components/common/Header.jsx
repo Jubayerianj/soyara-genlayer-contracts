@@ -21,7 +21,8 @@ function GlobalMenu() {
   const menuItems = [
     { label: 'Intro Animation', href: '/intro', icon: <Sparkles size={16} /> },
     { label: 'Swap', href: '/swap', icon: <Zap size={16} /> },
-    { label: 'AI Trading', href: '/ai', icon: <Bot size={16} /> },
+    { label: 'A2A Swarm', href: '/a2a', icon: <Bot size={16} style={{ color: '#38bdf8' }} /> },
+    { label: 'AI Trading', href: '/ai', icon: <Sparkles size={16} /> },
     { label: 'Pools', href: '/pools', icon: <Droplets size={16} /> },
     { label: 'Portfolio', href: '/portfolio', icon: <User size={16} /> },
     { label: 'Docs', href: '/docs', icon: <BookOpen size={16} /> },
@@ -123,11 +124,19 @@ export default function Header() {
             Swap
           </Link>
           <Link
+            href="/a2a"
+            className={`${styles.navLink} ${router.pathname.startsWith('/a2a') ? styles.navLinkActive : ''}`}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+          >
+            <Bot size={14} style={{ color: '#38bdf8' }} />
+            A2A Swarm
+          </Link>
+          <Link
             href="/ai"
             className={`${styles.navLink} ${router.pathname === '/ai' ? styles.navLinkActive : ''}`}
             style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
           >
-            <Sparkles size={14} style={{ color: '#3b82f6' }} />
+            <Sparkles size={14} style={{ color: '#818cf8' }} />
             AI Trading
           </Link>
           <Link
