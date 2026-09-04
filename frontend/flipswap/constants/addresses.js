@@ -13,8 +13,8 @@ export const CONTRACT_ADDRESSES = {
     WGEN: "0x315374AA9b5536037Cc1Efeea2439CCC0913A77e",
     wrappedNative: "0x315374AA9b5536037Cc1Efeea2439CCC0913A77e",
     WETH: "0x315374AA9b5536037Cc1Efeea2439CCC0913A77e",
-    aggregatorRouter: '0xDF474006aa807598B616500d146FfF661d644138',
-    aggregatorEntrypoint: '0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3',
+    aggregatorRouter: '0xafCAD2bf0E85e30a2b54ac6491dC81987cE7767C',
+    aggregatorEntrypoint: '0x95feE6Cb918Ed9C621E36082EE8D998873031EaA',
     dexFeeVault: '0x48234eD645676b794a4CbC7483513e58cB04e22E',
     // SoyaraDex V3
     v3Factory: "0xBd959038300aF0C8dd1873E497d6D0a565b4E246",
@@ -27,13 +27,20 @@ export const CONTRACT_ADDRESSES = {
     v3TickLens: "0xCa4c7EdB398684cB4C5B3fD0cc6ced30b5a5f4d3",
     multicall: "0x6d1503E294b122Eb6B37ECe9c74d24D83f8B478b",
     // GenLayer Intelligent Contracts
-    agentValidator: "0xFc77C6A20B1102979f5887A5efe9611a2Ef6Afd5",
-    liquidityValidator: "0xEFb9473B5269A79d72Df4b6E73E310791a185eeC"
+    // AgentValidator redeployed 2026-09-04: fixed stale router whitelist (was blocking
+    // every real proposal after AGGFlowEntrypoint/AGGFlowRouter were redeployed) and
+    // removed non-deterministic time.time() usage. See DEPLOYMENTS.md.
+    agentValidator: "0x69c33B036a982e7C7107b1634451A0C227cB2BBA",
+    liquidityValidator: "0xEFb9473B5269A79d72Df4b6E73E310791a185eeC",
+    // AgentExecutor — deployed 2026-09-04 on GenLayer Bradbury Testnet (chain 4221)
+    // Tx: broadcast/deployGenlayer.sol/4221/run-latest.json
+    // Deployer/Agent: 0x23D542DCEFb00b1f4268E67a0EC1EF4de0A58fe2
+    agentExecutor: "0xBda36A9453003E2eEe5D6Cb07ad253e64BaB4729",
   }
 };
 
 export const INTELLIGENT_CONTRACTS = {
-  agentValidator: "0xFc77C6A20B1102979f5887A5efe9611a2Ef6Afd5",
+  agentValidator: "0x69c33B036a982e7C7107b1634451A0C227cB2BBA",
   liquidityValidator: "0xEFb9473B5269A79d72Df4b6E73E310791a185eeC"
 };
 

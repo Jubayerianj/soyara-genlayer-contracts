@@ -1,10 +1,14 @@
 // pages/api/agent-v2.js
+import { formatUnits, parseUnits } from 'viem';
+import { quoteBestRoute } from '../../lib/dexQuote.js';
 import { TOKEN_LIST, GEN_NATIVE_TOKEN } from '../../constants/tokens.js';
 import { CONTRACT_ADDRESSES, INTELLIGENT_CONTRACTS } from '../../constants/addresses.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-// Real-time GenLayer market reference prices
+// Rough reference prices — ONLY used as a last-resort fallback when no live V2/V3
+// pool exists for a pair yet (calculateQuote() below always tries real on-chain
+// pool reserves/price first). Do not treat these as accurate market prices.
 const TOKEN_PRICES_USD = {
   GEN: 0.50,
   WGEN: 0.50,
@@ -14,6 +18,22 @@ const TOKEN_PRICES_USD = {
   WBTC: 68500.00,
   FSWP: 0.15,
 };
+
+// ── Live on-chain quoting ───────────────────────────────────────────────────
+// Uses the shared, execution-accurate quoter (lib/dexQuote.js): V3 only via the
+// real Quoter, V2 via exact constant-product math, both net of the entrypoint
+// fee. Quotes feed minAmountOut, so they must be a lower bound on real output —
+// an optimistic quote makes settlement revert with
+// AGGFlowEntrypoint_InsufficientAmountAfterFees().
+
+async function getOnChainQuote(tokenInObj, tokenOutObj, amountInNum, dexPref = 'best') {
+  const wgenAddress = CONTRACT_ADDRESSES[4221].wgen;
+  const tokenInAddr = tokenInObj.isNative ? wgenAddress : tokenInObj.address;
+  const tokenOutAddr = tokenOutObj.isNative ? wgenAddress : tokenOutObj.address;
+  const decimalsIn = tokenInObj.decimals || 18;
+  const amountInWei = parseUnits(String(amountInNum), decimalsIn);
+  return quoteBestRoute(tokenInAddr, tokenOutAddr, amountInWei, dexPref);
+}
 
 const GENLAYER_KNOWLEDGE = {
   network: 'GenLayer Bradbury Testnet (Chain ID: 4221)',
@@ -57,7 +77,31 @@ function getTokenObject(symbol) {
   return list.find(t => t.symbol.toUpperCase() === norm) || (norm === 'GEN' ? GEN_NATIVE_TOKEN : null);
 }
 
-function calculateQuote(tokenInSym, tokenOutSym, amountInNum, dex = 'best') {
+// Display formatter for quote amounts. Two properties matter:
+//  1. adaptive precision — a flat 4 decimals erases a 0.005697 output entirely;
+//  2. it TRUNCATES rather than rounds, so the number shown to the user can never
+//     be larger than what the pool actually delivers.
+// Default slippage tolerance, in basis points.
+//
+// 0.3% was unusable in practice: enforced per-trade GenLayer consensus puts
+// ~50s between the quote and settlement, and these pools are small enough
+// (~10k units a side) that an ordinary trade moves the price several percent in
+// that window. The validated minAmountOut was then unreachable and settlement
+// refused. 1% survives normal drift and is still far inside the AgentValidator
+// IC's 300 bps cap. Raise it here if the pools get deeper.
+export const DEFAULT_SLIPPAGE_BPS = 100;
+
+function formatAmountDisplay(raw, decimals) {
+  const full = formatUnits(raw, decimals);
+  const n = parseFloat(full);
+  if (!Number.isFinite(n) || n === 0) return '0';
+  const magnitude = Math.floor(Math.log10(Math.abs(n)));
+  const places = Math.min(8, Math.max(2, 5 - magnitude));
+  const [int, frac = ''] = full.split('.');
+  return `${int}.${frac.padEnd(places, '0').slice(0, places)}`;
+}
+
+async function calculateQuote(tokenInSym, tokenOutSym, amountInNum, dex = 'best') {
   const normIn = normalizeToken(tokenInSym) || 'USDC';
   const normOut = normalizeToken(tokenOutSym) || 'GEN';
   const amtIn = Math.max(0.000001, parseFloat(amountInNum) || 1);
@@ -82,17 +126,72 @@ function calculateQuote(tokenInSym, tokenOutSym, amountInNum, dex = 'best') {
     };
   }
 
+  const decimalsFor = (sym) => (sym === 'WBTC' ? 6 : sym === 'ETH' ? 5 : 4);
+  const tokenInObj = getTokenObject(normIn);
+  const tokenOutObj = getTokenObject(normOut);
+
+  if (tokenInObj && tokenOutObj) {
+    try {
+      // If a specific venue was requested but cannot actually fill this size,
+      // retry across all venues. Falling back to the reference price instead
+      // would fabricate a quote (and an unachievable minAmountOut) while a real
+      // routable pool existed.
+      let onChain = await getOnChainQuote(tokenInObj, tokenOutObj, amtIn, dex);
+      if (!onChain && dex !== 'best') {
+        onChain = await getOnChainQuote(tokenInObj, tokenOutObj, amtIn, 'best');
+      }
+      if (onChain) {
+        const decimalsOut = tokenOutObj.decimals || 18;
+        const minOutRaw = (onChain.amountOutRaw * BigInt(10000 - DEFAULT_SLIPPAGE_BPS)) / 10000n;
+        const amountOut = formatAmountDisplay(onChain.amountOutRaw, decimalsOut);
+        const minAmountOut = formatAmountDisplay(minOutRaw, decimalsOut);
+        const isV3 = onChain.dex === 'v3';
+        // Carry RAW integer amounts alongside the display strings. minAmountOut
+        // is enforced on-chain, so it must come from integer math — deriving it
+        // from a display value rounded with toFixed() can round UP past the real
+        // output and make settlement revert with
+        // AGGFlowEntrypoint_InsufficientAmountAfterFees().
+        const amountOutRawStr = onChain.amountOutRaw.toString();
+        const minAmountOutRawStr = minOutRaw.toString();
+        return {
+          tokenIn: normIn,
+          tokenOut: normOut,
+          amountIn: amtIn,
+          amountOut,
+          minAmountOut,
+          amountOutRaw: amountOutRawStr,
+          minAmountOutRaw: minAmountOutRawStr,
+          fee: isV3 ? `${(onChain.feeTier / 10000).toFixed(2)}%` : '0.30%',
+          priceImpact: `${Math.min(99.99, onChain.priceImpactPct).toFixed(2)}%`,
+          // Numeric impact so the UI can warn rather than just display a string.
+          // These pools are small (~10k units a side); a few thousand units is a
+          // double-digit-percent trade whose quote goes stale almost immediately,
+          // which surfaced to users only as a confusing "price moved" refusal at
+          // settlement.
+          priceImpactPct: Number(onChain.priceImpactPct.toFixed(2)),
+          highImpact: onChain.priceImpactPct >= 5,
+          route: isV3 ? `V3 Concentrated (${(onChain.feeTier / 10000).toFixed(2)}% fee tier)` : 'V2 Classic AMM (0.30% fee)',
+          dex: onChain.dex,
+          poolAddress: onChain.pool,
+          isLiveQuote: true,
+        };
+      }
+    } catch (err) {
+      console.error('[agent-v2] on-chain quote failed, falling back to reference price:', err.message);
+    }
+  }
+
+  // ── Fallback: no routable pool for this pair — rough reference price only ──
   const priceIn = TOKEN_PRICES_USD[normIn] || 1.0;
   const priceOut = TOKEN_PRICES_USD[normOut] || 1.0;
 
   const rawOut = (amtIn * priceIn) / priceOut;
-  const isV3 = dex === 'v3' || dex === 'best';
-  const feeRate = isV3 ? 0.0005 : 0.003; // V3 0.05%, V2 0.30%
+  const isV3 = dex === 'v3';
+  const feeRate = isV3 ? 0.0005 : 0.003;
   const feePct = isV3 ? '0.05%' : '0.30%';
-  const priceImpact = Math.min(0.75, (amtIn * priceIn) / 60000).toFixed(2) + '%';
 
-  const amountOut = (rawOut * (1 - feeRate)).toFixed(normOut === 'WBTC' ? 6 : (normOut === 'ETH' ? 5 : 4));
-  const minAmountOut = (parseFloat(amountOut) * 0.997).toFixed(normOut === 'WBTC' ? 6 : (normOut === 'ETH' ? 5 : 4));
+  const amountOut = (rawOut * (1 - feeRate)).toFixed(decimalsFor(normOut));
+  const minAmountOut = (parseFloat(amountOut) * 0.997).toFixed(decimalsFor(normOut));
 
   return {
     tokenIn: normIn,
@@ -101,9 +200,10 @@ function calculateQuote(tokenInSym, tokenOutSym, amountInNum, dex = 'best') {
     amountOut,
     minAmountOut,
     fee: feePct,
-    priceImpact,
-    route: isV3 ? 'V3 Concentrated (0.05% fee tier)' : 'V2 Classic AMM (0.30% fee)',
+    priceImpact: 'N/A (no routable pool)',
+    route: 'Estimated — no routable pool found',
     dex: isV3 ? 'v3' : 'v2',
+    isLiveQuote: false,
   };
 }
 
@@ -165,15 +265,24 @@ const tools = [
   }
 ];
 
-function buildProposalObject(action, params) {
+async function buildProposalObject(action, params) {
   const defaultRouter = CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3';
-  const deadline = Math.floor(Date.now() / 1000) + 1200;
+  // Quantise the deadline to a 10-minute boundary.
+  //
+  // deadline is one of the inputs to compute_proposal_id, so a per-second value
+  // gave every quote a unique id and the on-chain verdict cache could never hit
+  // — an identical repeat trade paid for a fresh ~50s consensus round every
+  // time. Rounding UP to the next boundary keeps the deadline at least as far
+  // out as before while letting identical trades in the same window reuse a
+  // verdict that already exists.
+  const DEADLINE_BUCKET = 600;
+  const deadline = Math.ceil((Math.floor(Date.now() / 1000) + 1200) / DEADLINE_BUCKET) * DEADLINE_BUCKET;
 
   if (action === 'SWAP') {
     const tokenInSym = normalizeToken(params.tokenIn || params.fromToken) || 'USDC';
     const tokenOutSym = normalizeToken(params.tokenOut || params.toToken) || 'GEN';
     const amountIn = parseFloat(params.amountIn || params.fromAmount || 100);
-    const quote = calculateQuote(tokenInSym, tokenOutSym, amountIn, params.dex || params.model || 'best');
+    const quote = await calculateQuote(tokenInSym, tokenOutSym, amountIn, params.dex || params.model || 'best');
 
     const tokenInObj = getTokenObject(tokenInSym);
     const tokenOutObj = getTokenObject(tokenOutSym);
@@ -181,8 +290,12 @@ function buildProposalObject(action, params) {
     const decimalsIn = tokenInObj?.decimals || 18;
     const decimalsOut = tokenOutObj?.decimals || 18;
 
-    const amountInRaw = (BigInt(Math.floor(amountIn * 1e6)) * BigInt(10 ** (decimalsIn - 6))).toString();
-    const minAmountOutRaw = (BigInt(Math.floor(parseFloat(quote.minAmountOut) * 1e6)) * BigInt(10 ** (decimalsOut - 6))).toString();
+    // parseUnits keeps full precision; the old 1e6 scaling truncated small amounts.
+    const amountInRaw = parseUnits(String(amountIn), decimalsIn).toString();
+    // Use the raw quote when available so minAmountOut is never rounded UP past
+    // the achievable output.
+    const minAmountOutRaw = quote.minAmountOutRaw
+      ?? (parseUnits(String(quote.minAmountOut), decimalsOut)).toString();
 
     return {
       action: 'SWAP',
@@ -193,14 +306,30 @@ function buildProposalObject(action, params) {
       amountIn: amountIn,
       amountInRaw,
       expectedOutput: `${quote.amountOut} ${tokenOutSym}`,
+      amountOutRaw: quote.amountOutRaw,
       minAmountOut: quote.minAmountOut,
       minAmountOutRaw,
-      slippage: '0.30%',
-      slippageBps: 30,
+      slippage: `${(DEFAULT_SLIPPAGE_BPS / 100).toFixed(2)}%`,
+      slippageBps: DEFAULT_SLIPPAGE_BPS,
       priceImpact: quote.priceImpact,
+      priceImpactPct: quote.priceImpactPct ?? null,
+      highImpact: Boolean(quote.highImpact),
       route: quote.route,
+      // Carry the routed venue so settlement builds a program for the SAME pool
+      // the quote came from. Without this, execution falls back to 'best' and can
+      // pick a V3 pool that cannot actually fill, reverting with
+      // AGGFlowEntrypoint_InsufficientAmountAfterFees().
+      dex: quote.dex,
       router: defaultRouter,
       deadline,
+      // A quote from the reference-price fallback is a display estimate with no
+      // pool behind it — settling one can only revert. Mark it so the UI can
+      // refuse execution up front instead of failing at settlement.
+      isLiveQuote: quote.isLiveQuote === true,
+      executable: quote.isLiveQuote === true,
+      notExecutableReason: quote.isLiveQuote === true
+        ? null
+        : `No liquidity pool exists for ${tokenInSym}/${tokenOutSym} on Soyara DEX. The rate shown is a reference estimate only and cannot be executed.`,
       genlayerContract: INTELLIGENT_CONTRACTS.agentValidator,
     };
   } else if (action === 'ADD_LIQUIDITY') {
@@ -260,7 +389,7 @@ function buildProposalObject(action, params) {
 }
 
 // Deep, contextual rule-based conversation engine (fallback & direct response handler)
-function generateComprehensiveDiscussion(message) {
+async function generateComprehensiveDiscussion(message) {
   const text = message.toLowerCase().trim();
 
   // 1. GENLAYER & INTELLIGENT CONTRACTS EXPLANATION
@@ -302,31 +431,103 @@ function generateComprehensiveDiscussion(message) {
 
   // 5. TRADING / SWAP INTENTS
   const tokens = ['usdc', 'usdt', 'gen', 'wgen', 'eth', 'wbtc', 'fswp'];
-  const foundTokens = [];
-  for (const t of tokens) {
-    if (new RegExp(`\\b${t}\\b`, 'i').test(text)) {
-      foundTokens.push(normalizeToken(t));
-    }
-  }
+  // Order the matches by WHERE THEY APPEAR IN THE SENTENCE, not by their order
+  // in the list above. Scanning the list in a fixed order made
+  // "Swap 0.01 GEN to USDC" resolve to tokenIn=USDC / tokenOut=GEN — the exact
+  // reverse of the request, so the user would have been shown a proposal to buy
+  // the token they asked to sell.
+  const foundTokens = tokens
+    .map((t) => {
+      const m = new RegExp(`\\b${t}\\b`, 'i').exec(text);
+      return m ? { sym: normalizeToken(t), at: m.index } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.at - b.at)
+    .map((f) => f.sym);
 
-  const numberMatches = text.match(/\d+(?:\.\d+)?/g);
+  // Strip venue markers ("v2"/"v3") before reading the trade size — otherwise
+  // "swap usdc to gen on v3" reads an amount of 3.
+  const numberMatches = text.replace(/\bv[23]\b/gi, '').match(/\d+(?:\.\d+)?/g);
   const amount = numberMatches ? parseFloat(numberMatches[0]) : 100;
   const isV3 = text.includes('v3') || text.includes('concentrated') || text.includes('low fee');
 
   if (text.includes('swap') || text.includes('trade') || text.includes('buy') || text.includes('sell') || text.includes('exchange') || text.includes('convert')) {
-    const tokenIn = foundTokens[0] || 'USDC';
-    const tokenOut = foundTokens[1] || (tokenIn === 'GEN' ? 'USDC' : 'GEN');
-    const quote = calculateQuote(tokenIn, tokenOut, amount, isV3 ? 'v3' : 'best');
+    // NEVER invent the other side of a trade.
+    //
+    // These defaults used to fire silently: a typo like "wap 34 udc to usdt"
+    // matched only USDT, which then became the SOURCE (`foundTokens[0]`) while
+    // GEN was fabricated as the destination — the opposite of what was asked,
+    // for a token pair the user never named. Guessing is not acceptable when the
+    // result is a real trade, so an under-specified request now asks instead.
+    //
+    // A token introduced by "to"/"for"/"into" is the DESTINATION, so if it is
+    // the only one recognised then the source is what is missing.
+    const destMatch = /\b(?:to|for|into)\s+([a-z]+)\b/i.exec(text);
+    const namedDest = destMatch ? normalizeToken(destMatch[1]) : null;
+    const KNOWN = new Set(['USDC', 'USDT', 'GEN', 'WGEN', 'WBTC', 'ETH', 'FSWP']);
 
-    const proposal = buildProposalObject('SWAP', {
+    // A destination was named but is not a token we know — almost always a typo
+    // ("...to udc"). Ask; do not quietly substitute a default, which is how
+    // "swap 34 USDT to udc" became a USDT -> GEN proposal.
+    if (namedDest && !KNOWN.has(namedDest)) {
+      return {
+        reply: `### ❓ I don't recognise **${destMatch[1].toUpperCase()}**\n\nThat looks like a typo for the token you want to receive.\n\nSupported: **USDC, USDT, GEN, WGEN, WBTC, ETH, FSWP**\n\nFor example: *"swap ${amount} ${foundTokens[0] || 'USDC'} to USDT"*.\n\nI have not prepared a proposal, because guessing the token would risk trading something you did not ask for.`,
+        proposal: null,
+        toolsUsed: [],
+      };
+    }
+
+    let tokenIn;
+    let tokenOut;
+
+    if (foundTokens.length >= 2) {
+      tokenIn = foundTokens[0];
+      tokenOut = foundTokens[1];
+    } else if (foundTokens.length === 1) {
+      const only = foundTokens[0];
+      if (namedDest && namedDest === only) {
+        // The single recognised token is the destination — the source is unknown.
+        return {
+          reply: `### ❓ I need one more detail\n\nI understood you want to receive **${only}**, but I could not make out which token you want to swap **from** — please check the spelling.\n\nSupported: **USDC, USDT, GEN, WGEN, WBTC, ETH, FSWP**\n\nFor example: *"swap ${amount} USDC to ${only}"*.\n\nI have not prepared a proposal, because guessing the token would risk trading something you did not ask for.`,
+          proposal: null,
+          toolsUsed: [],
+        };
+      }
+      tokenIn = only;
+      tokenOut = only === 'GEN' ? 'USDC' : 'GEN';
+    } else {
+      return {
+        reply: `### ❓ Which tokens do you want to swap?\n\nI could not recognise a token in that request — please check the spelling.\n\nSupported: **USDC, USDT, GEN, WGEN, WBTC, ETH, FSWP**\n\nFor example: *"swap ${amount} USDC to USDT"*.`,
+        proposal: null,
+        toolsUsed: [],
+      };
+    }
+
+    if (tokenIn === tokenOut) {
+      return {
+        reply: `### ❓ Both sides of that trade are **${tokenIn}**\n\nTell me which token you want to receive — for example *"swap ${amount} ${tokenIn} to USDT"*.`,
+        proposal: null,
+        toolsUsed: [],
+      };
+    }
+
+    // Swaps ALWAYS take the aggregator's best route — Soyara compares venues and
+    // fills wherever the output is best, so pinning V2/V3 from the user's wording
+    // can only match or worsen the fill (and forcing a venue that cannot fill the
+    // size drops the quote into the reference-price fallback). The venue that won
+    // is reported back in `route`/`dex` as an outcome.
+    const quote = await calculateQuote(tokenIn, tokenOut, amount, 'best');
+
+    const proposal = await buildProposalObject('SWAP', {
       tokenIn,
       tokenOut,
       amountIn: amount,
-      dex: isV3 ? 'v3' : 'best',
+      dex: 'best',
     });
 
+    const rate = (parseFloat(quote.amountOut) / amount).toFixed(6);
     return {
-      reply: `### ⚡ Swap Execution Proposal Prepared\n\nI have analyzed routes across GenLayer liquidity pools for your trade:\n\n- **Route:** ${quote.route}\n- **Rate:** 1 ${tokenIn} ≈ ${(TOKEN_PRICES_USD[tokenIn] / TOKEN_PRICES_USD[tokenOut]).toFixed(4)} ${tokenOut}\n- **Expected Output:** **${quote.amountOut} ${tokenOut}**\n- **Min. Received (0.3% slippage):** ${quote.minAmountOut} ${tokenOut}\n- **Protocol Fee:** ${quote.fee}\n- **Price Impact:** ${quote.priceImpact}\n\n👉 **Next Step:** Click **"Validate with GenLayer IC"** in the proposal card on the right to verify this trade through decentralized consensus on GenVM!`,
+      reply: `### ⚡ Swap Execution Proposal Prepared\n\nI have analyzed routes across GenLayer liquidity pools for your trade:\n\n- **Route:** ${quote.route}\n- **Rate:** 1 ${tokenIn} ≈ ${rate} ${tokenOut}${quote.isLiveQuote ? ' (live pool price)' : ' (estimated — no live pool)'}\n- **Expected Output:** **${quote.amountOut} ${tokenOut}**\n- **Min. Received (${(DEFAULT_SLIPPAGE_BPS / 100).toFixed(2)}% slippage):** ${quote.minAmountOut} ${tokenOut}\n- **Protocol Fee:** ${quote.fee}\n- **Price Impact:** ${quote.priceImpact}\n\n👉 **Next Step:** Click **"Validate with GenLayer IC"** in the proposal card on the right to verify this trade through decentralized consensus on GenVM!`,
       proposal,
       toolsUsed: ['get_quote', 'compare_routes', 'AgentValidator IC'],
     };
@@ -339,7 +540,7 @@ function generateComprehensiveDiscussion(message) {
     const amountA = amount;
     const amountB = numberMatches && numberMatches.length > 1 ? parseFloat(numberMatches[1]) : (amount * 2);
 
-    const proposal = buildProposalObject('ADD_LIQUIDITY', {
+    const proposal = await buildProposalObject('ADD_LIQUIDITY', {
       tokenA,
       tokenB,
       amountA,
@@ -358,13 +559,14 @@ function generateComprehensiveDiscussion(message) {
   if (text.includes('compare') || text.includes('vs') || text.includes('better')) {
     const tokenIn = foundTokens[0] || 'WGEN';
     const tokenOut = foundTokens[1] || 'USDC';
-    const v2 = calculateQuote(tokenIn, tokenOut, amount, 'v2');
-    const v3 = calculateQuote(tokenIn, tokenOut, amount, 'v3');
+    const v2 = await calculateQuote(tokenIn, tokenOut, amount, 'v2');
+    const v3 = await calculateQuote(tokenIn, tokenOut, amount, 'v3');
     const diff = (parseFloat(v3.amountOut) - parseFloat(v2.amountOut)).toFixed(4);
+    const optimalDex = parseFloat(v3.amountOut) >= parseFloat(v2.amountOut) ? 'v3' : 'v2';
 
     return {
-      reply: `### 🔍 In-Depth Route Comparison (${amount} ${tokenIn} → ${tokenOut})\n\n1. **V3 Concentrated (0.05% Fee Tier) 🏆 Optimal**:\n   - Output: **${v3.amountOut} ${tokenOut}**\n   - Fee: 0.05%\n   - Price Impact: ${v3.priceImpact}\n\n2. **V2 Classic AMM (0.30% Fee)**:\n   - Output: **${v2.amountOut} ${tokenOut}**\n   - Fee: 0.30%\n   - Price Impact: ${v2.priceImpact}\n\n💡 **Insight:** V3 gives you **+${diff} ${tokenOut} more** due to concentrated capital efficiency and lower pool fees. I've prepared a proposal using the optimal V3 route for you.`,
-      proposal: buildProposalObject('SWAP', { tokenIn, tokenOut, amountIn: amount, dex: 'v3' }),
+      reply: `### 🔍 In-Depth Route Comparison (${amount} ${tokenIn} → ${tokenOut})\n\n1. **V3 Concentrated (${v3.fee} Fee Tier)**${optimalDex === 'v3' ? ' 🏆 Optimal' : ''}:\n   - Output: **${v3.amountOut} ${tokenOut}**\n   - Fee: ${v3.fee}\n   - Price Impact: ${v3.priceImpact}\n\n2. **V2 Classic AMM (0.30% Fee)**${optimalDex === 'v2' ? ' 🏆 Optimal' : ''}:\n   - Output: **${v2.amountOut} ${tokenOut}**\n   - Fee: 0.30%\n   - Price Impact: ${v2.priceImpact}\n\n💡 **Insight:** ${optimalDex === 'v3' ? `V3 gives you **+${diff} ${tokenOut} more**` : `V2 gives you **+${Math.abs(diff)} ${tokenOut} more**`} on current pool liquidity. I've prepared a proposal using the optimal route for you.`,
+      proposal: await buildProposalObject('SWAP', { tokenIn, tokenOut, amountIn: amount, dex: optimalDex }),
       toolsUsed: ['compare_routes'],
     };
   }
@@ -377,17 +579,48 @@ function generateComprehensiveDiscussion(message) {
   };
 }
 
+/**
+ * True when the message is plainly a trade we can price locally: a trade verb,
+ * an amount, and at least two recognised tokens (or one plus a "to X" target).
+ * Deliberately conservative — anything it is unsure about goes to the model.
+ */
+function isDirectTradeIntent(message) {
+  const text = String(message || '').toLowerCase();
+  if (!/\b(swap|trade|buy|sell|exchange|convert)\b/.test(text)) return false;
+  if (!/\d/.test(text)) return false;
+  const known = ['usdc', 'usdt', 'gen', 'wgen', 'eth', 'wbtc', 'fswp'];
+  const hits = known.filter((t) => new RegExp(`\\b${t}\\b`, 'i').test(text));
+  return hits.length >= 2;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const { message, history = [] } = req.body;
   if (!message) return res.status(400).json({ error: 'Message is required' });
 
+  // ── FAST PATH: an unambiguous trade needs no LLM round trip ──────────────
+  // The local handler already builds the whole proposal from live pool
+  // reserves; routing "swap 50 USDC to USDT" through Gemini first added ~8s to
+  // the single most common action on the page for no added information.
+  // Anything conversational, ambiguous, or typo'd still falls through to the
+  // model below.
+  if (isDirectTradeIntent(message)) {
+    try {
+      const fast = await generateComprehensiveDiscussion(message);
+      if (fast?.proposal) {
+        return res.status(200).json({ ...fast, fastPath: true });
+      }
+    } catch (err) {
+      console.warn('[agent-v2] fast path failed, falling back to model:', err.message);
+    }
+  }
+
   const apiKey = process.env.GEMINI_API_KEY;
 
   // If no Gemini API key is configured, provide the rich discussion response directly
   if (!apiKey) {
-    const fallbackResponse = generateComprehensiveDiscussion(message);
+    const fallbackResponse = await generateComprehensiveDiscussion(message);
     return res.status(200).json(fallbackResponse);
   }
 
@@ -474,13 +707,15 @@ Behavior Guidelines:
 
         let result;
         if (name === 'get_quote') {
-          result = calculateQuote(args.tokenIn, args.tokenOut, args.amountIn, args.dex);
-          proposal = buildProposalObject('SWAP', { ...args, dex: result.dex });
+          // Best route only — see the note in the swap branch above.
+          result = await calculateQuote(args.tokenIn, args.tokenOut, args.amountIn, 'best');
+          proposal = await buildProposalObject('SWAP', { ...args, dex: result.dex });
         } else if (name === 'compare_routes') {
-          const v2 = calculateQuote(args.tokenIn, args.tokenOut, args.amountIn, 'v2');
-          const v3 = calculateQuote(args.tokenIn, args.tokenOut, args.amountIn, 'v3');
-          result = { v2, v3, optimal: 'v3' };
-          proposal = buildProposalObject('SWAP', { ...args, dex: 'v3' });
+          const v2 = await calculateQuote(args.tokenIn, args.tokenOut, args.amountIn, 'v2');
+          const v3 = await calculateQuote(args.tokenIn, args.tokenOut, args.amountIn, 'v3');
+          const optimalDex = parseFloat(v3.amountOut) >= parseFloat(v2.amountOut) ? 'v3' : 'v2';
+          result = { v2, v3, optimal: optimalDex };
+          proposal = await buildProposalObject('SWAP', { ...args, dex: optimalDex });
         } else if (name === 'get_pool_info') {
           result = {
             pair: `${args.tokenA}/${args.tokenB}`,
@@ -488,7 +723,7 @@ Behavior Guidelines:
             volume24h: '$380,000',
             feeTier: args.dex === 'v3' ? '0.05%' : '0.30%',
           };
-          proposal = buildProposalObject('ADD_LIQUIDITY', { tokenA: args.tokenA, tokenB: args.tokenB });
+          proposal = await buildProposalObject('ADD_LIQUIDITY', { tokenA: args.tokenA, tokenB: args.tokenB });
         } else if (name === 'get_contract_info') {
           result = GENLAYER_KNOWLEDGE;
         } else {
@@ -514,7 +749,7 @@ Behavior Guidelines:
     }
 
     if (!proposal) {
-      const fallback = generateComprehensiveDiscussion(message);
+      const fallback = await generateComprehensiveDiscussion(message);
       if (fallback.proposal) proposal = fallback.proposal;
       if (!finalReply) finalReply = fallback.reply;
     }
@@ -526,7 +761,7 @@ Behavior Guidelines:
     });
   } catch (error) {
     console.error('Agent API fast fallback:', error.message);
-    const fallback = generateComprehensiveDiscussion(message);
+    const fallback = await generateComprehensiveDiscussion(message);
     return res.status(200).json(fallback);
   }
 }

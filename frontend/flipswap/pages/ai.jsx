@@ -1,24 +1,16 @@
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import Head from 'next/head';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  useAccount, 
-  useReadContract, 
-  useWriteContract, 
-  useWaitForTransactionReceipt, 
-  usePublicClient,
-  useBalance 
-} from 'wagmi';
-import { parseUnits, zeroAddress } from 'viem';
-import { 
-  Sparkles, 
-  Send, 
-  Bot, 
-  RotateCcw, 
-  Cpu, 
-  ShieldCheck, 
-  ExternalLink, 
-  Layers, 
+import { useAccount, usePublicClient, useBalance } from 'wagmi';
+import {
+  Sparkles,
+  Send,
+  Bot,
+  RotateCcw,
+  Cpu,
+  ShieldCheck,
+  ExternalLink,
+  Layers,
   ArrowRightLeft,
   Coins,
   CheckCircle2,
@@ -32,11 +24,11 @@ import {
 
 import ChatMessage from '../components/AIAgent/ChatMessage';
 import ProposalPanel from '../components/AIAgent/ProposalPanel';
-import { CONTRACT_ADDRESSES, INTELLIGENT_CONTRACTS } from '../constants/addresses';
-import { TOKEN_LIST, findTokenByAddress } from '../constants/tokens';
-import { ERC20_ABI } from '../constants/abis';
-import AGGFLOW_ENTRYPOINT_ABI from '../abi/AGGFlowEntrypoint.json';
-import { buildProgram } from '../utils/programBuilder';
+import { INTELLIGENT_CONTRACTS } from '../constants/addresses';
+import { useAgentSwapExecution } from '../hooks/useAgentSwapExecution';
+import ActivityPanel from '../components/ActivityPanel';
+import BalanceStrip from '../components/BalanceStrip';
+import { recordActivity } from '../lib/txStore';
 import { useTheme } from '../components/contexts/ThemeContext';
 import aiStyles from '../styles/AIPage.module.css';
 
@@ -76,11 +68,17 @@ export default function AIPage() {
   const [currentProposal, setCurrentProposal] = useState(null);
   const [validationResult, setValidationResult] = useState(null);
   const [isValidating, setIsValidating] = useState(false);
-  const [activeTxHash, setActiveTxHash] = useState(null);
-  const [executionError, setExecutionError] = useState(null);
-  const [isExecuting, setIsExecuting] = useState(false);
+  // When the current consensus round began, so the panel can show elapsed time.
+  const [validationStartedAt, setValidationStartedAt] = useState(null);
+  // Balances captured just before settlement, so the panel can show before/after.
+  // Settlement runs from the agent wallet with no popup, so this delta is the
+  // user's only direct confirmation that funds actually moved.
+  const [balanceSnapshot, setBalanceSnapshot] = useState(null);
+  const [liveBalances, setLiveBalances] = useState(null);
+  const [balanceRefreshKey, setBalanceRefreshKey] = useState(0);
 
   const messagesEndRef = useRef(null);
+  const handleValidateRef = useRef(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -95,74 +93,34 @@ export default function AIPage() {
     address: userAddress,
   });
 
-  // Entrypoint address
-  const entrypointAddress = CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3';
-  const wgenAddress = CONTRACT_ADDRESSES[4221]?.wgen || '0x315374AA9b5536037Cc1Efeea2439CCC0913A77e';
-
-  // Find tokenIn object from current proposal
-  const fromTokenObj = useMemo(() => {
-    if (!currentProposal) return null;
-    const symbol = currentProposal.tokenIn || currentProposal.fromToken;
-    const address = currentProposal.tokenInAddress;
-    if (address && address !== zeroAddress && address !== '0x0000000000000000000000000000000000000000') {
-      return findTokenByAddress(address, 4221) || TOKEN_LIST[4221]?.find(t => t.symbol === symbol);
-    }
-    return TOKEN_LIST[4221]?.find(t => t.symbol === symbol) || { symbol: symbol || 'GEN', isNative: symbol === 'GEN', decimals: 18 };
-  }, [currentProposal]);
-
-  const toTokenObj = useMemo(() => {
-    if (!currentProposal) return null;
-    const symbol = currentProposal.tokenOut || currentProposal.toToken;
-    const address = currentProposal.tokenOutAddress;
-    if (address && address !== zeroAddress && address !== '0x0000000000000000000000000000000000000000') {
-      return findTokenByAddress(address, 4221) || TOKEN_LIST[4221]?.find(t => t.symbol === symbol);
-    }
-    return TOKEN_LIST[4221]?.find(t => t.symbol === symbol) || { symbol: symbol || 'USDC', isNative: false, decimals: 18 };
-  }, [currentProposal]);
-
-  // Token Allowance Check
-  const isFromNative = fromTokenObj?.isNative || fromTokenObj?.symbol === 'GEN';
-  const { data: allowance, refetch: refetchAllowance, isFetching: isCheckingAllowance } = useReadContract({
-    address: isFromNative ? undefined : fromTokenObj?.address,
-    abi: ERC20_ABI,
-    functionName: 'allowance',
-    args: !isFromNative && userAddress && entrypointAddress ? [userAddress, entrypointAddress] : undefined,
-    query: {
-      enabled: !isFromNative && !!userAddress && !!entrypointAddress && !!fromTokenObj?.address,
-    },
-  });
-
-  const isWrapOrUnwrapProposal = useMemo(() => {
-    if (!currentProposal) return false;
-    const symIn = fromTokenObj?.symbol || currentProposal.tokenIn;
-    const symOut = toTokenObj?.symbol || currentProposal.tokenOut;
-    return (symIn === 'GEN' && symOut === 'WGEN') || (symIn === 'WGEN' && symOut === 'GEN') || currentProposal.dex === 'wrap' || currentProposal.dex === 'unwrap';
-  }, [currentProposal, fromTokenObj, toTokenObj]);
-
-  const needsApproval = useMemo(() => {
-    if (!currentProposal || isFromNative || isWrapOrUnwrapProposal || !userAddress || !fromTokenObj?.address) return false;
-    if (allowance === undefined) return false;
-    const decimals = fromTokenObj?.decimals || 18;
-    const amountInWei = currentProposal.amountInRaw 
-      ? BigInt(currentProposal.amountInRaw)
-      : parseUnits(String(currentProposal.amountIn || '0'), decimals);
-    return allowance < amountInWei;
-  }, [currentProposal, isFromNative, isWrapOrUnwrapProposal, userAddress, fromTokenObj, allowance]);
-
-  // Contract write hooks
-  const { writeContractAsync: approveAsync, isPending: isApproving } = useWriteContract();
-  const { writeContractAsync: executeSwapAsync } = useWriteContract();
-
-  // Watch transaction receipt
-  const { isLoading: isTxWaiting, isSuccess: isTxSuccess, isError: isTxFailed } = useWaitForTransactionReceipt({
-    hash: activeTxHash,
-  });
+  // Shared GenLayer-validated swap execution logic (also used by /a2a's SwarmWarRoom).
+  const {
+    fromTokenObj,
+    toTokenObj,
+    needsApproval,
+    isApproving,
+    isCheckingAllowance,
+    hasInsufficientBalance,
+    isNotExecutable,
+    notExecutableReason,
+    approve,
+    execute,
+    isExecuting,
+    isTxWaiting,
+    isTxSuccess,
+    isTxFailed,
+    activeTxHash,
+    executionError,
+    setExecutionError,
+    refetchAllowance,
+    reset: resetExecution,
+  } = useAgentSwapExecution(currentProposal);
 
   useEffect(() => {
     if (isTxSuccess && activeTxHash) {
-      setIsExecuting(false);
       refetchAllowance();
       refetchNativeBalance();
+      setBalanceRefreshKey((k) => k + 1);
       setMessages((prev) => [
         ...prev,
         {
@@ -172,10 +130,9 @@ export default function AIPage() {
         }
       ]);
     } else if (isTxFailed && activeTxHash) {
-      setIsExecuting(false);
       setExecutionError('Transaction reverted on GenLayer');
     }
-  }, [isTxSuccess, isTxFailed, activeTxHash, refetchAllowance, refetchNativeBalance]);
+  }, [isTxSuccess, isTxFailed, activeTxHash, refetchAllowance, refetchNativeBalance, setExecutionError]);
 
   // Send message to AI Agent
   const handleSend = async (textToSend) => {
@@ -204,8 +161,16 @@ export default function AIPage() {
       if (data.proposal) {
         setCurrentProposal(data.proposal);
         setValidationResult(null);
-        setActiveTxHash(null);
+        resetExecution();
         setMobileTab('proposal');
+
+        // ── Pre-validate immediately (do not wait for the user to click) ──────
+        // GenVM consensus takes anywhere from seconds to minutes. Starting the
+        // round here means it runs while the user is still reading the quote and
+        // connecting their wallet, so by the time they hit Execute the approval
+        // is usually already in hand. Same enforced flow and same one-time
+        // approval hash — just moved off the user's critical path.
+        handleValidateRef.current?.(0, data.proposal);
       }
 
       setMessages([
@@ -230,21 +195,64 @@ export default function AIPage() {
     }
   };
 
-  // Validate current proposal with GenLayer Intelligent Contract
-  const handleValidate = async () => {
-    if (!currentProposal || isValidating) return;
-    setIsValidating(true);
-    setExecutionError(null);
-
+  // Poll a pending validate_proposal tx (does NOT resubmit — just re-checks status)
+  // until it resolves or we give up. GenVM consensus rounds on Bradbury testnet can
+  // occasionally take several minutes under load; treating a slow round as an
+  // immediate hard rejection is misleading, so this keeps checking in the background.
+  const pollValidationStatus = useCallback(async (txHash, attempt = 0, retryRound = 0, proposal = null, proposalId = null) => {
+    const MAX_ATTEMPTS = 40; // fast common case, still degrades gracefully under load
+    const MAX_RETRY_ROUNDS = 1; // one automatic fresh round if the first ends undecided
     try {
       const res = await fetch('/api/genlayer-validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(currentProposal),
+        // On the final attempt, ask the server to clear the round if validators
+        // never voted — otherwise idle txs pile up on the agent account and
+        // start making new submissions revert at ConsensusMain.
+        body: JSON.stringify({ checkTxHash: txHash, proposalId, finalizeIfStuck: attempt >= MAX_ATTEMPTS }),
       });
-
       const data = await res.json();
+
+      if (data.pending && attempt < MAX_ATTEMPTS) {
+        // Fast-poll the first few attempts (common case resolves quickly), then back off.
+        // A verdict is usually readable within ~30-45s, so a flat 10s tail added
+        // up to 10s of dead time after consensus had already finished. Poll
+        // tighter for longer, then ease off.
+        const nextDelay = attempt < 6 ? 2000 : 5000;
+        setTimeout(() => pollValidationStatus(txHash, attempt + 1, retryRound, proposal, proposalId), nextDelay);
+        return;
+      }
+
+      // The round finished without a verdict (UNDETERMINED / LEADER_TIMEOUT /
+      // VALIDATORS_TIMEOUT). That is a network condition, not a rejection —
+      // polling the same dead round forever is pointless, so run one fresh round.
+      if (data.retryable && retryRound < MAX_RETRY_ROUNDS) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `🔄 **GenVM round ended without a majority** — this is a validator-set condition, not a rejection. Automatically submitting a fresh consensus round...`,
+            toolsUsed: ['AgentValidator IC', 'GenVM Consensus'],
+          }
+        ]);
+        handleValidateRef.current?.(retryRound + 1, proposal);
+        return;
+      }
+
       setValidationResult(data);
+      setIsValidating(false);
+
+      recordActivity({
+        id: data.tx_hash || data.proposal_id || `val-${Date.now()}`,
+        kind: 'swap',
+        user: userAddress,
+        pair: `${proposal.tokenIn} → ${proposal.tokenOut}`,
+        label: `Swap ${proposal.amountIn} ${proposal.tokenIn} → ${proposal.tokenOut}`,
+        txHash: data.tx_hash || null,
+        proposalId: data.proposal_id || null,
+        status: data.approved ? 'approved' : data.retryable ? 'undecided' : 'rejected',
+        reason: data.reason,
+      });
 
       if (data.approved) {
         setMessages((prev) => [
@@ -260,281 +268,263 @@ export default function AIPage() {
           ...prev,
           {
             role: 'assistant',
-            content: `⚠️ **GenLayer IC Validation Rejected**\n\nReason: *${data.reason}*`,
+            content: data.pending
+              ? `⏳ **Still Awaiting GenVM Consensus**\n\nThe validator round is taking longer than usual. Tx: \`${txHash.slice(0, 10)}...\` — you can check the [explorer](https://explorer-bradbury.genlayer.com/tx/${txHash}) or try Validate again shortly.`
+              : data.retryable
+                ? `🔄 **GenVM Consensus Did Not Reach a Verdict**\n\n${data.reason}\n\nPress **Validate** again to run another round.`
+                : `⚠️ **GenLayer IC Validation Rejected**\n\nReason: *${data.reason}*`,
+            toolsUsed: ['AgentValidator IC'],
+          }
+        ]);
+      }
+    } catch (err) {
+      console.error('Validation status-check error:', err);
+      setIsValidating(false);
+      setValidationResult({ approved: false, reason: 'Network error checking validation status' });
+    }
+  }, []);
+
+  // Validate current proposal with GenLayer Intelligent Contract.
+  // `retryRound` > 0 means this is an automatic re-run after a GenVM round that
+  // ended without a majority (UNDETERMINED / LEADER_TIMEOUT / VALIDATORS_TIMEOUT).
+  const handleValidate = async (retryRoundArg = 0, proposalOverride = null) => {
+    // ProposalPanel wires this straight to onClick, so the first arg can be a
+    // React SyntheticEvent — only trust it when it is actually a number.
+    const retryRound = typeof retryRoundArg === 'number' ? retryRoundArg : 0;
+
+    // When pre-validating we are called in the same tick the proposal arrives,
+    // before `currentProposal` state has flushed — so accept it directly.
+    const proposal = proposalOverride || currentProposal;
+
+    if (!proposal) return;
+    if (isValidating && retryRound === 0 && !proposalOverride) return;
+    setIsValidating(true);
+    // Only start the clock for a genuinely new round, so an automatic retry does
+    // not make the elapsed time jump back to zero mid-wait.
+    setValidationStartedAt((prev) => (retryRoundArg > 0 && prev ? prev : Date.now()));
+    setExecutionError(null);
+
+    try {
+      const res = await fetch('/api/genlayer-validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // `user` is required for the mandate fast path (check_mandate is bound to
+        // a specific user). Without it every validation fell through to a full
+        // GenVM consensus round — minutes instead of seconds.
+        body: JSON.stringify({ ...proposal, user: userAddress }),
+      });
+
+      const data = await res.json();
+
+      // Consensus round still in flight — poll status instead of reporting rejection.
+      if (data.pending && data.tx_hash) {
+        // Persist immediately: a consensus round outlives the page, and without
+        // this a user who closed the tab lost the tx hash and proposal id and
+        // could never find out whether the trade was approved.
+        recordActivity({
+          id: data.tx_hash,
+          kind: 'swap',
+          user: userAddress,
+          pair: `${proposal.tokenIn} → ${proposal.tokenOut}`,
+          label: `Swap ${proposal.amountIn} ${proposal.tokenIn} → ${proposal.tokenOut}`,
+          txHash: data.tx_hash,
+          proposalId: data.proposal_id || null,
+          statusName: data.statusName || null,
+          status: 'pending',
+        });
+        setValidationResult(data);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `⏳ **Validating with GenLayer IC...**\n\nConsensus tx submitted: \`${data.tx_hash.slice(0, 10)}...\`. This can take a bit longer during testnet congestion — I'll keep checking automatically.`,
+            toolsUsed: ['AgentValidator IC', 'GenVM Consensus'],
+          }
+        ]);
+        pollValidationStatus(data.tx_hash, 0, retryRound, proposal, data.proposal_id || null);
+        return;
+      }
+
+      // Round returned immediately but without a verdict — run one fresh round.
+      if (data.retryable && retryRound < 1) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `🔄 **GenVM round ended without a majority** — not a rejection. Submitting a fresh consensus round...`,
+            toolsUsed: ['AgentValidator IC', 'GenVM Consensus'],
+          }
+        ]);
+        handleValidate(retryRound + 1, proposal);
+        return;
+      }
+
+      setValidationResult(data);
+      setIsValidating(false);
+
+      if (data.approved) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `🛡️ **GenLayer IC Validation Approved!**\n\n- **Validator**: \`${data.genlayer_contract}\`\n- **Consensus**: *${data.consensus_mode || 'Optimistic Democracy (GenVM)'}*\n- **Proposal ID**: \`${data.proposal_id}\`\n- **Status**: *${data.reason}*\n\nYou can now proceed to execute the trade on-chain.`,
+            toolsUsed: ['AgentValidator IC', 'GenVM Consensus'],
+          }
+        ]);
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: data.retryable
+              ? `🔄 **GenVM Consensus Did Not Reach a Verdict**\n\n${data.reason}\n\nPress **Validate** again to run another round.`
+              : `⚠️ **GenLayer IC Validation Rejected**\n\nReason: *${data.reason}*`,
             toolsUsed: ['AgentValidator IC'],
           }
         ]);
       }
     } catch (err) {
       console.error('Validation error:', err);
+      setIsValidating(false);
       setValidationResult({
         approved: false,
         reason: 'Network error communicating with GenLayer Intelligent Contract',
       });
-    } finally {
-      setIsValidating(false);
     }
   };
 
-  // Approve token
+  // Let pollValidationStatus trigger a fresh validation round without a circular dep.
+  handleValidateRef.current = handleValidate;
+
+  // Approve token — approves the correct settlement spender (AgentExecutor or AGGFlowEntrypoint)
   const handleApprove = async () => {
-    if (!fromTokenObj?.address || !entrypointAddress || !currentProposal) return;
-    setExecutionError(null);
-
     try {
-      const decimals = fromTokenObj.decimals || 18;
-      const amountInWei = currentProposal.amountInRaw
-        ? BigInt(currentProposal.amountInRaw)
-        : parseUnits(String(currentProposal.amountIn || '0'), decimals);
-
-      const hash = await approveAsync({
-        address: fromTokenObj.address,
-        abi: ERC20_ABI,
-        functionName: 'approve',
-        args: [entrypointAddress, amountInWei],
-      });
-
+      const result = await approve();
+      if (!result) return;
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
-          content: `⏳ Approval submitted for **${currentProposal.amountIn} ${fromTokenObj.symbol}**. Waiting for confirmation... (Tx: \`${hash.slice(0, 10)}...\`)`,
+          content: `⏳ **One-time approval submitted for ${result.symbol}.** This is the only approval you'll sign for this token — every future agent-executed trade settles without a wallet prompt.\n\nWaiting for confirmation... (Tx: \`${result.hash.slice(0, 10)}...\`)`,
         }
       ]);
-
-      await refetchAllowance();
     } catch (err) {
       console.error('Approval failed:', err);
       setExecutionError(err?.shortMessage || err?.message || 'Token approval rejected by user');
     }
   };
 
-  // Gas estimation helper for GenLayer
-  const getTxGasParams = useCallback(async (fallbackGasLimit = 3500000n) => {
-    let params = { gas: fallbackGasLimit };
-    if (!publicClient) return params;
-    try {
-      const block = await publicClient.getBlock({ blockTag: 'latest' }).catch(() => null);
-      const baseFee = block?.baseFeePerGas ?? 1000000000n;
-      params.maxFeePerGas = (baseFee * 180n) / 100n + 1000000000n;
-      params.maxPriorityFeePerGas = 1000000000n;
-    } catch {
-      params.maxFeePerGas = 8000000000n;
-      params.maxPriorityFeePerGas = 1000000000n;
-    }
-    return params;
-  }, [publicClient]);
-
-  // Resolve V2 Pair or V3 Pool for execution
-  const resolvePoolRoute = useCallback(async (tokenInFormatted, tokenOutFormatted, dexPref = 'best') => {
-    const factoryV2 = CONTRACT_ADDRESSES[4221]?.factory || '0x4680BCe1632824d30D2F53656dD610736c3e312e';
-    const factoryV3 = CONTRACT_ADDRESSES[4221]?.v3Factory || '0xBd959038300aF0C8dd1873E497d6D0a565b4E246';
-
-    const tokenInAddr = tokenInFormatted.isNative ? wgenAddress : tokenInFormatted.address;
-    const tokenOutAddr = tokenOutFormatted.isNative ? wgenAddress : tokenOutFormatted.address;
-
-    // 1. Try V3 if requested or best
-    if ((dexPref === 'v3' || dexPref === 'best') && publicClient) {
-      const feeTiers = [500, 3000, 10000];
-      for (const fee of feeTiers) {
-        try {
-          const pool = await publicClient.readContract({
-            address: factoryV3,
-            abi: [{
-              inputs: [
-                { name: 'tokenA', type: 'address' },
-                { name: 'tokenB', type: 'address' },
-                { name: 'fee', type: 'uint24' },
-              ],
-              name: 'getPool',
-              outputs: [{ name: 'pool', type: 'address' }],
-              stateMutability: 'view',
-              type: 'function',
-            }],
-            functionName: 'getPool',
-            args: [tokenInAddr, tokenOutAddr, fee],
-          });
-          if (pool && pool !== zeroAddress && pool !== '0x0000000000000000000000000000000000000000') {
-            return { poolAddress: pool, poolType: 'v3', fee, dexName: 'UniswapV3' };
-          }
-        } catch (e) {
-          // continue
-        }
-      }
-    }
-
-    // 2. Fallback to V2 Pair
-    if (publicClient) {
-      try {
-        const pair = await publicClient.readContract({
-          address: factoryV2,
-          abi: [{
-            inputs: [
-              { name: 'tokenA', type: 'address' },
-              { name: 'tokenB', type: 'address' },
-            ],
-            name: 'getPair',
-            outputs: [{ name: 'pair', type: 'address' }],
-            stateMutability: 'view',
-            type: 'function',
-          }],
-          functionName: 'getPair',
-          args: [tokenInAddr, tokenOutAddr],
-        });
-        if (pair && pair !== zeroAddress && pair !== '0x0000000000000000000000000000000000000000') {
-          return { poolAddress: pair, poolType: 'v2', fee: 3000, dexName: 'OurV2' };
-        }
-      } catch (e) {
-        // continue
-      }
-    }
-
-    return null;
-  }, [publicClient, wgenAddress]);
-
-  // Execute swap on-chain
+  // Execute swap on-chain via the one-time approval gate (/api/agent-execute) —
+  // see hooks/useAgentSwapExecution.js for the full flow (approve → resolve pool
+  // route → build program → AgentExecutor one-time approval → settle).
   const handleExecute = async () => {
-    if (!currentProposal || !userAddress) return;
-    setIsExecuting(true);
-    setExecutionError(null);
-
     try {
-      const isNative = isFromNative;
-      const decimalsIn = fromTokenObj?.decimals || 18;
-      const decimalsOut = toTokenObj?.decimals || 18;
+      setBalanceSnapshot(liveBalances);
+      const result = await execute(validationResult);
+      setBalanceRefreshKey((k) => k + 1);
+      if (!result) return;
 
-      const amountInWei = currentProposal.amountInRaw
-        ? BigInt(currentProposal.amountInRaw)
-        : parseUnits(String(currentProposal.amountIn || '0'), decimalsIn);
-
-      const minAmountOutWei = currentProposal.minAmountOutRaw
-        ? BigInt(currentProposal.minAmountOutRaw)
-        : parseUnits(String(currentProposal.minAmountOut || '1'), decimalsOut);
-
-      const tokenInFormatted = {
-        ...fromTokenObj,
-        address: isNative ? zeroAddress : fromTokenObj.address,
-        isNative,
-      };
-      const tokenOutFormatted = {
-        ...toTokenObj,
-        address: toTokenObj.isNative ? zeroAddress : toTokenObj.address,
-        isNative: toTokenObj.isNative || toTokenObj.symbol === 'GEN',
-      };
-
-      const isWrapOp = (fromTokenObj?.symbol === 'GEN' && toTokenObj?.symbol === 'WGEN') || currentProposal.dex === 'wrap';
-      const isUnwrapOp = (fromTokenObj?.symbol === 'WGEN' && toTokenObj?.symbol === 'GEN') || currentProposal.dex === 'unwrap';
-
-      if (isWrapOp) {
-        const gasParams = await getTxGasParams(200000n);
-        const hash = await executeSwapAsync({
-          address: wgenAddress,
-          abi: [
-            {
-              type: 'function',
-              name: 'deposit',
-              inputs: [],
-              outputs: [],
-              stateMutability: 'payable',
-            }
-          ],
-          functionName: 'deposit',
-          value: amountInWei,
-          ...gasParams,
-        });
-        setActiveTxHash(hash);
+      if (result.kind === 'wrap') {
         setMessages((prev) => [
           ...prev,
           {
             role: 'assistant',
-            content: `🚀 **Wrap Submitted!**\n\nWrapping **${currentProposal.amountIn} GEN** to **WGEN** (1:1 direct wrap)...\n\nTx Hash: [${hash.slice(0, 10)}...${hash.slice(-8)}](https://explorer-bradbury.genlayer.com/tx/${hash})`,
+            content: `🚀 **Wrap Submitted!**\n\nWrapping **${result.amountIn} GEN** to **WGEN** (1:1 direct wrap)...\n\nTx Hash: [${result.hash.slice(0, 10)}...${result.hash.slice(-8)}](https://explorer-bradbury.genlayer.com/tx/${result.hash})`,
             toolsUsed: ['WGEN Deposit', 'GenLayer Bradbury'],
           }
         ]);
-        return;
-      }
-
-      if (isUnwrapOp) {
-        const gasParams = await getTxGasParams(200000n);
-        const hash = await executeSwapAsync({
-          address: wgenAddress,
-          abi: [
-            {
-              type: 'function',
-              name: 'withdraw',
-              inputs: [{ name: 'wad', type: 'uint256' }],
-              outputs: [],
-              stateMutability: 'nonpayable',
-            }
-          ],
-          functionName: 'withdraw',
-          args: [amountInWei],
-          ...gasParams,
-        });
-        setActiveTxHash(hash);
+      } else if (result.kind === 'unwrap') {
         setMessages((prev) => [
           ...prev,
           {
             role: 'assistant',
-            content: `🚀 **Unwrap Submitted!**\n\nUnwrapping **${currentProposal.amountIn} WGEN** to **GEN** (1:1 direct unwrap)...\n\nTx Hash: [${hash.slice(0, 10)}...${hash.slice(-8)}](https://explorer-bradbury.genlayer.com/tx/${hash})`,
+            content: `🚀 **Unwrap Submitted!**\n\nUnwrapping **${result.amountIn} WGEN** to **GEN** (1:1 direct unwrap)...\n\nTx Hash: [${result.hash.slice(0, 10)}...${result.hash.slice(-8)}](https://explorer-bradbury.genlayer.com/tx/${result.hash})`,
             toolsUsed: ['WGEN Withdraw', 'GenLayer Bradbury'],
           }
         ]);
-        return;
+      } else if (result.kind === 'swap') {
+        recordActivity({
+          id: result.hash,
+          kind: 'swap',
+          user: userAddress,
+          pair: `${currentProposal?.tokenIn} → ${currentProposal?.tokenOut}`,
+          label: `Settled ${currentProposal?.amountIn} ${currentProposal?.tokenIn} → ${currentProposal?.tokenOut}`,
+          settleTxHash: result.hash,
+          status: 'settled',
+        });
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `🚀 **Trade Executed via AgentExecutor!**\n\n✅ One-time approval bound and consumed on AgentExecutor.\n✅ Settlement routed through GenLayer-consensus-gated approval hash.\n\nTrade Hash: \`${result.tradeHash?.slice(0, 14)}...\`\nApprove Tx: \`${result.approveTxHash?.slice(0, 10)}...\`\n\nExecution Tx: [${result.hash?.slice(0, 10)}...${result.hash?.slice(-8)}](${result.explorerUrl})`,
+            toolsUsed: ['AgentExecutor', 'AGGFlowEntrypoint', 'GenLayer Bradbury'],
+          }
+        ]);
+      } else if (result.kind === 'add_liquidity') {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `💧 **Liquidity Added via AgentExecutor!**\n\n✅ One-time approval bound and consumed on AgentExecutor.\n✅ Deposit routed through the GenLayer-consensus-gated approval hash.\n\nOp Hash: \`${result.opHash?.slice(0, 14)}...\`\nApprove Tx: \`${result.approveTxHash?.slice(0, 10)}...\`\n\nExecution Tx: [${result.hash?.slice(0, 10)}...${result.hash?.slice(-8)}](${result.explorerUrl})`,
+            toolsUsed: ['AgentExecutor', 'UniswapV2Router', 'GenLayer Bradbury'],
+          }
+        ]);
+      } else if (result.kind === 'swap_fallback') {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `🚀 **Trade Submitted!**\n\nExecution is broadcasting on GenLayer Bradbury Testnet...\n\n⚠️ *Note: Running in fallback mode — AgentExecutor not yet deployed.*\n\nTx Hash: [${result.hash.slice(0, 10)}...${result.hash.slice(-8)}](https://explorer-bradbury.genlayer.com/tx/${result.hash})`,
+            toolsUsed: ['AGGFlowEntrypoint', 'GenLayer Bradbury'],
+          }
+        ]);
       }
-
-      const resolvedRoute = await resolvePoolRoute(
-        tokenInFormatted,
-        tokenOutFormatted,
-        currentProposal.dex || 'best'
-      );
-
-      if (!resolvedRoute) {
-        throw new Error(`No active liquidity pool found on Soyara DEX for ${fromTokenObj.symbol}/${toTokenObj.symbol}`);
-      }
-
-      const program = buildProgram(tokenInFormatted, tokenOutFormatted, resolvedRoute, wgenAddress);
-
-      const swapIntent = [
-        tokenOutFormatted.isNative ? zeroAddress : tokenOutFormatted.address,
-        minAmountOutWei,
-        tokenInFormatted.isNative ? zeroAddress : tokenInFormatted.address,
-        amountInWei,
-      ];
-
-      const feeCollector = CONTRACT_ADDRESSES[4221]?.dexFeeVault || '0x48234eD645676b794a4CbC7483513e58cB04e22E';
-      const feeCollection = [
-        feeCollector,
-        5n,
-        zeroAddress,
-        0n,
-        false,
-      ];
-
-      const gasParams = await getTxGasParams(3500000n);
-
-      const hash = await executeSwapAsync({
-        address: entrypointAddress,
-        abi: AGGFLOW_ENTRYPOINT_ABI,
-        functionName: 'executeSwap',
-        args: [swapIntent, feeCollection, program],
-        value: isNative ? amountInWei : 0n,
-        ...gasParams,
-      });
-
-      setActiveTxHash(hash);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `🚀 **Trade Submitted!**\n\nExecution is broadcasting on GenLayer Bradbury Testnet...\n\nTx Hash: [${hash.slice(0, 10)}...${hash.slice(-8)}](https://explorer-bradbury.genlayer.com/tx/${hash})`,
-          toolsUsed: ['AGGFlowEntrypoint', 'GenLayer Bradbury'],
-        }
-      ]);
     } catch (err) {
       console.error('Execution failed:', err);
-      setIsExecuting(false);
-      setExecutionError(err?.shortMessage || err?.message || 'Execution rejected by user or network');
+
+      // A stale quote is not a failure the user should have to fix by retyping
+      // their request. These pools are small enough that a real trade moves the
+      // price between quote and settlement, and enforced per-trade consensus
+      // widens that window — so re-quote automatically and re-validate.
+      if (err?.stale) {
+        const p = currentProposal;
+        if (!p) return;
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `⚠️ **The pool moved past your ${(p.slippageBps || 30) / 100}% slippage tolerance while this quote was validating.**\n\nFetching a fresh quote and re-validating automatically — no need to retype your request.`,
+            toolsUsed: ['Live pool re-quote'],
+          },
+        ]);
+        try {
+          const res = await fetch('/api/agent-v2', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: `Swap ${p.amountIn} ${p.tokenIn} to ${p.tokenOut}`,
+              history: [],
+            }),
+          });
+          const data = await res.json();
+          if (data?.proposal) {
+            setCurrentProposal(data.proposal);
+            setValidationResult(null);
+            resetExecution();
+            setMessages((prev) => [
+              ...prev,
+              {
+                role: 'assistant',
+                content: `🔄 **Fresh quote:** ${data.proposal.amountIn} ${data.proposal.tokenIn} → **${data.proposal.expectedOutput}** (min ${data.proposal.minAmountOut}, impact ${data.proposal.priceImpact}).\n\nRe-validating through GenLayer consensus now — press Execute once it turns green.`,
+                toolsUsed: ['AgentValidator IC'],
+              },
+            ]);
+            handleValidateRef.current?.(0, data.proposal);
+          }
+        } catch (requoteErr) {
+          console.error('Auto re-quote failed:', requoteErr);
+        }
+      }
     }
   };
 
@@ -547,8 +537,7 @@ export default function AIPage() {
     ]);
     setCurrentProposal(null);
     setValidationResult(null);
-    setActiveTxHash(null);
-    setExecutionError(null);
+    resetExecution();
   };
 
   return (
@@ -737,11 +726,33 @@ export default function AIPage() {
                 onApprove={handleApprove}
                 needsApproval={needsApproval}
                 isApproving={isApproving}
+                isCheckingAllowance={isCheckingAllowance}
+                validationStartedAt={validationStartedAt}
+                hasInsufficientBalance={hasInsufficientBalance}
+                isNotExecutable={isNotExecutable}
+                notExecutableReason={notExecutableReason}
                 isValidating={isValidating}
                 isExecuting={isExecuting || isTxWaiting}
                 txHash={activeTxHash}
                 executionError={executionError}
               />
+
+              {currentProposal && (
+                <div style={{ marginTop: '0.9rem' }}>
+                  <BalanceStrip
+                    tokens={[fromTokenObj, toTokenObj]}
+                    snapshot={balanceSnapshot}
+                    refreshKey={balanceRefreshKey}
+                    isDark={isDark}
+                    onLoaded={setLiveBalances}
+                  />
+                </div>
+              )}
+
+              {/* Survives closing the page: pending rounds are re-checked on return. */}
+              <div style={{ marginTop: '0.9rem' }}>
+                <ActivityPanel isDark={isDark} />
+              </div>
             </div>
           </div>
         </div>

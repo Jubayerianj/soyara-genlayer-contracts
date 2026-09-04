@@ -1,5 +1,6 @@
 // components/AIAgent/ProposalPanel.jsx
 import React from 'react';
+import ConsensusProgress from '../ConsensusProgress';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ShieldCheck, ShieldAlert, Cpu, ExternalLink, ArrowRight, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
 import { INTELLIGENT_CONTRACTS } from '../../constants/addresses';
@@ -13,6 +14,11 @@ const ProposalPanel = ({
   onApprove,
   needsApproval,
   isApproving,
+  isCheckingAllowance,
+  validationStartedAt,
+  hasInsufficientBalance,
+  isNotExecutable,
+  notExecutableReason,
   isValidating,
   isExecuting,
   txHash,
@@ -265,6 +271,88 @@ const ProposalPanel = ({
                 </>
               )}
             </button>
+          ) : validationResult.pending ? (
+            // A live round: show the real GenVM phase and elapsed time rather
+            // than a flat "please wait", which read as a hang.
+            <ConsensusProgress
+              statusName={validationResult.statusName}
+              txHash={validationResult.tx_hash || validationResult.txHash}
+              startedAt={validationStartedAt}
+              isDark={isDark}
+            />
+          ) : validationResult.retryable ? (
+            <div style={{
+              borderRadius: '10px',
+              padding: '12px',
+              background: 'rgba(245, 158, 11, 0.08)',
+              border: '1px solid rgba(245, 158, 11, 0.25)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+            }}>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                color: '#f59e0b',
+                fontWeight: 700,
+                fontSize: '0.85rem',
+              }}>
+                {validationResult.pending
+                  ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
+                  : <ShieldAlert size={16} />}
+                {validationResult.pending
+                  ? 'Still Awaiting GenVM Consensus'
+                  : 'Consensus Did Not Reach a Verdict'}
+              </div>
+              <div style={{ fontSize: '0.82rem', color: textSub }}>
+                {validationResult.reason || 'Not rejected — the validator round is still in progress. Checking automatically.'}
+              </div>
+              {validationResult.tx_hash && (
+                <a
+                  href={`https://explorer-bradbury.genlayer.com/tx/${validationResult.tx_hash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ fontSize: '0.72rem', color: '#f59e0b', fontFamily: 'monospace', marginTop: '2px' }}
+                >
+                  Tx: {validationResult.tx_hash.slice(0, 10)}...{validationResult.tx_hash.slice(-6)}
+                </a>
+              )}
+              {!validationResult.pending && validationResult.retryable && (
+                <button
+                  type="button"
+                  onClick={onValidate}
+                  disabled={isValidating}
+                  style={{
+                    marginTop: '6px',
+                    background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                    border: 'none',
+                    borderRadius: '8px',
+                    padding: '10px',
+                    color: '#ffffff',
+                    fontWeight: 650,
+                    fontSize: '0.85rem',
+                    cursor: isValidating ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  {isValidating ? (
+                    <>
+                      <Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} />
+                      Running another round...
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck size={15} />
+                      Run Another Consensus Round
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
           ) : (
             <div style={{
               borderRadius: '10px',
@@ -328,7 +416,7 @@ const ProposalPanel = ({
                     Approving {proposal.tokenIn}...
                   </>
                 ) : (
-                  `1. Approve ${proposal.tokenIn}`
+                  `1. Approve ${proposal.tokenIn} (one time)`
                 )}
               </button>
             ) : null}
@@ -336,34 +424,93 @@ const ProposalPanel = ({
             <button
               type="button"
               onClick={onExecute}
-              disabled={needsApproval || isExecuting}
+              disabled={needsApproval || isExecuting || isCheckingAllowance || hasInsufficientBalance || isNotExecutable}
               style={{
-                background: needsApproval
+                background: (needsApproval || isCheckingAllowance || hasInsufficientBalance || isNotExecutable)
                   ? isDark ? 'rgba(255, 255, 255, 0.05)' : '#e2e8f0'
                   : 'linear-gradient(135deg, #10b981, #059669)',
                 border: 'none',
                 borderRadius: '10px',
                 padding: '14px',
-                color: needsApproval ? textMuted : '#ffffff',
+                color: (needsApproval || isCheckingAllowance || hasInsufficientBalance || isNotExecutable) ? textMuted : '#ffffff',
                 fontWeight: 650,
                 fontSize: '0.95rem',
-                cursor: needsApproval || isExecuting ? 'not-allowed' : 'pointer',
+                cursor: (needsApproval || isExecuting || isCheckingAllowance || hasInsufficientBalance || isNotExecutable) ? 'not-allowed' : 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: '8px',
-                boxShadow: needsApproval ? 'none' : '0 4px 16px rgba(16, 185, 129, 0.3)',
+                boxShadow: (needsApproval || isCheckingAllowance || hasInsufficientBalance || isNotExecutable) ? 'none' : '0 4px 16px rgba(16, 185, 129, 0.3)',
               }}
             >
               {isExecuting ? (
                 <>
                   <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} />
-                  Executing on Soyara DEX...
+                  Settling on Soyara DEX...
                 </>
+              ) : isCheckingAllowance ? (
+                <>
+                  <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} />
+                  Checking token allowance...
+                </>
+              ) : isNotExecutable ? (
+                'No Liquidity Pool for This Pair'
+              ) : hasInsufficientBalance ? (
+                `Insufficient ${proposal.tokenIn} Balance`
               ) : (
                 needsApproval ? '2. Execute Trade (Approve First)' : 'Confirm & Execute on GenLayer'
               )}
             </button>
+
+            {proposal.highImpact && !isNotExecutable && (
+              <div style={{
+                fontSize: '0.78rem',
+                color: '#ef4444',
+                background: 'rgba(239, 68, 68, 0.08)',
+                border: '1px solid rgba(239, 68, 68, 0.28)',
+                borderRadius: '8px',
+                padding: '10px',
+                lineHeight: 1.45,
+              }}>
+                <strong>⚠️ High price impact: {proposal.priceImpact}.</strong> This trade is large
+                relative to the pool, so you receive materially less than the market rate — and the
+                quote can go stale before consensus finishes, which shows up as a
+                &ldquo;price moved&rdquo; refusal. Consider splitting it into smaller trades.
+              </div>
+            )}
+
+            {(isNotExecutable || hasInsufficientBalance) && (
+              <div style={{
+                fontSize: '0.78rem',
+                color: '#f59e0b',
+                background: 'rgba(245, 158, 11, 0.08)',
+                border: '1px solid rgba(245, 158, 11, 0.25)',
+                borderRadius: '8px',
+                padding: '10px',
+                lineHeight: 1.45,
+              }}>
+                {isNotExecutable
+                  ? (notExecutableReason
+                     || 'This pair has no liquidity pool on Soyara DEX. The rate shown is a reference estimate and cannot be executed.')
+                  : `Your wallet does not hold enough ${proposal.tokenIn} for this ${proposal.amountIn} ${proposal.tokenIn} trade. Ask for a smaller amount and a fresh quote.`}
+              </div>
+            )}
+
+            {/* An ERC-20 trade that is already approved settles from the agent
+                wallet through AgentExecutor, so no wallet popup appears at this
+                step. Saying so prevents "nothing happened" confusion. */}
+            {!needsApproval && !isCheckingAllowance && !hasInsufficientBalance && !isNotExecutable && (
+              <div style={{
+                fontSize: '0.75rem',
+                color: textMuted,
+                lineHeight: 1.45,
+                textAlign: 'center',
+                padding: '0 4px',
+              }}>
+                Settlement runs from the agent wallet via <strong>AgentExecutor</strong> — your
+                wallet won&apos;t prompt for this step. Tokens arrive directly at your address.
+              </div>
+            )}
 
             {executionError && (
               <div style={{

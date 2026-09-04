@@ -64,6 +64,25 @@ const tokenLogo = (symbol) => (
   `https://ui-avatars.com/api/?name=${encodeURIComponent(symbol || 'T')}&background=0f172a&color=fff&size=128`
 );
 
+/**
+ * Format the auto-filled counterpart amount for an add-liquidity deposit.
+ *
+ * `.toFixed(6)` was wrong in two ways: it ROUNDS, so the paired amount could come
+ * out slightly above what the pool ratio implies (and above the user's balance),
+ * and on a pair with a large price difference a small deposit rounded all the way
+ * to "0.000000" — a zero-amount deposit that just reverts. This keeps up to 8
+ * decimal places and always truncates, so the filled amount is never more than
+ * the ratio actually calls for.
+ */
+function formatPairedAmount(value, decimals) {
+  if (!Number.isFinite(value) || value <= 0) return '';
+  const places = Math.min(decimals || 18, 8);
+  const [intPart, fracPart = ''] = value.toFixed(places + 2).split('.');
+  let out = `${intPart}.${fracPart.slice(0, places)}`;
+  out = out.replace(/0+$/, '').replace(/\.$/, '');
+  return out || '0';
+}
+
 export default function PoolPage() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId() || DEFAULT_CHAIN;
@@ -820,14 +839,14 @@ export default function PoolPage() {
     if (!reserveRatio || !amountA) return;
     const numericA = parseFloat(amountA);
     if (!Number.isFinite(numericA) || numericA <= 0) return;
-    setAmountB(((numericA * reserveRatio.b) / reserveRatio.a).toFixed(6));
+    setAmountB(formatPairedAmount((numericA * reserveRatio.b) / reserveRatio.a, selectedPair?.tokenB.decimals));
   }, [amountA, reserveRatio]);
 
   const syncFromB = useCallback(() => {
     if (!reserveRatio || !amountB) return;
     const numericB = parseFloat(amountB);
     if (!Number.isFinite(numericB) || numericB <= 0) return;
-    setAmountA(((numericB * reserveRatio.a) / reserveRatio.b).toFixed(6));
+    setAmountA(formatPairedAmount((numericB * reserveRatio.a) / reserveRatio.b, selectedPair?.tokenA.decimals));
   }, [amountB, reserveRatio]);
 
   const handleAmountAChange = (val) => {
@@ -835,7 +854,7 @@ export default function PoolPage() {
     if (reserveRatio) {
       const numericA = parseFloat(val);
       if (Number.isFinite(numericA) && numericA > 0) {
-        setAmountB(((numericA * reserveRatio.b) / reserveRatio.a).toFixed(6));
+        setAmountB(formatPairedAmount((numericA * reserveRatio.b) / reserveRatio.a, selectedPair?.tokenB.decimals));
       } else if (val === '') {
         setAmountB('');
       }
@@ -847,7 +866,7 @@ export default function PoolPage() {
     if (reserveRatio) {
       const numericB = parseFloat(val);
       if (Number.isFinite(numericB) && numericB > 0) {
-        setAmountA(((numericB * reserveRatio.a) / reserveRatio.b).toFixed(6));
+        setAmountA(formatPairedAmount((numericB * reserveRatio.a) / reserveRatio.b, selectedPair?.tokenA.decimals));
       } else if (val === '') {
         setAmountA('');
       }
@@ -1218,13 +1237,40 @@ export default function PoolPage() {
                     </div>
                     <div className={styles.statCard}>
                       <span>Pool Ratio</span>
-                      <strong>{reserveRatio ? `1 ${selectedPair.tokenA.symbol} = ${compactNumber(reserveRatio.b / reserveRatio.a, 4)} ${selectedPair.tokenB.symbol}` : 'First LP Set'}</strong>
+                      <strong>{reserveRatio ? `1 ${selectedPair.tokenA.symbol} = ${compactNumber(reserveRatio.b / reserveRatio.a, 6)} ${selectedPair.tokenB.symbol}` : 'First LP Set'}</strong>
                     </div>
                     <div className={styles.statCard}>
                       <span>{version === 'v3' ? 'V3 Positions' : 'Your V2 LP'}</span>
                       <strong>{version === 'v3' ? `${pairState.v3Positions.length} Positions` : compactNumber(formatBigIntBalance(pairState.lpBalance, 18, 4))}</strong>
                     </div>
                   </div>
+
+                  {version === 'v2' && reserveRatio && (
+                    <div style={{
+                      margin: '0.6rem 0 0.2rem',
+                      padding: '0.7rem 0.85rem',
+                      borderRadius: 10,
+                      fontSize: '0.76rem',
+                      lineHeight: 1.5,
+                      background: 'rgba(56,189,248,0.07)',
+                      border: '1px solid rgba(56,189,248,0.22)',
+                    }}>
+                      <div style={{ fontWeight: 700, marginBottom: 3 }}>
+                        Pool holds {compactNumber(reserveRatio.a, 2)} {selectedPair.tokenA.symbol} ·{' '}
+                        {compactNumber(reserveRatio.b, 2)} {selectedPair.tokenB.symbol}
+                      </div>
+                      <div style={{ opacity: 0.75 }}>
+                        1 {selectedPair.tokenA.symbol} = {compactNumber(reserveRatio.b / reserveRatio.a, 6)} {selectedPair.tokenB.symbol}
+                        {'  ·  '}
+                        1 {selectedPair.tokenB.symbol} = {compactNumber(reserveRatio.a / reserveRatio.b, 6)} {selectedPair.tokenA.symbol}
+                      </div>
+                      <div style={{ opacity: 0.62, marginTop: 5 }}>
+                        This is the pool&apos;s live composition, not a 1:1 market price — trading moves it
+                        away from wherever it was seeded. A V2 deposit must match this ratio exactly, so the
+                        second amount is filled in for you; anything above it would be refunded by the router.
+                      </div>
+                    </div>
+                  )}
 
                   {version === 'v3' && (
                     <>

@@ -4,10 +4,17 @@
 //  100% Native Web3 & Client-Side Intelligence — Zero Third-Party API Keys
 // ============================================================================
 
-import { parseEther, parseUnits, formatEther, formatUnits, keccak256, encodeAbiParameters, parseAbiParameters } from 'viem';
+import { parseEther, parseUnits, formatEther, formatUnits, keccak256, encodeAbiParameters, parseAbiParameters, createPublicClient, http } from 'viem';
 import { CONTRACT_ADDRESSES, INTELLIGENT_CONTRACTS } from '../../constants/addresses.js';
 import { TOKEN_LIST, findTokenByAddress } from '../../constants/tokens.js';
 import { buildProgram } from '../../utils/programBuilder.js';
+import { quoteBestRoute } from '../../lib/dexQuote.js';
+
+// ── Live on-chain quoting ───────────────────────────────────────────────────
+// Shared with /ai via lib/dexQuote.js: V3 only through the real Quoter, V2 via
+// exact constant-product math, both net of the entrypoint fee. The quote feeds
+// minAmountOut, so it must be a lower bound on real output — an optimistic
+// quote makes settlement revert with AGGFlowEntrypoint_InsufficientAmountAfterFees().
 
 // ── Agent Metadata ─────────────────────────────────────────────────────────
 
@@ -56,7 +63,6 @@ export function resolveToken(symbolOrAddress) {
   const found = tokens.find(
     t => t.symbol.toUpperCase() === clean || 
          t.address.toLowerCase() === clean.toLowerCase() ||
-         (clean === 'ETH' && t.symbol === 'GEN') ||
          (clean === 'GEN' && t.isNative)
   );
 
@@ -96,7 +102,7 @@ export function computeTradeHash(user, tokenIn, tokenOut, amountIn, minAmountOut
 // ── Agent 1: Intent & Strategy Parsing (Client-Side NLP) ────────────────────
 
 export class IntentAgent {
-  static parse(query) {
+  static parse(query, config = {}) {
     const text = (query || '').toLowerCase();
     
     // Default Fallback Intent
@@ -104,7 +110,9 @@ export class IntentAgent {
     let tokenIn = 'USDC';
     let tokenOut = 'WGEN';
     let amountIn = '100';
-    let slippageBps = 30; // 0.30%
+    // 1% by default, matching /api/agent-v2's DEFAULT_SLIPPAGE_BPS. 0.3% could
+    // not survive the ~50s enforced-consensus window on these thin pools.
+    let slippageBps = 100; // 1.00%
     let mode = 'standard';
 
     // 1. Action detection
@@ -124,29 +132,48 @@ export class IntentAgent {
     }
 
     // 2. Amount extraction
-    const amountMatch = text.match(/(\d+(\.\d+)?)\s*(usdc|usdt|wgen|gen|wbtc|eth|fswp)?/i);
+    // Strip the slippage percentage before reading the trade size, otherwise
+    // "swap 5 USDC with 0.3% slippage" can pick up 0.3 as the amount.
+    const amountText = text.replace(/\d+(\.\d+)?\s*%/g, ' ');
+    const amountMatch = amountText.match(/(\d+(\.\d+)?)\s*(usdc|usdt|wgen|gen|wbtc|eth|fswp)?/i);
     if (amountMatch && amountMatch[1]) {
       amountIn = amountMatch[1];
     }
 
     // 3. Token extraction
-    const tokensFound = [];
+    // Two things matter here, and both were wrong before:
+    //
+    //  1. ORDER BY POSITION IN THE SENTENCE, not by position in `supported`.
+    //     Scanning the list in a fixed order made "swap 0.1 GEN to USDC" come
+    //     back as tokenIn=USDC / tokenOut=GEN — a proposal to buy the token the
+    //     user asked to sell.
+    //  2. MATCH ON WORD BOUNDARIES, not substrings. `"wgen".includes("gen")` is
+    //     true, so every WGEN trade also matched GEN and corrupted the ordering.
+    //
+    // (`\bgen\b` cannot match inside "wgen" — both characters are word
+    // characters, so there is no boundary between them.)
     const supported = ['USDC', 'USDT', 'WGEN', 'GEN', 'WBTC', 'ETH', 'FSWP'];
-    for (const t of supported) {
-      if (text.includes(t.toLowerCase())) {
-        tokensFound.push(t);
-      }
-    }
+    const tokensFound = supported
+      .map((sym) => {
+        const m = new RegExp(`\\b${sym.toLowerCase()}\\b`, 'i').exec(text);
+        return m ? { sym, at: m.index } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.at - b.at)
+      .map((f) => f.sym);
 
     if (tokensFound.length >= 2) {
-      tokenIn = tokensFound[0] === 'ETH' ? 'GEN' : tokensFound[0];
-      tokenOut = tokensFound[1] === 'ETH' ? 'GEN' : tokensFound[1];
+      // ETH is a distinct ERC-20 on Bradbury (0x0F56b4E7...), NOT native GEN.
+      // Rewriting it to GEN meant "1 eth to usdc" was silently parsed — and
+      // quoted, validated and offered for execution — as a GEN trade.
+      tokenIn = tokensFound[0];
+      tokenOut = tokensFound[1];
     } else if (tokensFound.length === 1) {
       if (text.includes('to ' + tokensFound[0].toLowerCase()) || text.includes('for ' + tokensFound[0].toLowerCase()) || text.includes('buy ' + tokensFound[0].toLowerCase())) {
-        tokenOut = tokensFound[0] === 'ETH' ? 'GEN' : tokensFound[0];
+        tokenOut = tokensFound[0];
         tokenIn = tokenOut === 'USDC' ? 'WGEN' : 'USDC';
       } else {
-        tokenIn = tokensFound[0] === 'ETH' ? 'GEN' : tokensFound[0];
+        tokenIn = tokensFound[0];
         tokenOut = tokenIn === 'USDC' ? 'WGEN' : 'USDC';
       }
     }
@@ -157,6 +184,28 @@ export class IntentAgent {
       slippageBps = Math.round(parseFloat(slippageMatch[1]) * 100);
     }
 
+    // Playground overrides. These are real controls, not display settings: the
+    // slippage the dev picks is the slippage validated by the IC and enforced
+    // on-chain at settlement.
+    if (config.slippageBps != null && !slippageMatch) {
+      slippageBps = Number(config.slippageBps);
+    }
+
+    // Swaps ALWAYS take the aggregator's best route.
+    //
+    // Soyara is an aggregator: AGGFlowEntrypoint exists to compare venues and
+    // fill wherever the output is best, so pinning V2 or V3 can only ever match
+    // or worsen the fill. It also breaks outright — forcing V3 on a pair whose
+    // V3 pool cannot fill the size makes quoteBestRoute return null, which drops
+    // the request into the reference-price fallback and produces a quote with no
+    // liquidity behind it. The venue is an OUTCOME to display, never an input.
+    //
+    // A deposit is different: it targets one specific pool, so liquidity actions
+    // may still carry a venue.
+    const venuePreference = action === 'ADD_LIQUIDITY' || action === 'REMOVE_LIQUIDITY'
+      ? (/\bv3\b|\bconcentrated\b/.test(text) ? 'v3' : config.venuePreference || 'v2')
+      : 'best';
+
     return {
       action,
       tokenInSymbol: tokenIn,
@@ -164,6 +213,7 @@ export class IntentAgent {
       amountIn,
       slippageBps,
       mode,
+      venuePreference,
       rawQuery: query
     };
   }
@@ -172,49 +222,50 @@ export class IntentAgent {
 // ── Agent 2: Routing & Quantitative Simulation ──────────────────────────────
 
 export class RouterMathAgent {
-  static simulateRoute(intent) {
+  static async simulateRoute(intent) {
     const tokenIn = resolveToken(intent.tokenInSymbol);
     const tokenOut = resolveToken(intent.tokenOutSymbol);
     const amountInNum = parseFloat(intent.amountIn) || 100;
 
-    // Synthetic Bradbury testnet rate curves
-    const rates = {
-      'USDC-WGEN': 1.982,
-      'WGEN-USDC': 0.504,
-      'USDC-USDT': 0.9998,
-      'USDT-USDC': 1.0001,
-      'WGEN-GEN': 1.000,
-      'GEN-WGEN': 1.000,
-      'WBTC-USDC': 94500.0,
-      'USDC-WBTC': 0.00001058,
-      'ETH-USDC': 2850.0,
-      'USDC-ETH': 0.0003508
-    };
+    const wgenAddress = CONTRACT_ADDRESSES[4221].wgen;
+    const tokenInAddr = tokenIn.isNative ? wgenAddress : tokenIn.address;
+    const tokenOutAddr = tokenOut.isNative ? wgenAddress : tokenOut.address;
+    const amountInWei = parseUnits(intent.amountIn.toString(), tokenIn.decimals);
 
-    const pairKey = `${tokenIn.symbol}-${tokenOut.symbol}`;
-    const reverseKey = `${tokenOut.symbol}-${tokenIn.symbol}`;
-    const baseRate = rates[pairKey] || (rates[reverseKey] ? 1 / rates[reverseKey] : 1.5);
+    // Venue preference is a real routing constraint from the playground, not a
+    // label — 'v2'/'v3' restricts which pool may fill the order.
+    const venue = intent.venuePreference || 'best';
+    const routed = await quoteBestRoute(tokenInAddr, tokenOutAddr, amountInWei, venue).catch(() => null);
+    const v3 = routed?.v3 || null;
+    const v2 = routed?.v2 || null;
+    const chosen = routed;
 
-    // Route 1: V3 Concentrated Pool (0.05% tier)
-    const v3ExpectedOut = amountInNum * baseRate * 0.9995;
-    const v3Impact = Math.min(0.01 + (amountInNum / 100000) * 0.1, 1.2);
+    let expectedOutNum, priceImpact, chosenRoute, v3Quote, v2Quote, isLiveQuote;
 
-    // Route 2: V2 Classic AMM Pool (0.30% tier)
-    const v2ExpectedOut = amountInNum * baseRate * 0.997;
-    const v2Impact = Math.min(0.05 + (amountInNum / 50000) * 0.2, 2.5);
-
-    const isV3Better = v3ExpectedOut >= v2ExpectedOut;
-    const chosenRoute = isV3Better ? 'V3 Concentrated Liquidity (0.05% Fee Tier)' : 'V2 Constant Product Pool (0.30% Fee Tier)';
-    const expectedOutNum = isV3Better ? v3ExpectedOut : v2ExpectedOut;
-    const priceImpact = isV3Better ? v3Impact : v2Impact;
+    if (chosen) {
+      expectedOutNum = parseFloat(formatUnits(chosen.amountOutRaw, tokenOut.decimals));
+      priceImpact = Math.min(99.99, chosen.priceImpactPct);
+      chosenRoute = chosen.dex === 'v3'
+        ? `V3 Concentrated Liquidity (${(chosen.feeTier / 10000).toFixed(2)}% Fee Tier)`
+        : 'V2 Constant Product Pool (0.30% Fee Tier)';
+      v3Quote = v3 ? formatUnits(v3.amountOutRaw, tokenOut.decimals) : '0';
+      v2Quote = v2 ? formatUnits(v2.amountOutRaw, tokenOut.decimals) : '0';
+      isLiveQuote = true;
+    } else {
+      // No live pool for this pair yet — clearly-labeled rough estimate only.
+      const baseRate = 1.0;
+      expectedOutNum = amountInNum * baseRate * 0.997;
+      priceImpact = 0;
+      chosenRoute = 'No live pool found — rough 1:1 estimate';
+      v3Quote = expectedOutNum.toFixed(4);
+      v2Quote = expectedOutNum.toFixed(4);
+      isLiveQuote = false;
+    }
 
     // Minimum output with slippage
     const slippagePct = (intent.slippageBps || 30) / 10000;
     const minAmountOutNum = expectedOutNum * (1 - slippagePct);
-
-    // Format raw wei units (18 decimals)
-    const amountInWei = parseUnits(intent.amountIn.toString(), tokenIn.decimals).toString();
-    const minAmountOutWei = parseUnits(minAmountOutNum.toFixed(6), tokenOut.decimals).toString();
+    const minAmountOutWei = parseUnits(minAmountOutNum.toFixed(Math.min(tokenOut.decimals, 6)), tokenOut.decimals).toString();
 
     return {
       tokenIn,
@@ -222,14 +273,15 @@ export class RouterMathAgent {
       amountInNum,
       expectedOutNum,
       minAmountOutNum,
-      amountInWei,
+      amountInWei: amountInWei.toString(),
       minAmountOutWei,
       priceImpact: priceImpact.toFixed(3) + '%',
       chosenRoute,
-      v3Quote: v3ExpectedOut.toFixed(4),
-      v2Quote: v2ExpectedOut.toFixed(4),
-      savingsVsV2: ((v3ExpectedOut - v2ExpectedOut) / v2ExpectedOut * 100).toFixed(2) + '%',
-      executionPath: [tokenIn.symbol, tokenOut.symbol]
+      v3Quote: parseFloat(v3Quote).toFixed(4),
+      v2Quote: parseFloat(v2Quote).toFixed(4),
+      savingsVsV2: v2 && parseFloat(v2Quote) > 0 ? (((parseFloat(v3Quote) - parseFloat(v2Quote)) / parseFloat(v2Quote)) * 100).toFixed(2) + '%' : 'N/A',
+      executionPath: [tokenIn.symbol, tokenOut.symbol],
+      isLiveQuote,
     };
   }
 }
@@ -237,9 +289,19 @@ export class RouterMathAgent {
 // ── Agent 3: Risk & GenLayer Consensus Validator ────────────────────────────
 
 export class RiskValidatorAgent {
-  static async validate(intent, route, userAddress) {
-    const entrypoint = CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3';
-    const deadline = Math.floor(Date.now() / 1000) + 1800; // 30 minutes
+  /**
+   * @param onProgress optional callback invoked while a consensus round is in
+   *   flight. The swarm generator cannot yield from inside this function, so
+   *   progress is pushed to the UI directly — otherwise /a2a sat silent for the
+   *   whole round and looked frozen.
+   */
+  static async validate(intent, route, userAddress, onProgress = null) {
+    const entrypoint = CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0x95feE6Cb918Ed9C621E36082EE8D998873031EaA';
+    // Quantised to a 10-minute boundary so identical trades share a
+    // proposal_id and can reuse an existing on-chain verdict instead of paying
+    // for another consensus round. See pages/api/agent-v2.js for the detail.
+    const DEADLINE_BUCKET = 600;
+    const deadline = Math.ceil((Math.floor(Date.now() / 1000) + 1800) / DEADLINE_BUCKET) * DEADLINE_BUCKET;
 
     const proposal = {
       action: intent.action === 'ADD_LIQUIDITY' ? 'ADD_LIQUIDITY' : 'SWAP',
@@ -268,6 +330,39 @@ export class RiskValidatorAgent {
       proposal.deadline
     );
 
+    // One payload for both the initial submission and any retry.
+    //
+    // Liquidity actions are validated by a different IC method that expects
+    // tokenA/tokenB and amountA/amountB. Sending only the swap-shaped
+    // tokenIn/tokenOut left those undefined, which resolved to the zero address
+    // for BOTH sides and got every LP proposal rejected as
+    // "tokenA and tokenB cannot be the same".
+    const isLiquidity = proposal.action === 'ADD_LIQUIDITY' || proposal.action === 'REMOVE_LIQUIDITY';
+    const validatePayload = {
+      action: proposal.action,
+      user: userAddress,
+      tokenIn: proposal.tokenIn,
+      tokenOut: proposal.tokenOut,
+      // RAW units explicitly: `amountIn` is treated as a human-readable amount
+      // and re-scaled by token decimals, so passing wei there would multiply by
+      // 1e18 a second time.
+      amountInRaw: proposal.amountIn,
+      minAmountOutRaw: proposal.minAmountOut,
+      slippageBps: proposal.slippageBps,
+      router: proposal.router,
+      deadline: proposal.deadline,
+      extraData: proposal.extraData,
+      ...(isLiquidity ? {
+        tokenA: route.tokenIn.address,
+        tokenB: route.tokenOut.address,
+        // Deposit the quoted pair amounts, so the two sides are balanced at the
+        // pool's current price.
+        amountARaw: route.amountInWei,
+        amountBRaw: route.minAmountOutWei,
+        model: route.chosenRoute?.includes('V3') ? 'v3' : 'v2',
+      } : {}),
+    };
+
     // Call live GenLayer Intelligent Contract via API
     let genlayerResult = null;
     try {
@@ -275,15 +370,7 @@ export class RiskValidatorAgent {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: proposal.action,
-          tokenIn: proposal.tokenIn,
-          tokenOut: proposal.tokenOut,
-          amountIn: proposal.amountIn,
-          minAmountOut: proposal.minAmountOut,
-          slippageBps: proposal.slippageBps,
-          router: proposal.router,
-          deadline: proposal.deadline,
-          extraData: proposal.extraData
+          ...validatePayload
         })
       });
 
@@ -304,14 +391,93 @@ export class RiskValidatorAgent {
       };
     }
 
+    // A slow consensus round is NOT a rejection — poll the same tx (never resubmits)
+    // for a bounded window before treating it as approved/rejected. GenVM rounds on
+    // Bradbury testnet can occasionally take a while under load.
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let pollAttempts = 0;
+    while (genlayerResult?.pending && genlayerResult?.tx_hash && pollAttempts < 12) {
+      // Fast-poll the first few attempts (common case resolves quickly), then back off.
+      await sleep(pollAttempts < 6 ? 2000 : 5000);
+      pollAttempts++;
+      if (onProgress) {
+        onProgress(
+          `⏳ GenVM round in flight — check ${pollAttempts}/12. Validators have not returned a verdict yet; this is not a rejection.`,
+          { statusName: genlayerResult?.statusName || null, txHash: genlayerResult?.tx_hash || null, retry: false }
+        );
+      }
+      try {
+        const pollRes = await fetch('/api/genlayer-validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          // Final attempt also clears the round if validators never voted, so
+          // idle txs don't pile up on the agent account.
+          body: JSON.stringify({ checkTxHash: genlayerResult.tx_hash, proposalId: genlayerResult.proposal_id || null, finalizeIfStuck: pollAttempts >= 12 }),
+        });
+        if (pollRes.ok) genlayerResult = await pollRes.json();
+      } catch {
+        // keep the last known genlayerResult and retry on the next loop iteration
+      }
+    }
+
+    // If the round finished without a majority (UNDETERMINED / LEADER_TIMEOUT /
+    // VALIDATORS_TIMEOUT) that is a validator-set condition, not a verdict on the
+    // trade — run exactly one fresh round rather than reporting a false rejection.
+    if (genlayerResult?.retryable) {
+      if (onProgress) {
+        onProgress(
+          '🔁 The validator set did not reach a majority. Submitting one fresh consensus round — your trade was not rejected.',
+          { retry: true, statusName: null }
+        );
+      }
+      try {
+        const retryRes = await fetch('/api/genlayer-validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...validatePayload,
+          }),
+        });
+        if (retryRes.ok) genlayerResult = await retryRes.json();
+
+        let retryPolls = 0;
+        while (genlayerResult?.pending && genlayerResult?.tx_hash && retryPolls < 12) {
+          await sleep(retryPolls < 6 ? 2000 : 5000);
+          retryPolls++;
+          if (onProgress) {
+            onProgress(
+              `🔁 First round ended without a majority — running a fresh round, check ${retryPolls}/12.`,
+              { statusName: genlayerResult?.statusName || null, txHash: genlayerResult?.tx_hash || null, retry: true }
+            );
+          }
+          try {
+            const pollRes = await fetch('/api/genlayer-validate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ checkTxHash: genlayerResult.tx_hash, proposalId: genlayerResult.proposal_id || null, finalizeIfStuck: retryPolls >= 12 }),
+            });
+            if (pollRes.ok) genlayerResult = await pollRes.json();
+          } catch {
+            // keep last known result
+          }
+        }
+      } catch {
+        // keep the undecided result — surfaced below as retryable, not rejected
+      }
+    }
+
     // Risk scoring
     const isSlippageSafe = intent.slippageBps <= 300;
     const isWhitelisted = Boolean(route.tokenIn.address && route.tokenOut.address);
+    // Treat "still pending" and "round ended undecided" alike in the UI: both mean
+    // the network has not rendered a verdict, so neither should read as rejected.
+    const isPending = Boolean(genlayerResult?.pending || genlayerResult?.retryable);
 
     return {
       proposal,
       tradeHash,
       isApproved: Boolean(genlayerResult?.approved && isSlippageSafe),
+      isPending,
       reason: genlayerResult?.reason || (isSlippageSafe ? 'All validation checks passed' : 'Slippage exceeds 300 bps cap'),
       proposalId: genlayerResult?.proposal_id || ('prop_' + tradeHash.slice(2, 10)),
       consensusMode: 'Optimistic Democracy (GenVM Quorum)',
@@ -320,7 +486,13 @@ export class RiskValidatorAgent {
         { name: 'Token Whitelist Check', passed: isWhitelisted, detail: `${route.tokenIn.symbol} & ${route.tokenOut.symbol} verified` },
         { name: 'Slippage Cap Check', passed: isSlippageSafe, detail: `${(intent.slippageBps / 100).toFixed(2)}% <= 3.00% max cap` },
         { name: 'Router Whitelist Check', passed: true, detail: `Router ${entrypoint.slice(0, 8)}... is verified` },
-        { name: 'GenVM AI Coherence Consensus', passed: Boolean(genlayerResult?.approved), detail: 'Equivalence principle verified across validator nodes' },
+        {
+          name: 'GenVM AI Coherence Consensus',
+          passed: Boolean(genlayerResult?.approved),
+          detail: isPending
+            ? `Still awaiting consensus (tx ${genlayerResult?.tx_hash?.slice(0, 10)}...) — not rejected`
+            : 'Equivalence principle verified across validator nodes'
+        },
         { name: 'One-Time Hash Binding', passed: true, detail: `Bound to ${tradeHash.slice(0, 10)}...` }
       ]
     };
@@ -379,7 +551,7 @@ export class DevInspectorAgent {
 
 // ── Swarm Orchestrator (A2A Message Dialogue Generator) ──────────────────────
 
-export async function* orchestrateSwarm(userPrompt, userAddress) {
+export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
   // Step 1: Intent Agent Wakes Up
   yield {
     agent: AGENT_REGISTRY.intent,
@@ -388,8 +560,10 @@ export async function* orchestrateSwarm(userPrompt, userAddress) {
     status: 'working'
   };
 
-  const intent = IntentAgent.parse(userPrompt);
-  await new Promise(r => setTimeout(r, 400));
+  // Cosmetic pacing delays removed — they added ~1.5s of pure wait per run.
+  // A 0ms yield is still enough for React to paint each handoff.
+  const yieldFrame = () => new Promise((r) => setTimeout(r, 0));
+  const intent = IntentAgent.parse(userPrompt, config);
 
   yield {
     agent: AGENT_REGISTRY.intent,
@@ -407,14 +581,33 @@ export async function* orchestrateSwarm(userPrompt, userAddress) {
     status: 'working'
   };
 
-  await new Promise(r => setTimeout(r, 500));
-  const route = RouterMathAgent.simulateRoute(intent);
+  await yieldFrame();
+  const route = await RouterMathAgent.simulateRoute(intent);
+
+  // A real abort, not a warning: if the routed impact exceeds the ceiling the
+  // dev configured, the swarm stops here and never asks for consensus.
+  const maxImpact = config.maxImpactPct != null ? Number(config.maxImpactPct) : null;
+  const routedImpact = typeof route.priceImpact === 'number' ? route.priceImpact : parseFloat(route.priceImpact);
+  if (maxImpact != null && Number.isFinite(routedImpact) && routedImpact > maxImpact) {
+    yield {
+      agent: AGENT_REGISTRY.router,
+      type: 'ROUTE_REJECTED',
+      data: { route, maxImpact, routedImpact },
+      text: `⛔ **Halted by your policy.** Routed price impact **${routedImpact.toFixed(2)}%** exceeds the **${maxImpact}%** ceiling set on the Routing agent. No consensus round was requested and no funds were touched.`,
+      status: 'error'
+    };
+    return;
+  }
 
   yield {
     agent: AGENT_REGISTRY.router,
     type: 'ROUTE_SIMULATED',
     data: route,
-    text: `Simulation complete! **${route.chosenRoute}** selected. Estimated Output: **${route.expectedOutNum.toFixed(4)} ${route.tokenOut.symbol}** (${route.savingsVsV2} better output vs alternative). Price impact: ${route.priceImpact}. Handing off proposal to **${AGENT_REGISTRY.risk.name}**...`,
+    text: intent.action === 'ADD_LIQUIDITY'
+      // A deposit is not a trade: describing it with a swap "output" made an
+      // add-liquidity request read as though the swarm were selling one side.
+      ? `Pool located: **${route.tokenIn.symbol}/${route.tokenOut.symbol}** on ${route.chosenRoute}. Deposit will be paired at the pool's live ratio — the second amount is derived from reserves, and any excess is refunded by the router. Handing off to **${AGENT_REGISTRY.risk.name}**...`
+      : `Simulation complete! **${route.chosenRoute}** selected. Estimated Output: **${route.expectedOutNum.toFixed(4)} ${route.tokenOut.symbol}** ${route.savingsVsV2 && !String(route.savingsVsV2).startsWith('-100') ? `(${route.savingsVsV2} better output vs alternative)` : '(only one venue could fill this size)'}. Price impact: ${route.priceImpact}. Handing off proposal to **${AGENT_REGISTRY.risk.name}**...`,
     status: 'complete'
   };
 
@@ -426,8 +619,7 @@ export async function* orchestrateSwarm(userPrompt, userAddress) {
     status: 'working'
   };
 
-  const risk = await RiskValidatorAgent.validate(intent, route, userAddress);
-  await new Promise(r => setTimeout(r, 600));
+  const risk = await RiskValidatorAgent.validate(intent, route, userAddress, config.onProgress || null);
 
   yield {
     agent: AGENT_REGISTRY.risk,
@@ -435,8 +627,13 @@ export async function* orchestrateSwarm(userPrompt, userAddress) {
     data: risk,
     text: risk.isApproved
       ? `✅ **GenLayer Consensus Reached!** All ${risk.checks.length} guardrails passed. One-time cryptographic trade hash bound: \`${risk.tradeHash.slice(0, 14)}...\`. Requesting calldata dissection from **${AGENT_REGISTRY.dev.name}**...`
-      : `❌ **GenLayer Validation Rejected**: ${risk.reason}. Fail-closed security activated.`,
-    status: risk.isApproved ? 'complete' : 'error'
+      : risk.isPending
+        // The round has not returned a verdict yet (still in flight, or it ended
+        // without a validator majority). That is a network condition — calling it
+        // "Rejected" here misreports a trade the validator never actually refused.
+        ? `⏳ **Awaiting GenVM Consensus** — the validator round has not returned a verdict yet. This is not a rejection. ${risk.reason}`
+        : `❌ **GenLayer Validation Rejected**: ${risk.reason}. Fail-closed security activated.`,
+    status: risk.isApproved ? 'complete' : risk.isPending ? 'working' : 'error'
   };
 
   // Step 4: Dev Inspector Agent Dissects Calldata & Security
@@ -447,7 +644,6 @@ export async function* orchestrateSwarm(userPrompt, userAddress) {
     status: 'working'
   };
 
-  await new Promise(r => setTimeout(r, 450));
   const devInspection = DevInspectorAgent.inspect(intent, route, risk);
 
   yield {
@@ -468,7 +664,9 @@ export async function* orchestrateSwarm(userPrompt, userAddress) {
       risk,
       devInspection
     },
-    text: `🎉 **Multi-Agent Swarm Consensual Agreement Ready!** You can now execute this trade with one-click non-custodial settlement.`,
+    text: intent.action === 'ADD_LIQUIDITY'
+      ? `🎉 **Swarm agreement ready.** Execute to deposit into the **${route.tokenIn.symbol}/${route.tokenOut.symbol}** pool through the GenLayer-gated one-time approval.`
+      : `🎉 **Multi-Agent Swarm Consensual Agreement Ready!** You can now execute this trade with one-click non-custodial settlement.`,
     status: 'ready'
   };
 }

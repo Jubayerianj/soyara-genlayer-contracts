@@ -2,19 +2,20 @@
 import React, { useState } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
-import { ArrowLeft, Terminal, ShieldAlert, Zap } from 'lucide-react';
+import { ArrowLeft, Terminal, ShieldAlert, Zap, Boxes } from 'lucide-react';
 import AgentStatusPills from '../../components/A2A/AgentStatusPills';
 import SwarmWarRoom from '../../components/A2A/SwarmWarRoom';
 import DevSecuritySandbox from '../../components/A2A/DevSecuritySandbox';
+import AgentPlayground from '../../components/A2A/AgentPlayground';
 import styles from '../../styles/A2A.module.css';
 
 export default function A2ADevPage() {
-  const [tab, setTab] = useState('sandbox'); // 'sandbox' | 'swarm'
+  const [tab, setTab] = useState('studio'); // 'studio' | 'sandbox' | 'swarm'
 
   return (
     <>
       <Head>
-        <title>A2A Dev Security Lab | Soyara DEX</title>
+        <title>A2A Agent Studio | Soyara DEX</title>
       </Head>
 
       <main className={styles.container}>
@@ -25,11 +26,23 @@ export default function A2ADevPage() {
               <ArrowLeft size={13} /> Portal
             </Link>
             <h1 style={{ fontSize: '1.35rem', fontWeight: 800, margin: 0, color: 'var(--text-main, #ffffff)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Terminal size={20} color="var(--blue-primary, #0284c7)" /> Developer Security Lab
+              <Terminal size={20} color="var(--blue-primary, #0284c7)" /> A2A Agent Studio
             </h1>
           </div>
 
           <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+            <button
+              type="button"
+              onClick={() => setTab('studio')}
+              className={styles.chip}
+              style={{
+                borderColor: tab === 'studio' ? 'var(--blue-primary, #0284c7)' : undefined,
+                color: tab === 'studio' ? 'var(--blue-primary, #0284c7)' : undefined,
+                fontWeight: 600
+              }}
+            >
+              <Boxes size={13} style={{ verticalAlign: '-2px', marginRight: 3 }} /> Agent Studio
+            </button>
             <button
               type="button"
               onClick={() => setTab('sandbox')}
@@ -64,7 +77,9 @@ export default function A2ADevPage() {
         <AgentStatusPills />
 
         {/* Tab Content */}
-        {tab === 'sandbox' ? <DevSecuritySandbox /> : <SwarmWarRoom mode="dev" />}
+        {tab === 'studio' && <AgentPlayground />}
+        {tab === 'sandbox' && <DevSecuritySandbox />}
+        {tab === 'swarm' && <SwarmWarRoom mode="dev" />}
       </main>
     </>
   );

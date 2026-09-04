@@ -121,8 +121,13 @@ contract AgentExecutor is AgentExecutorBase {
         if (amountIn == 0)          revert ZeroAmount();
         if (slippageBps > maxSlippageBps) revert SlippageExceeded(slippageBps, maxSlippageBps);
 
+        // address(0) denotes the NATIVE asset, which is not an ERC-20 and so is
+        // never present in the ERC-20 whitelist. Both sides must exempt it, or
+        // the swap is unexecutable: previously only tokenIn was exempted, so
+        // every swap OUT to native reverted with TokenNotApproved(0x0) before
+        // any other check could run.
         if (tokenIn  != address(0) && !approvedTokens[tokenIn])  revert TokenNotApproved(tokenIn);
-        if (!approvedTokens[tokenOut])                            revert TokenNotApproved(tokenOut);
+        if (tokenOut != address(0) && !approvedTokens[tokenOut]) revert TokenNotApproved(tokenOut);
 
         // ── 2. One-Time Approval Check ────────────────────────────────────────
         bytes32 tradeHash = TradeHashLib.swapHash(

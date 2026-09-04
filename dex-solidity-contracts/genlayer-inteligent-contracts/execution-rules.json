@@ -36,16 +36,19 @@
   },
 
   "approved_routers": {
-    "AGGFlowEntrypoint": "0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3",
-    "AGGFlowEntrypoint_Alt": "0xF69E64804000d28aA695eB5c594B996100fb3B49",
-    "AGGFlowRouter":     "0xDF474006aa807598B616500d146FfF661d644138",
-    "V2Router":          "0xF456737D17C2Bbb348fd4F7D1b000D62A46FB3b5",
-    "V3Router":          "0xdf69970B2fE416339187aA41D39882e864984CE9",
-    "V3PositionManager": "0x779380011B5F2aB40985D810B5c7641539beD870"
+    "AGGFlowEntrypoint":        "0x95feE6Cb918Ed9C621E36082EE8D998873031EaA",
+    "AGGFlowEntrypoint_Legacy": "0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3",
+    "AGGFlowEntrypoint_Legacy2": "0xF69E64804000d28aA695eB5c594B996100fb3B49",
+    "AGGFlowRouter":            "0xafCAD2bf0E85e30a2b54ac6491dC81987cE7767C",
+    "AGGFlowRouter_Legacy":     "0xDF474006aa807598B616500d146FfF661d644138",
+    "V2Router":                 "0xF456737D17C2Bbb348fd4F7D1b000D62A46FB3b5",
+    "V3Router":                 "0xdf69970B2fE416339187aA41D39882e864984CE9",
+    "V3PositionManager":        "0x779380011B5F2aB40985D810B5c7641539beD870",
+    "AgentExecutor":            "0xaE547F01f9ddCa4dB66cdbf0727f7563Fc44bC26"
   },
 
   "intelligent_contracts": {
-    "AgentValidator": "0xFc77C6A20B1102979f5887A5efe9611a2Ef6Afd5",
+    "AgentValidator": "0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e",
     "LiquidityValidator": "0xEFb9473B5269A79d72Df4b6E73E310791a185eeC"
   },
 

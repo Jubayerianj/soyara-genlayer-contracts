@@ -129,7 +129,7 @@ The EVM gatekeeper that accepts validated intents and calls liquidity routers:
 
 | Contract | Network | Address |
 |---|---|---|
-| **AgentValidator (IC)** | GenLayer Bradbury Testnet (`4221`) | `0xFc77C6A20B1102979f5887A5efe9611a2Ef6Afd5` |
+| **AgentValidator (IC)** | GenLayer Bradbury Testnet (`4221`) | `0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e` |
 | **LiquidityValidator (IC)** | GenLayer Bradbury Testnet (`4221`) | `0xEFb9473B5269A79d72Df4b6E73E310791a185eeC` |
 | **SwappingDexV2Factory** | LitVM / Somnia (`4441`) | `0x4680BCe1632824d30D2F53656dD610736c3e312e` |
 | **UniswapV2Router02** | LitVM / Somnia (`4441`) | `0x130c961dcf9d89258119f8bB7344635616946BFF` |
@@ -171,7 +171,7 @@ npx hardhat compile
 ### 3. Interacting with GenLayer Intelligent Contracts
 ```bash
 # Inspect contract stats on Bradbury testnet
-genlayer call 0xFc77C6A20B1102979f5887A5efe9611a2Ef6Afd5 get_stats --rpc https://rpc-bradbury.genlayer.com
+genlayer call 0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e get_stats --rpc https://rpc-bradbury.genlayer.com
 ```
 
 ---

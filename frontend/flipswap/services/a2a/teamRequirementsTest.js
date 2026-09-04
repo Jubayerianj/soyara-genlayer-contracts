@@ -28,7 +28,7 @@ export const COMPREHENSIVE_TESTS = [
         amountIn: '100',
         minAmountOut: '49',
         slippageBps: 30,
-        router: CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3',
+        router: CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0x95feE6Cb918Ed9C621E36082EE8D998873031EaA',
         deadline: Math.floor(Date.now() / 1000) + 1800,
         extraData: JSON.stringify({ test: 'live_consensus' })
       };

@@ -8,14 +8,23 @@ AI-validated execution layer for the FlipSwap DEX aggregator, deployed on the **
 
 | Contract | Address | Tx Hash |
 |---|---|---|
-| **AgentValidator** | `0xFc77C6A20B1102979f5887A5efe9611a2Ef6Afd5` | `0x80788d9ee015f11468f4e372ead51f0dd522fb70e62343e241bd23c7b3384dbf` |
+| **AgentValidator** | `0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e` | `0x0e445f38830e3445af9f8781b302eceb2efd0cd21277c3eb1ef5ee6cd7108e79` |
 | **LiquidityValidator** | `0xEFb9473B5269A79d72Df4b6E73E310791a185eeC` | `0x6029755fe523a1fcb2c87f20a3c9cc3fcc12f04f57b6db203a40b8c718fcdf23` |
 
 - **Network:** GenLayer Bradbury Testnet (chainId: `4221`)
 - **RPC:** `https://rpc-bradbury.genlayer.com`
 - **Explorer:** `https://explorer-bradbury.genlayer.com`
 - **Deployer / Owner:** `0x23D542DCEFb00b1f4268E67a0EC1EF4de0A58fe2`
-- **Updated & Active:** 2026-08-25
+- **Updated & Active:** 2026-09-04
+
+> **2026-09-04 redeploy:** the previous AgentValidator (`0xFc77C6A2...`) had a stale
+> `APPROVED_ROUTERS` whitelist left over from before `AGGFlowEntrypoint`/`AGGFlowRouter`
+> were redeployed, so every real proposal submitted by the frontend (which always sends
+> the current `aggregatorEntrypoint` address) was rejected at the deterministic
+> router-whitelist check before it ever reached execution. It also read `time.time()`
+> to check deadline expiry, which is non-deterministic across GenVM validator nodes.
+> Both are fixed in this version; deadline expiry is now enforced only on-chain by
+> `AgentExecutor`'s `validDeadline` modifier.
 
 ---
 
@@ -84,20 +93,20 @@ Specialized validator for V2 and V3 liquidity operations.
 
 ### Read contract state
 ```bash
-genlayer call 0x5671E23b1f5b4f9e51Fc2F817066A202Ed86F200 get_stats
-genlayer call 0x5671E23b1f5b4f9e51Fc2F817066A202Ed86F200 get_config
-genlayer call 0x03a98b83f4C1Ef615614b178284368Ee2cA5A5a9 get_stats
+genlayer call 0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e get_stats
+genlayer call 0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e get_config
+genlayer call 0xEFb9473B5269A79d72Df4b6E73E310791a185eeC get_stats
 ```
 
 ### Update max slippage
 ```bash
-genlayer write 0x5671E23b1f5b4f9e51Fc2F817066A202Ed86F200 set_max_slippage \
+genlayer write 0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e set_max_slippage \
   --args 200
 ```
 
 ### Emergency pause
 ```bash
-genlayer write 0x5671E23b1f5b4f9e51Fc2F817066A202Ed86F200 set_paused \
+genlayer write 0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e set_paused \
   --args true
 ```
 

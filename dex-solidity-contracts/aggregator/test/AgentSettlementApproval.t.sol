@@ -704,3 +704,334 @@ contract AgentSettlementApprovalTest is Test {
         executor.executeAddLiquidityV2(user, address(tokenIn), address(tokenOut), amtA, amtB, minA, minB, deadline);
     }
 }
+
+// =============================================================================
+//  End-to-End: Enforced GenLayer-to-Settlement Flow
+// =============================================================================
+//
+//  Proves the team requirement:
+//    "Bind a one-time approval for the exact trade parameters to the settlement
+//    contract, route execution through that check, and prove an unapproved or
+//    modified trade cannot settle."
+//
+//  Tests in this contract simulate the complete flow:
+//    GenLayer AgentValidator (consensus) → agent calls approveTradeWithParams →
+//    agent calls executeSwap → AGGFlowEntrypoint
+//
+//  Any trade that was NOT approved by the GenLayer IC, or whose parameters
+//  were modified after approval, MUST revert with TradeNotApproved.
+// =============================================================================
+
+contract EndToEnd_EnforcedGenLayerSettlementFlow is Test {
+    // ── Actors ────────────────────────────────────────────────────────────────
+    address constant owner        = address(0x01);
+    address constant agent        = address(0x02); // Simulates server-side agent wallet
+    address constant user         = address(0x03); // End user
+    address constant attacker     = address(0x04); // Malicious actor
+    address constant feeCollector = address(0x05);
+
+    // ── Contracts ─────────────────────────────────────────────────────────────
+    AgentExecutor          executor;
+    MockAGGFlowEntrypoint  mockEntrypoint;
+    MockV2Router           mockV2Router;
+    MockV3PositionManager  mockV3PositionManager;
+    MockERC20              tokenIn;
+    MockERC20              tokenOut;
+
+    // ── Trade constants (represent the GenLayer IC-validated parameters) ──────
+    uint256 constant AMOUNT_IN     = 100e18;
+    uint256 constant MIN_AMOUNT_OUT = 95e18;
+    uint256 constant SLIPPAGE_BPS   = 30;   // 0.30%
+    uint256 constant MAX_SLIPPAGE   = 300;  // 3.00% cap
+    uint256 deadline;
+
+    function setUp() public {
+        deadline = block.timestamp + 3600;
+
+        mockEntrypoint    = new MockAGGFlowEntrypoint();
+        mockV2Router      = new MockV2Router();
+        mockV3PositionManager = new MockV3PositionManager();
+        tokenIn  = new MockERC20("USD Coin", "USDC");
+        tokenOut = new MockERC20("Wrapped GEN", "WGEN");
+
+        address[] memory tokens = new address[](2);
+        tokens[0] = address(tokenIn);
+        tokens[1] = address(tokenOut);
+
+        // Deploy AgentExecutor — agent is the authorisedAgent (simulates server wallet)
+        executor = new AgentExecutor(
+            owner, agent, address(mockEntrypoint),
+            address(mockV2Router), address(mockV3PositionManager),
+            MAX_SLIPPAGE, tokens
+        );
+
+        // Fund user + mockEntrypoint
+        tokenIn.mint(user, 10_000e18);
+        tokenOut.mint(address(mockEntrypoint), 10_000e18);
+
+        // User approves AgentExecutor to pull their tokenIn
+        vm.prank(user);
+        tokenIn.approve(address(executor), type(uint256).max);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 1: FULL ENFORCED FLOW — Validate → ApproveWithParams → Execute
+    //         Proves the happy path works end-to-end with exact parameters.
+    // ─────────────────────────────────────────────────────────────────────────
+    function test_E2E_FullEnforcedFlow_ExactParams_Succeeds() public {
+        // ── Step 1: GenLayer AgentValidator IC reached consensus (simulated) ──
+        // In production this is: writeContract(validate_proposal) + waitForReceipt
+        // Here we simulate consensus having approved these exact parameters.
+
+        // ── Step 2: Agent binds one-time approval for EXACT validated parameters ─
+        vm.prank(agent); // Only agent wallet can call approveTradeWithParams
+        executor.approveTradeWithParams(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+
+        bytes32 expectedHash = executor.getTradeHash(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+        assertTrue(executor.isTradeApproved(expectedHash), "Approval must be registered");
+
+        uint256 balBefore = tokenOut.balanceOf(user);
+
+        // ── Step 3: Agent calls executeSwap — checks and consumes the hash ───
+        vm.prank(agent); // Only agent wallet can call executeSwap
+        uint256 amountOut = executor.executeSwap(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
+            "", 0, feeCollector
+        );
+
+        // ── Assertions ────────────────────────────────────────────────────────
+        assertGt(amountOut, MIN_AMOUNT_OUT, "Must receive at least min amount");
+        assertEq(tokenOut.balanceOf(user) - balBefore, amountOut, "Tokens must land with user");
+        assertFalse(executor.isTradeApproved(expectedHash), "Approval consumed - single-use only");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 2: UNAPPROVED TRADE CANNOT SETTLE
+    //         No approval registered → TradeNotApproved revert.
+    //         Proves: a trade that was never validated by GenLayer IC cannot execute.
+    // ─────────────────────────────────────────────────────────────────────────
+    function test_E2E_UnapprovedTrade_CannotSettle() public {
+        bytes32 tradeHash = executor.getTradeHash(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+
+        // No approval has been registered (GenLayer IC was never called)
+        assertFalse(executor.isTradeApproved(tradeHash), "Must start unapproved");
+
+        // MUST revert — trade was never validated by GenLayer consensus
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tradeHash));
+        executor.executeSwap(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
+            "", 0, feeCollector
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 3: MODIFIED amountIn CANNOT SETTLE
+    //         GenLayer approved 100 tokens, attacker tries to execute with 150.
+    //         Hash mismatch → TradeNotApproved.
+    // ─────────────────────────────────────────────────────────────────────────
+    function test_E2E_ModifiedAmountIn_CannotSettle() public {
+        // Agent approves the exact GenLayer-validated parameters (100 tokens)
+        vm.prank(agent);
+        executor.approveTradeWithParams(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+
+        uint256 tamperedAmountIn = 150e18; // Attacker inflates the amount
+
+        bytes32 tamperedHash = executor.getTradeHash(
+            user, address(tokenIn), address(tokenOut),
+            tamperedAmountIn, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+
+        // MUST revert — tamperedAmountIn produces a different hash
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tamperedHash));
+        executor.executeSwap(
+            user, address(tokenIn), address(tokenOut),
+            tamperedAmountIn, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
+            "", 0, feeCollector
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 4: MODIFIED minAmountOut (sandwich attack vector) CANNOT SETTLE
+    //         Attacker lowers minAmountOut to extract value. Hash mismatch → revert.
+    // ─────────────────────────────────────────────────────────────────────────
+    function test_E2E_ModifiedMinAmountOut_CannotSettle() public {
+        vm.prank(agent);
+        executor.approveTradeWithParams(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+
+        uint256 tamperedMinOut = 1; // Attacker zeroes out the minimum
+
+        bytes32 tamperedHash = executor.getTradeHash(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, tamperedMinOut, SLIPPAGE_BPS, deadline
+        );
+
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tamperedHash));
+        executor.executeSwap(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, tamperedMinOut, SLIPPAGE_BPS, deadline,
+            "", 0, feeCollector
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 5: MODIFIED recipient (user address) CANNOT SETTLE
+    //         Attacker redirects output to themselves. Hash mismatch → revert.
+    // ─────────────────────────────────────────────────────────────────────────
+    function test_E2E_ModifiedRecipient_CannotSettle() public {
+        vm.prank(agent);
+        executor.approveTradeWithParams(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+
+        bytes32 tamperedHash = executor.getTradeHash(
+            attacker, address(tokenIn), address(tokenOut), // attacker substitutes their address
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tamperedHash));
+        executor.executeSwap(
+            attacker, address(tokenIn), address(tokenOut), // redirect to attacker
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
+            "", 0, feeCollector
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 6: REPLAY ATTACK CANNOT SETTLE
+    //         First execution succeeds and consumes the approval.
+    //         Second execution with identical params MUST revert.
+    // ─────────────────────────────────────────────────────────────────────────
+    function test_E2E_ReplayAttack_CannotSettle() public {
+        bytes32 tradeHash = executor.getTradeHash(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+
+        // Approve once
+        vm.prank(agent);
+        executor.approveTrade(tradeHash);
+
+        // First execution — succeeds, consumes approval
+        vm.prank(agent);
+        executor.executeSwap(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
+            "", 0, feeCollector
+        );
+        assertFalse(executor.isTradeApproved(tradeHash), "Approval must be consumed after first use");
+
+        // Second execution — MUST revert (approval already consumed)
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tradeHash));
+        executor.executeSwap(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
+            "", 0, feeCollector
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 7: UNAUTHORIZED CALLER CANNOT APPROVE OR EXECUTE
+    //         Non-agent wallet cannot call onlyAgent functions.
+    //         Proves that the user wallet cannot bypass the approval gate.
+    // ─────────────────────────────────────────────────────────────────────────
+    function test_E2E_UnauthorizedCaller_CannotApproveOrExecute() public {
+        bytes32 tradeHash = executor.getTradeHash(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+
+        // User wallet cannot call approveTradeWithParams
+        vm.prank(user);
+        vm.expectRevert(AgentExecutorBase.Unauthorized.selector);
+        executor.approveTradeWithParams(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+
+        // Attacker wallet cannot call approveTradeWithParams
+        vm.prank(attacker);
+        vm.expectRevert(AgentExecutorBase.Unauthorized.selector);
+        executor.approveTrade(tradeHash);
+
+        // Even with an existing approval, attacker cannot call executeSwap
+        vm.prank(agent);
+        executor.approveTrade(tradeHash);
+
+        vm.prank(attacker);
+        vm.expectRevert(AgentExecutorBase.Unauthorized.selector);
+        executor.executeSwap(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
+            "", 0, feeCollector
+        );
+
+        // User wallet cannot call executeSwap either (even though approval exists)
+        vm.prank(user);
+        vm.expectRevert(AgentExecutorBase.Unauthorized.selector);
+        executor.executeSwap(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
+            "", 0, feeCollector
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 8: APPROVED PARAMS HASH MUST MATCH TRADEHASHLIB ON-CHAIN
+    //         Verifies that approveTradeWithParams + getTradeHash produce the same
+    //         hash as TradeHashLib.swapHash, matching the frontend's computeTradeHash.
+    // ─────────────────────────────────────────────────────────────────────────
+    function test_E2E_TradeHashConsistency_ApproveAndExecute() public {
+        // Compute hash two ways — must be identical
+        bytes32 hashViaLib = TradeHashLib.swapHash(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+        bytes32 hashViaExecutor = executor.getTradeHash(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+
+        assertEq(hashViaLib, hashViaExecutor, "Hash from TradeHashLib must equal hash from executor.getTradeHash");
+
+        // approveTradeWithParams must register this exact hash
+        vm.prank(agent);
+        executor.approveTradeWithParams(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+        assertTrue(executor.isTradeApproved(hashViaLib), "approveTradeWithParams must register the correct hash");
+
+        // Execution with the same params must succeed (hash matches and is consumed)
+        vm.prank(agent);
+        executor.executeSwap(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
+            "", 0, feeCollector
+        );
+        assertFalse(executor.isTradeApproved(hashViaLib), "Hash must be consumed after execution");
+    }
+}
+

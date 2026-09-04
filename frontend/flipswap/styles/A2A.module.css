@@ -458,3 +458,20 @@
   font-size: 0.75rem;
   font-weight: 600;
 }
+
+/* ── Agent Studio (/a2a/dev) ─────────────────────────────────────────────── */
+/* Inline styles cannot express media queries, so the studio's two-column
+   split lives here: wire beside economics on desktop, stacked on narrow
+   screens so neither column is squeezed unreadably. */
+.studioSplit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(230px, 290px);
+  gap: 0.9rem;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .studioSplit {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
