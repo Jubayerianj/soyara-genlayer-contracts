@@ -1,6 +1,6 @@
 // pages/sdk.jsx
 //
-// Developer landing page for @soyara/sdk.
+// Developer landing page for @soyaradex/sdk.
 //
 // The single most important thing this page has to communicate is WHERE each
 // piece runs. Quoting, routing and intent parsing need no key and no backend;
@@ -72,7 +72,7 @@ export default function SdkPage() {
         {/* Hero */}
         <div style={{ marginBottom: '2rem' }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', fontWeight: 700, color: '#0ea5e9', border: '1px solid rgba(14,165,233,0.35)', borderRadius: 999, padding: '4px 11px', marginBottom: 14 }}>
-            <Package size={12} /> @soyara/sdk
+            <Package size={12} /> @soyaradex/sdk
           </div>
           <h1 style={{ fontSize: '2.1rem', fontWeight: 800, margin: '0 0 10px', lineHeight: 1.2 }}>
             Build agents that trade on GenLayer
@@ -83,9 +83,9 @@ export default function SdkPage() {
             and settlement path the app itself uses.
           </p>
           <div style={{ marginTop: 18, maxWidth: 560 }}>
-            <Code isDark={isDark}>{`npm install https://raw.githubusercontent.com/Jubayerianj/soyara-genlayer-contracts/main/sdk/dist/soyara-sdk-0.1.0.tgz viem`}</Code>
+            <Code isDark={isDark}>{`npm install https://raw.githubusercontent.com/Jubayerianj/soyara-genlayer-contracts/main/sdk/dist/soyaradex-sdk-0.1.0.tgz viem`}</Code>
             <p style={{ color: muted, fontSize: '0.74rem', lineHeight: 1.5, marginTop: 8, marginBottom: 0 }}>
-              It installs as <code>@soyara/sdk</code>, so the imports below work as written.
+              It installs as <code>@soyaradex/sdk</code>, so the imports below work as written.
               The package is not on the npm registry yet, which is why the install points at
               the release tarball in the repo rather than at a package name.
             </p>
@@ -136,7 +136,7 @@ export default function SdkPage() {
           <p style={{ color: muted, fontSize: '0.84rem', marginTop: 0, marginBottom: 12 }}>
             Understand and price a request in one call - no key required.
           </p>
-          <Code isDark={isDark}>{`import { understand, SoyaraClient } from '@soyara/sdk';
+          <Code isDark={isDark}>{`import { understand, SoyaraClient } from '@soyaradex/sdk';
 
 // 1. Parse + price. Pure + public RPC, no key.
 const { intent, quote } = await understand('swap 50 USDC to USDT');

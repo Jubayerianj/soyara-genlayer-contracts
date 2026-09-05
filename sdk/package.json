@@ -1,17 +1,46 @@
 {
-  "name": "@soyara/sdk",
+  "name": "@soyaradex/sdk",
   "version": "0.1.0",
-  "description": "Agentic DEX SDK for GenLayer — natural-language intent parsing, best-route aggregation, and consensus-gated settlement on Soyara.",
+  "description": "Agentic DEX SDK for GenLayer \u2014 natural-language intent parsing, best-route aggregation, and consensus-gated settlement on Soyara.",
   "type": "module",
   "main": "src/index.js",
-  "exports": { ".": "./src/index.js" },
-  "files": ["src", "README.md"],
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
   "scripts": {
     "sync": "node scripts/sync-from-app.mjs",
     "test": "node test/smoke.mjs"
   },
-  "keywords": ["genlayer", "dex", "aggregator", "defi", "agent", "intelligent-contracts"],
+  "keywords": [
+    "genlayer",
+    "dex",
+    "aggregator",
+    "defi",
+    "agent",
+    "intelligent-contracts"
+  ],
   "license": "MIT",
-  "peerDependencies": { "viem": "^2.0.0" },
-  "engines": { "node": ">=18" }
+  "peerDependencies": {
+    "viem": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jubayerianj/soyara-genlayer-contracts.git",
+    "directory": "sdk"
+  },
+  "homepage": "https://github.com/Jubayerianj/soyara-genlayer-contracts/tree/main/sdk",
+  "bugs": {
+    "url": "https://github.com/Jubayerianj/soyara-genlayer-contracts/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
 }

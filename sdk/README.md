@@ -1,4 +1,4 @@
-# @soyara/sdk
+# @soyaradex/sdk
 
 Build agents that trade on **Soyara**, an AI-native DEX on GenLayer Bradbury where
 every trade is gated by a real consensus round before it can settle.
@@ -6,13 +6,13 @@ every trade is gated by a real consensus round before it can settle.
 ## Install
 
 ```bash
-npm install https://raw.githubusercontent.com/Jubayerianj/soyara-genlayer-contracts/main/sdk/dist/soyara-sdk-0.1.0.tgz viem
+npm install https://raw.githubusercontent.com/Jubayerianj/soyara-genlayer-contracts/main/sdk/dist/soyaradex-sdk-0.1.0.tgz viem
 ```
 
-It installs under the name `@soyara/sdk`, so every import below works as written.
+It installs under the name `@soyaradex/sdk`, so every import below works as written.
 
 The package is not on the npm registry yet, which is why the install points at the
-release tarball in this repo rather than at a package name. `npm install @soyara/sdk`
+release tarball in this repo rather than at a package name. `npm install @soyaradex/sdk`
 will fail with `E404` until it is published.
 
 ## Do you need a server?
@@ -39,7 +39,7 @@ Point `baseUrl` at your own deployment of the Soyara API routes.
 ## Quick start
 
 ```js
-import { understand, SoyaraClient } from '@soyara/sdk';
+import { understand, SoyaraClient } from '@soyaradex/sdk';
 
 // 1. Understand and price — no key needed.
 const { intent, quote } = await understand('swap 50 USDC to USDT');

@@ -1,4 +1,4 @@
-// @soyara/sdk
+// @soyaradex/sdk
 //
 // Build agents that trade on Soyara, an AI-native DEX on GenLayer where every
 // trade is gated by a real consensus round before it can settle.
