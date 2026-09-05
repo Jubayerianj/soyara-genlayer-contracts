@@ -83,11 +83,17 @@ export default function SdkPage() {
             and settlement path the app itself uses.
           </p>
           <div style={{ marginTop: 18, maxWidth: 560 }}>
-            <Code isDark={isDark}>{`npm install https://raw.githubusercontent.com/Jubayerianj/soyara-genlayer-contracts/main/sdk/dist/soyaradex-sdk-0.1.0.tgz viem`}</Code>
+            <Code isDark={isDark}>{`npm install @soyaradex/sdk viem`}</Code>
             <p style={{ color: muted, fontSize: '0.74rem', lineHeight: 1.5, marginTop: 8, marginBottom: 0 }}>
-              It installs as <code>@soyaradex/sdk</code>, so the imports below work as written.
-              The package is not on the npm registry yet, which is why the install points at
-              the release tarball in the repo rather than at a package name.
+              Published on npm.{' '}
+              <a
+                href="https://www.npmjs.com/package/@soyaradex/sdk"
+                target="_blank" rel="noreferrer"
+                style={{ color: '#0ea5e9', textDecoration: 'none' }}
+              >
+                View the package
+              </a>
+              . <code>viem</code> is a peer dependency, so install it alongside.
             </p>
           </div>
         </div>

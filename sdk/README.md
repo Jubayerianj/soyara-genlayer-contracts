@@ -6,14 +6,10 @@ every trade is gated by a real consensus round before it can settle.
 ## Install
 
 ```bash
-npm install https://raw.githubusercontent.com/Jubayerianj/soyara-genlayer-contracts/main/sdk/dist/soyaradex-sdk-0.1.0.tgz viem
+npm install @soyaradex/sdk viem
 ```
 
-It installs under the name `@soyaradex/sdk`, so every import below works as written.
-
-The package is not on the npm registry yet, which is why the install points at the
-release tarball in this repo rather than at a package name. `npm install @soyaradex/sdk`
-will fail with `E404` until it is published.
+`viem` is a peer dependency, so install it alongside. Node 18 or newer.
 
 ## Do you need a server?
 
