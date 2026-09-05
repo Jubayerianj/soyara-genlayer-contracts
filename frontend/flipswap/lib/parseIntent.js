@@ -24,8 +24,11 @@
 export const KNOWN_TOKENS = ['USDC', 'USDT', 'GEN', 'WGEN', 'WBTC', 'ETH', 'FSWP'];
 
 const ALIASES = {
-  ZKUSDC: 'USDC', USDCE: 'USDC', 'USD-C': 'USDC',
-  ZKUSDT: 'USDT', TETHER: 'USDT',
+  // "usd" is by far the most common shorthand people type for USDC, and
+  // rejecting it sent users round a loop of clarification questions.
+  ZKUSDC: 'USDC', USDCE: 'USDC', 'USD-C': 'USDC', USD: 'USDC', USDCOIN: 'USDC',
+  UDSC: 'USDC', USCD: 'USDC',
+  ZKUSDT: 'USDT', TETHER: 'USDT', UDST: 'USDT', USTD: 'USDT',
   WSOMI: 'WGEN', 'WRAPPED GEN': 'WGEN',
   GENLAYER: 'GEN', SOMI: 'GEN',
   ZKBTC: 'WBTC', BTC: 'WBTC', BITCOIN: 'WBTC',
@@ -164,7 +167,12 @@ export function parseIntent(input, defaults = {}) {
     if (removeVerb) needs.push('whether you meant to SWAP or REMOVE LIQUIDITY');
   }
   if (action === 'ADD_LIQUIDITY') {
-    if (!tokenIn || !tokenOut) needs.push('both tokens for the pool');
+    // One named token is not a dead end — the caller can look up which pools
+    // exist for it and either pick the only one or offer the choices. Telling
+    // the user "both tokens for the pool" and nothing else made them retry the
+    // same request over and over.
+    if (!tokenIn && !tokenOut) needs.push('which two tokens to pool');
+    else if (!tokenIn || !tokenOut) needs.push('pair-token');
   }
   if (action === 'REMOVE_LIQUIDITY') {
     if (!tokenIn || !tokenOut) needs.push('which pool to withdraw from');
