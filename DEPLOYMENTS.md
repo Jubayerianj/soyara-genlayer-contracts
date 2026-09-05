@@ -18,7 +18,8 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 
 | Contract | Address | Transaction Hash |
 |---|---|---|
-| **AgentValidator** (current — redeployed with an empty consensus queue) | `0x69c33B036a982e7C7107b1634451A0C227cB2BBA` | `0x56cd8a4628f0234a47a668e03a12dd8019fbc7041b9314de1a5f1395102357e4` |
+| **AgentValidator** (current — action-aware LLM review) | `0x78FA2A758bdB65a66F4B9C08D8DC54066d0e0395` | `0x3f70ffa33317575dbb9e3a482e2901f5b3e82bed5e67e4a75ac8949b291ec85b` |
+| AgentValidator (retired — swap-shaped rules broke liquidity consensus) | `0x69c33B036a982e7C7107b1634451A0C227cB2BBA` | `0x56cd8a4628f0234a47a668e03a12dd8019fbc7041b9314de1a5f1395102357e4` |
 | AgentValidator (retired — queue exhausted, see PendingQueueFull below) | `0x683cBF11F807aB184ed2B4a5dDDC9E49dbBa0f51` | `0x874ff1cb09c15abb3b5e0817911879e00f2b92ba4807e6614a46197c1606661f` |
 | AgentValidator (retired — determinism fix, no persisted verdicts) | `0x440FB164C93cC5657a1b1F53e8B4E1113c43AB9D` | `0x53d3a96a97976070b246e49d25e36a5b03917c456168268c3c1d5dd673a09711` |
 | AgentValidator (retired — mandates, but non-deterministic strict_eq payload) | `0x7B6B4aFC5098fFe85124D4242577f06DCe497d0b` | `0x0b9a274730b29e4be04af221344f0dfb3379845863a548adca3a6ebd17658961` |
@@ -453,4 +454,29 @@ before binding the approval. A V2 deposit must match the pool ratio exactly, and
 two slightly off-ratio amounts made the router revert with
 `UniswapV2Router: INSUFFICIENT_A_AMOUNT`; the over-supplied side is reduced to the
 optimal pairing instead.
+
+### ⚠️ The LLM review must be ACTION-AWARE, or liquidity cannot reach consensus
+
+`_llm_review` applied one set of swap-shaped rules to every action:
+
+```
+2. APPROVE if Min Amount Out is >= 0 and <= Amount In
+4. REJECT ... if Min Amount Out > Amount In * 10
+```
+
+For a deposit, `amount_in` and `min_amount_out` are the two **independent sides
+of a position**, not a swap pair. "10 WGEN and 200 USDC" is a perfectly ordinary
+deposit, yet rule 4 told the model to reject it while rule 1 said approve.
+Different validators resolved that contradiction differently, so
+`gl.eq_principle.strict_eq` could not agree, the round raised, and
+`validate_proposal` failed closed **without writing to `validations`** — leaving
+`get_validation` with nothing to return.
+
+The user-visible symptom was add-liquidity being intermittently stuck on
+"Consensus reached but the verdict is not yet readable", while swaps were fine.
+The rules are now branched by action: ratio checks apply only to SWAP, and a
+liquidity proposal is approved whenever both amounts are positive integers.
+
+Verified on the new contract with the exact failing shape (20x ratio):
+`ACCEPTED | found=true approved=true`.
 
