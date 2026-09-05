@@ -34,7 +34,7 @@ export const CONTRACT_ADDRESSES = {
 
 /** GenLayer Intelligent Contracts. */
 export const INTELLIGENT_CONTRACTS = {
-  agentValidator:     '0x78FA2A758bdB65a66F4B9C08D8DC54066d0e0395',
+  agentValidator:     '0x7ABa94668afC24463Be323f9bB65BD4b4F480d89',
   liquidityValidator: '0xEFb9473B5269A79d72Df4b6E73E310791a185eeC',
 };
 
