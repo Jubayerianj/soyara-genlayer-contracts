@@ -30,7 +30,7 @@ export const CONTRACT_ADDRESSES = {
     // AgentValidator redeployed 2026-09-04: fixed stale router whitelist (was blocking
     // every real proposal after AGGFlowEntrypoint/AGGFlowRouter were redeployed) and
     // removed non-deterministic time.time() usage. See DEPLOYMENTS.md.
-    agentValidator: "0x69c33B036a982e7C7107b1634451A0C227cB2BBA",
+    agentValidator: "0x78FA2A758bdB65a66F4B9C08D8DC54066d0e0395",
     liquidityValidator: "0xEFb9473B5269A79d72Df4b6E73E310791a185eeC",
     // AgentExecutor — deployed 2026-09-04 on GenLayer Bradbury Testnet (chain 4221)
     // Tx: broadcast/deployGenlayer.sol/4221/run-latest.json
@@ -40,7 +40,7 @@ export const CONTRACT_ADDRESSES = {
 };
 
 export const INTELLIGENT_CONTRACTS = {
-  agentValidator: "0x69c33B036a982e7C7107b1634451A0C227cB2BBA",
+  agentValidator: "0x78FA2A758bdB65a66F4B9C08D8DC54066d0e0395",
   liquidityValidator: "0xEFb9473B5269A79d72Df4b6E73E310791a185eeC"
 };
 

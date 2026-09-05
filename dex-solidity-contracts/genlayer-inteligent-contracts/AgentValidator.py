@@ -644,6 +644,37 @@ class AgentValidator(gl.Contract):
         safe_extra = (extra_data or "{}")[:400]
         slippage_pct = round(int(slippage_bps) / 100, 2)
 
+        # The two amount fields mean DIFFERENT things per action, and a single
+        # set of swap-shaped rules made validators disagree on liquidity.
+        #
+        # For a deposit, `amount_in` and `min_amount_out` are the two INDEPENDENT
+        # sides of the position — "10 WGEN and 200 USDC" is perfectly valid, yet
+        # the old rule "REJECT if Min Amount Out > Amount In * 10" told the model
+        # to refuse it while another rule said approve. Different validators
+        # resolved that contradiction differently, so `strict_eq` could not agree,
+        # the round raised, and it failed closed WITHOUT recording a verdict —
+        # which surfaced to users as add-liquidity being intermittently stuck.
+        # Ratio rules only make sense for a swap.
+        if action in ("ADD_LIQUIDITY", "REMOVE_LIQUIDITY"):
+            rules = (
+                "1. The two amounts are INDEPENDENT sides of a liquidity position,\n"
+                "   NOT a swap pair. Their ratio carries no meaning here: any ratio\n"
+                "   is valid because it simply reflects the pool's current price.\n"
+                "2. APPROVE whenever both amounts are positive integers.\n"
+                "3. APPROVE regardless of slippage between 1 and 300 bps.\n"
+                "4. REJECT ONLY if an amount is zero, negative, or not a number."
+            )
+        else:
+            rules = (
+                "1. APPROVE if the action is SWAP and both amounts are positive.\n"
+                "2. APPROVE if Min Amount Out is >= 0. Token decimals differ across\n"
+                "   pairs, so a larger Min Amount Out than Amount In is normal and\n"
+                "   is NOT grounds for rejection on its own.\n"
+                "3. WARN only (still APPROVE) if Slippage is between 100-300 bps.\n"
+                "4. REJECT ONLY on an obvious numeric impossibility: a negative or\n"
+                "   zero amount, or a non-numeric value."
+            )
+
         prompt = f"""You are a DeFi execution safety validator for a DEX aggregator.
 Evaluate the following execution proposal for numeric coherence only.
 
@@ -655,12 +686,11 @@ Slippage:       {int(slippage_bps)} bps = {slippage_pct}%
 Extra Info:     {safe_extra}
 
 == RULES ==
-1. APPROVE if Action is SWAP, ADD_LIQUIDITY, or REMOVE_LIQUIDITY and amounts are positive.
-2. APPROVE if Min Amount Out is >= 0 and <= Amount In (raw units; decimals may differ for cross-pair).
-3. WARN only (still APPROVE) if Slippage is between 100-300 bps (1-3%).
-4. REJECT only if you detect an obvious numeric impossibility (e.g. Min Amount Out > Amount In * 10, or negative amounts).
-5. Do NOT reject based on token prices, market conditions, or the identity of tokens/routers.
-6. Do NOT use any information beyond the structured fields above.
+{rules}
+COMMON:
+- Do NOT reject based on token prices, market conditions, or the identity of
+  tokens/routers.
+- Do NOT use any information beyond the structured fields above.
 
 == RESPONSE ==
 Reply with ONLY a single valid JSON object, no markdown:
