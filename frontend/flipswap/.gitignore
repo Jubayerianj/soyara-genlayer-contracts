@@ -24,3 +24,6 @@ yarn-error.log*
 # System files
 .DS_Store
 *.pem
+
+# scratch test scripts
+__*.mjs
