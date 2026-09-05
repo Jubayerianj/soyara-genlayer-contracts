@@ -83,7 +83,7 @@ export async function fetchAlgebraPool(publicClient, factory, tokenIn, tokenOut)
 
     return { address: poolAddress, token0, token1 };
   } catch (err) {
-    // Completely silent — this is expected when pool doesn't exist or factory is different
+    // Completely silent - this is expected when pool doesn't exist or factory is different
     if (process.env.NODE_ENV === 'development') {
       console.log(`fetchAlgebraPool silent fail (no pool or wrong factory): ${tokenIn.symbol}/${tokenOut.symbol}`);
     }

@@ -5,7 +5,7 @@
 //
 // This matters here more than on a normal DEX: a GenVM consensus round runs for
 // tens of seconds and sometimes minutes, so a user who closes the tab mid-round
-// previously lost every trace of it — no transaction hash, no proposal id, no
+// previously lost every trace of it - no transaction hash, no proposal id, no
 // way to learn whether the trade was ever approved. Entries are keyed per wallet
 // address and re-polled on mount, so a round that finished while the page was
 // closed resolves as soon as it is reopened.
@@ -44,7 +44,7 @@ function writeAll(entries) {
       .slice(0, MAX_ENTRIES);
     window.localStorage.setItem(KEY, JSON.stringify(pruned));
   } catch {
-    // Quota exceeded or storage blocked — the app must keep working regardless.
+    // Quota exceeded or storage blocked - the app must keep working regardless.
   }
 }
 
@@ -101,7 +101,7 @@ export function clearActivity() {
  *
  * Called on mount, this is what makes a round that completed while the page was
  * closed show its real verdict instead of staying "pending" forever. It never
- * resubmits — it only reads status for a transaction that already exists.
+ * resubmits - it only reads status for a transaction that already exists.
  *
  * @param {string} address wallet whose entries to resume
  * @param {(entries: object[]) => void} onUpdate called after each resolution
@@ -122,7 +122,7 @@ export async function resumePending(address, onUpdate) {
       if (!res.ok) continue;
       const data = await res.json();
 
-      // Still undecided — leave it pending so the next visit tries again.
+      // Still undecided - leave it pending so the next visit tries again.
       if (data.pending) {
         recordActivity({ id: entry.id, statusName: data.statusName || entry.statusName });
         continue;
@@ -136,7 +136,7 @@ export async function resumePending(address, onUpdate) {
         statusName: data.statusName || entry.statusName,
       });
     } catch {
-      // Offline or the API is down — keep the entry pending and try next time.
+      // Offline or the API is down - keep the entry pending and try next time.
     }
     if (onUpdate) onUpdate(listActivity(address));
   }

@@ -3,7 +3,7 @@
 // SERVER-SIDE AGENT WITHDRAWAL ROUTE (V2)
 //
 // Completes the liquidity lifecycle. Before this route, REMOVE_LIQUIDITY parsed
-// and validated but had no settlement path at all — an approved withdrawal did
+// and validated but had no settlement path at all - an approved withdrawal did
 // nothing on-chain.
 //
 // Same enforced flow as swaps and deposits:
@@ -44,7 +44,7 @@ const FACTORY_ABI = [
   { inputs: [{ type: 'address' }, { type: 'address' }], name: 'getPair', outputs: [{ type: 'address' }], stateMutability: 'view', type: 'function' },
 ];
 
-/** Retry a write the node throttled — see the note in agent-execute.js. */
+/** Retry a write the node throttled - see the note in agent-execute.js. */
 async function sendWithRetry(fn, label) {
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -65,8 +65,8 @@ export default async function handler(req, res) {
 
   const agentPrivateKey = process.env.AGENT_PRIVATE_KEY;
   const agentExecutorAddress = CONTRACT_ADDRESSES[4221]?.agentExecutor || process.env.AGENT_EXECUTOR_ADDRESS;
-  if (!agentPrivateKey) return res.status(503).json({ success: false, error: 'Settlement agent not configured — fail-closed' });
-  if (!agentExecutorAddress) return res.status(503).json({ success: false, error: 'AgentExecutor not deployed — fail-closed' });
+  if (!agentPrivateKey) return res.status(503).json({ success: false, error: 'Settlement agent not configured - fail-closed' });
+  if (!agentExecutorAddress) return res.status(503).json({ success: false, error: 'AgentExecutor not deployed - fail-closed' });
 
   const { user, tokenA, tokenB, percent, lpAmount, slippageBps, deadline, validationApproved, validatedMinOut } = req.body;
 
@@ -74,7 +74,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing required withdrawal parameters' });
   }
   if (!validationApproved) {
-    return res.status(403).json({ success: false, error: 'Settlement blocked: GenLayer validation was not approved — fail-closed' });
+    return res.status(403).json({ success: false, error: 'Settlement blocked: GenLayer validation was not approved - fail-closed' });
   }
 
   try {
@@ -158,7 +158,7 @@ export default async function handler(req, res) {
         notValidated: true,
         error:
           'Settlement blocked: no GenLayer consensus verdict exists on-chain for these exact withdrawal parameters. '
-          + 'The withdrawal must be validated by a validate_proposal consensus write before it can settle — fail-closed.',
+          + 'The withdrawal must be validated by a validate_proposal consensus write before it can settle - fail-closed.',
         derivedProposalId,
       });
     }
@@ -192,7 +192,7 @@ export default async function handler(req, res) {
     );
     await publicClient.waitForTransactionReceipt({ hash: approveTxHash });
 
-    // ── STEP 4: execute — checks and CONSUMES the approval ───────────────────
+    // ── STEP 4: execute - checks and CONSUMES the approval ───────────────────
     const execTxHash = await sendWithRetry(
       () => walletClient.writeContract({
         address: agentExecutorAddress,

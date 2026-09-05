@@ -70,7 +70,7 @@ const tokenLogo = (symbol) => (
  * `.toFixed(6)` was wrong in two ways: it ROUNDS, so the paired amount could come
  * out slightly above what the pool ratio implies (and above the user's balance),
  * and on a pair with a large price difference a small deposit rounded all the way
- * to "0.000000" — a zero-amount deposit that just reverts. This keeps up to 8
+ * to "0.000000" - a zero-amount deposit that just reverts. This keeps up to 8
  * decimal places and always truncates, so the filled amount is never more than
  * the ratio actually calls for.
  */
@@ -1265,7 +1265,7 @@ export default function PoolPage() {
                         1 {selectedPair.tokenB.symbol} = {compactNumber(reserveRatio.a / reserveRatio.b, 6)} {selectedPair.tokenA.symbol}
                       </div>
                       <div style={{ opacity: 0.62, marginTop: 5 }}>
-                        This is the pool&apos;s live composition, not a 1:1 market price — trading moves it
+                        This is the pool&apos;s live composition, not a 1:1 market price - trading moves it
                         away from wherever it was seeded. A V2 deposit must match this ratio exactly, so the
                         second amount is filled in for you; anything above it would be refunded by the router.
                       </div>

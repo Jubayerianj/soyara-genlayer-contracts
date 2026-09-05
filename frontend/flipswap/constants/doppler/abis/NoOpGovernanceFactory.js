@@ -1,6 +1,6 @@
 // constants/doppler/abis/NoOpGovernanceFactory.js
 // ABI for src/governance/NoOpGovernanceFactory.sol
-// Creates a "no-op" governance setup — no on-chain governance, just placeholder addresses.
+// Creates a "no-op" governance setup - no on-chain governance, just placeholder addresses.
 
 const NO_OP_GOVERNANCE_FACTORY_ABI = [
   // ── View ────────────────────────────────────────────────────────────────────

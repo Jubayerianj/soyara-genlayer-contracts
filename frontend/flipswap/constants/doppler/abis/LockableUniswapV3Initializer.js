@@ -1,6 +1,6 @@
 // constants/doppler/abis/LockableUniswapV3Initializer.js
 // ABI for src/initializers/LockableUniswapV3Initializer.sol
-// Used on LitVM because V4 PoolManager is not deployed — this provides V3-based price discovery.
+// Used on LitVM because V4 PoolManager is not deployed - this provides V3-based price discovery.
 
 const LOCKABLE_UNISWAP_V3_INITIALIZER_ABI = [
   // ── Events ──────────────────────────────────────────────────────────────────

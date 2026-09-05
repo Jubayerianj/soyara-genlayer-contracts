@@ -361,7 +361,7 @@ export default function DevPage() {
   return (
     <>
       <Head>
-        <title>Developer Portal & Agent Workbench — Soyara DEX on GenLayer</title>
+        <title>Developer Portal & Agent Workbench - Soyara DEX on GenLayer</title>
         <meta name="description" content="Interactive developer portal, SDK references, simulation console, and autonomous agent integration templates for Soyara DEX on GenLayer." />
       </Head>
 

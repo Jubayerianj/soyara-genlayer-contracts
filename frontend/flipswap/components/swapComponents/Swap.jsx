@@ -1368,7 +1368,7 @@ const Swap = ({ referrerAddress, referrerFeeBps = 0n, initialFromToken, initialT
             <div className={styles.rateLeft}>
               <Zap size={13} className={styles.rateZapIcon} />
               <span className={styles.rateDropdownText}>
-                1 {fromToken.symbol} ≈ {calculatedExchangeRate ? calculatedExchangeRate.toFixed(6) : '—'} {toToken.symbol}
+                1 {fromToken.symbol} ≈ {calculatedExchangeRate ? calculatedExchangeRate.toFixed(6) : '-'} {toToken.symbol}
               </span>
             </div>
             <div className={styles.rateRight}>
@@ -1389,7 +1389,7 @@ const Swap = ({ referrerAddress, referrerFeeBps = 0n, initialFromToken, initialT
             >
               <div className={styles.detailRow}>
                 <span className={styles.detailLabel}>Minimum received</span>
-                <span className={styles.detailValue}>{minReceived ? `${formatNumber(minReceived)} ${toToken?.symbol}` : '—'}</span>
+                <span className={styles.detailValue}>{minReceived ? `${formatNumber(minReceived)} ${toToken?.symbol}` : '-'}</span>
               </div>
               <div className={styles.detailRow}>
                 <span className={styles.detailLabel}>Slippage tolerance</span>

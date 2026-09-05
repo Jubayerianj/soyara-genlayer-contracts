@@ -24,7 +24,7 @@ function Code({ children, isDark }) {
       navigator.clipboard.writeText(children);
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
-    } catch { /* clipboard blocked — the text is still selectable */ }
+    } catch { /* clipboard blocked - the text is still selectable */ }
   };
   return (
     <div style={{ position: 'relative' }}>
@@ -65,7 +65,7 @@ export default function SdkPage() {
     <>
       <Head>
         <title>Build Agents · Soyara SDK</title>
-        <meta name="description" content="Build trading agents on Soyara — natural-language intent parsing, best-route aggregation, and consensus-gated settlement on GenLayer." />
+        <meta name="description" content="Build trading agents on Soyara - natural-language intent parsing, best-route aggregation, and consensus-gated settlement on GenLayer." />
       </Head>
 
       <main style={{ maxWidth: 960, margin: '0 auto', padding: '2rem 1.25rem 4rem' }}>
@@ -87,11 +87,11 @@ export default function SdkPage() {
           </div>
         </div>
 
-        {/* Where things run — the thing developers most need to know */}
+        {/* Where things run - the thing developers most need to know */}
         <section style={{ ...card, marginBottom: '1.25rem' }}>
           <h2 style={h2}>Do you need a server?</h2>
           <p style={{ color: muted, fontSize: '0.86rem', lineHeight: 1.6, marginTop: 0 }}>
-            Partly — and it decides how you build. Everything your agent needs to <em>think</em> runs
+            Partly - and it decides how you build. Everything your agent needs to <em>think</em> runs
             anywhere with a public RPC and no key at all. Only the two steps that sign transactions
             need a backend.
           </p>
@@ -101,14 +101,14 @@ export default function SdkPage() {
               { icon: Globe, k: 'parseIntent', d: 'natural language → structured intent', server: false },
               { icon: Globe, k: 'quoteBestRouteMultiHop', d: 'live best-route pricing, direct + multi-hop', server: false },
               { icon: Globe, k: 'buildProgram', d: 'AGGFlow settlement calldata', server: false },
-              { icon: Server, k: 'validate', d: 'GenLayer consensus write — needs a funded account', server: true },
+              { icon: Server, k: 'validate', d: 'GenLayer consensus write - needs a funded account', server: true },
               { icon: Server, k: 'settleSwap / addLiquidity / removeLiquidity', d: 'needs an authorised agent on AgentExecutor', server: true },
             ].map((r) => (
               <div key={r.k} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: '0.83rem' }}>
                 <r.icon size={14} color={r.server ? '#f59e0b' : '#34d399'} style={{ marginTop: 3, flexShrink: 0 }} />
                 <div style={{ minWidth: 0 }}>
                   <code style={{ fontWeight: 700 }}>{r.k}</code>
-                  <span style={{ color: muted }}> — {r.d}</span>
+                  <span style={{ color: muted }}> - {r.d}</span>
                   <span style={{ color: r.server ? '#f59e0b' : '#34d399', fontWeight: 600 }}>
                     {r.server ? '  · server' : '  · no server'}
                   </span>
@@ -129,7 +129,7 @@ export default function SdkPage() {
         <section style={{ ...card, marginBottom: '1.25rem' }}>
           <h2 style={h2}><Terminal size={16} style={{ verticalAlign: -2 }} /> Quick start</h2>
           <p style={{ color: muted, fontSize: '0.84rem', marginTop: 0, marginBottom: 12 }}>
-            Understand and price a request in one call — no key required.
+            Understand and price a request in one call - no key required.
           </p>
           <Code isDark={isDark}>{`import { understand, SoyaraClient } from '@soyara/sdk';
 
@@ -137,7 +137,7 @@ export default function SdkPage() {
 const { intent, quote } = await understand('swap 50 USDC to USDT');
 
 if (!intent.confident) {
-  // Never guess — a wrong guess spends real funds.
+  // Never guess - a wrong guess spends real funds.
   return ask(\`I need: \${intent.needs.join(', ')}\`);
 }
 
@@ -163,13 +163,13 @@ if (verdict.approved) {
             <li>
               <code>validate</code> submits a <strong>write</strong> to the AgentValidator Intelligent
               Contract. Validators are selected by VRF, each independently re-executes the proposal,
-              then they commit and reveal. This takes tens of seconds — by design, not a bug.
+              then they commit and reveal. This takes tens of seconds - by design, not a bug.
             </li>
             <li>The verdict is recorded in contract state and read back with <code>get_validation</code>.</li>
             <li>
               Settlement derives the proposal id <strong>on-chain from the exact parameters being
               settled</strong> and checks that verdict itself. Passing <code>validationApproved: true</code>{' '}
-              is not enough — a fabricated id returns <strong>403</strong>.
+              is not enough - a fabricated id returns <strong>403</strong>.
             </li>
             <li>
               <code>AgentExecutor</code> binds a one-time hash over those parameters and{' '}
@@ -178,7 +178,7 @@ if (verdict.approved) {
             </li>
           </ol>
           <p style={{ color: muted, fontSize: '0.78rem', marginBottom: 0, marginTop: 12 }}>
-            A slow or undecided round is a network condition, not a rejection — <code>validate</code>{' '}
+            A slow or undecided round is a network condition, not a rejection - <code>validate</code>{' '}
             reports <code>retryable</code> and never throws for it.
           </p>
         </section>
@@ -219,7 +219,7 @@ if (verdict.approved) {
 
           <p style={{ color: muted, fontSize: '0.78rem', lineHeight: 1.55, marginTop: 12, marginBottom: 0 }}>
             <strong>Being straight about status:</strong> the protocol fee is live on-chain today.
-            Agent fee-sharing is a model — collecting it automatically needs a fee split in the
+            Agent fee-sharing is a model - collecting it automatically needs a fee split in the
             settlement contract, which is not deployed yet. Until then an agent can charge off-chain
             or run as a service.
           </p>

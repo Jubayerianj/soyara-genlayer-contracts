@@ -51,7 +51,7 @@ async function main() {
   
   const bridgeProxyAddress = networkConfig.bridge;
 
-  console.log(`🔧 LitSuperContributorBridge — UPGRADING on ${NETWORK.toUpperCase()}`);
+  console.log(`🔧 LitSuperContributorBridge - UPGRADING on ${NETWORK.toUpperCase()}`);
   console.log("Deployer    :", wallet.address);
   console.log("Proxy       :", bridgeProxyAddress);
 
@@ -73,7 +73,7 @@ async function main() {
   // If already deployed, skip
   const existingCode = await withRetry(() => provider.getCode(newImplAddress), "getCode");
   if (existingCode && existingCode !== "0x") {
-    console.log(`   ✅ Already has code — skipping broadcast.`);
+    console.log(`   ✅ Already has code - skipping broadcast.`);
   } else {
     const feeData  = await withRetry(() => provider.getFeeData(), "getFeeData");
     const gasPrice = feeData.gasPrice ? (feeData.gasPrice * 15n) / 10n : ethers.parseUnits("2", "gwei");
@@ -91,7 +91,7 @@ async function main() {
         break;
       } catch (e) {
         if (e.message?.includes("504") || e.message?.includes("Gateway Timeout")) {
-          console.log(`   ⚠️  504 Gateway Timeout — retrying in 10s...`);
+          console.log(`   ⚠️  504 Gateway Timeout - retrying in 10s...`);
           await sleep(10000);
           continue;
         }
@@ -151,7 +151,7 @@ async function main() {
   const match = onChainImpl.toLowerCase() === newImplAddress.toLowerCase();
   console.log(`   On-chain impl: ${onChainImpl}`);
   console.log(`   Expected     : ${newImplAddress}`);
-  console.log(match ? "✅ Upgrade verified!" : "❌ Mismatch — check manually.");
+  console.log(match ? "✅ Upgrade verified!" : "❌ Mismatch - check manually.");
 
   // ── Step 4: Save new implementation address ─────────────────────────────────
   networkConfig.bridgeImplementation = newImplAddress;

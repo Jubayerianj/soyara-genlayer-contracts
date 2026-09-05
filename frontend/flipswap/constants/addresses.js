@@ -32,7 +32,7 @@ export const CONTRACT_ADDRESSES = {
     // removed non-deterministic time.time() usage. See DEPLOYMENTS.md.
     agentValidator: "0x7ABa94668afC24463Be323f9bB65BD4b4F480d89",
     liquidityValidator: "0xEFb9473B5269A79d72Df4b6E73E310791a185eeC",
-    // AgentExecutor — deployed 2026-09-04 on GenLayer Bradbury Testnet (chain 4221)
+    // AgentExecutor - deployed 2026-09-04 on GenLayer Bradbury Testnet (chain 4221)
     // Tx: broadcast/deployGenlayer.sol/4221/run-latest.json
     // Deployer/Agent: 0x23D542DCEFb00b1f4268E67a0EC1EF4de0A58fe2
     agentExecutor: "0xa835c0a86dD64726eF23D83a8ca7D60b542EE2e4",

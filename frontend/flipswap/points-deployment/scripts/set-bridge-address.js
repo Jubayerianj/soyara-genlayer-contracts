@@ -56,7 +56,7 @@ async function main() {
   if (updatedBridge.toLowerCase() === CORRECT_BRIDGE.toLowerCase()) {
     console.log("✅ Success! LitVM bridge is now authorized to burn NFTs.");
   } else {
-    console.log("❌ Something went wrong — address not updated.");
+    console.log("❌ Something went wrong - address not updated.");
   }
 }
 

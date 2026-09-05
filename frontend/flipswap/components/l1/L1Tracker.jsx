@@ -152,13 +152,13 @@ export function L1Tracker({ initialTxId = '' }) {
             <div className="detailRow">
               <span>Deposit Amount</span>
               <span className="detailValue" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <TokenIcon currency={fromTicker} size={18} /> {status.amountSend || status.amountExpectedFrom || '—'} {fromTicker}
+                <TokenIcon currency={fromTicker} size={18} /> {status.amountSend || status.amountExpectedFrom || '-'} {fromTicker}
               </span>
             </div>
             <div className="detailRow">
               <span>Receiving Amount</span>
               <span className="detailValue" style={{ color: '#22d3ee', display: 'flex', alignItems: 'center', gap: 6 }}>
-                <TokenIcon currency={toTicker} size={18} /> {status.amountReceive || status.amountExpectedTo || '—'} {toTicker}
+                <TokenIcon currency={toTicker} size={18} /> {status.amountReceive || status.amountExpectedTo || '-'} {toTicker}
               </span>
             </div>
             {status.payinAddress && (

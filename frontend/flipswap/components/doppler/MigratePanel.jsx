@@ -23,7 +23,7 @@ export default function MigratePanel({ prefilledAsset = '' }) {
     setAssetData(null);
     const data = await getAssetData(asset);
     setChecking(false);
-    if (!data) return setLocalError('Asset not found in Liquidity Engine — it may not have been launched via LitVMSWAP.');
+    if (!data) return setLocalError('Asset not found in Liquidity Engine - it may not have been launched via LitVMSWAP.');
     setAssetData(data);
   };
 
@@ -36,7 +36,7 @@ export default function MigratePanel({ prefilledAsset = '' }) {
     }
   };
 
-  const shortAddr = (a) => a && a !== '0x0000000000000000000000000000000000000000' ? `${a.slice(0,8)}…${a.slice(-6)}` : '—';
+  const shortAddr = (a) => a && a !== '0x0000000000000000000000000000000000000000' ? `${a.slice(0,8)}…${a.slice(-6)}` : '-';
 
   return (
     <div className={styles.panel}>

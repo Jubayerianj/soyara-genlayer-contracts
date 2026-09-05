@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { ExternalLink, Zap, ArrowUpRight } from 'lucide-react';
 import styles from './MemeHoldingsTable.module.css';
 
-const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '—');
+const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '-');
 
 export default function MemeHoldingsTable({ holdings }) {
   if (!holdings || holdings.length === 0) {

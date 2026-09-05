@@ -16,9 +16,9 @@
 // 1. The user calls /api/genlayer-validate FIRST (GenLayer write tx → consensus)
 // 2. Only after approved=true does the user call this route with a proposalId
 // 3. This route re-validates the proposal params against the GenLayer IC result
-//    (stored in the request — a production system would verify on-chain)
+//    (stored in the request - a production system would verify on-chain)
 // 4. Calls AgentExecutor.approveTradeWithParams() with the EXACT same params
-// 5. Then calls AgentExecutor.executeSwap() — which checks+consumes the hash
+// 5. Then calls AgentExecutor.executeSwap() - which checks+consumes the hash
 // 6. Any parameter difference → TradeNotApproved revert on-chain
 //
 // FAIL-CLOSED: if any step fails, the entire settlement is aborted.
@@ -59,8 +59,8 @@ function computeTradeHash(user, tokenIn, tokenOut, amountIn, minAmountOut, slipp
  *
  * Bradbury replies `-32005 transaction gas rate limit exceeded: node is at
  * capacity, retry in ~Nms`. Settlement cannot rotate senders the way validation
- * can — AgentExecutor's onlyAgent modifier means these calls must come from the
- * authorised agent — so waiting the hinted interval is the correct remedy here.
+ * can - AgentExecutor's onlyAgent modifier means these calls must come from the
+ * authorised agent - so waiting the hinted interval is the correct remedy here.
  * Without this the throttle surfaced mid-flow as a bare
  * "Request exceeds defined limit", which reads like a failed trade when in fact
  * nothing was submitted.
@@ -94,7 +94,7 @@ export default async function handler(req, res) {
   // (which hot-reloads constants) would approve the new executor while this
   // route still pulled tokens with the old one. The user's allowance then sat
   // on a different contract and settlement failed inside the token's
-  // transferFrom — surfacing as the token's SafeMath error,
+  // transferFrom - surfacing as the token's SafeMath error,
   // "ds-math-sub-underflow", which looks like a routing/liquidity bug.
   // Keeping both sides on one source of truth removes that whole class of drift.
   const agentExecutorAddress = CONTRACT_ADDRESSES[4221]?.agentExecutor
@@ -102,18 +102,18 @@ export default async function handler(req, res) {
     || process.env.NEXT_PUBLIC_AGENT_EXECUTOR_ADDRESS;
 
   if (!agentPrivateKey) {
-    console.error('[agent-execute] AGENT_PRIVATE_KEY not set — settlement aborted (fail-closed)');
+    console.error('[agent-execute] AGENT_PRIVATE_KEY not set - settlement aborted (fail-closed)');
     return res.status(503).json({
       success: false,
-      error: 'Settlement agent not configured — fail-closed',
+      error: 'Settlement agent not configured - fail-closed',
     });
   }
 
   if (!agentExecutorAddress || agentExecutorAddress === '0x0000000000000000000000000000000000000000') {
-    console.error('[agent-execute] AGENT_EXECUTOR_ADDRESS not set — settlement aborted (fail-closed)');
+    console.error('[agent-execute] AGENT_EXECUTOR_ADDRESS not set - settlement aborted (fail-closed)');
     return res.status(503).json({
       success: false,
-      error: 'AgentExecutor not deployed — settlement blocked (fail-closed)',
+      error: 'AgentExecutor not deployed - settlement blocked (fail-closed)',
     });
   }
 
@@ -125,7 +125,7 @@ export default async function handler(req, res) {
     minAmountOut,
     slippageBps,
     deadline,
-    aggProgram,       // bytes — the AGGFlow routing program
+    aggProgram,       // bytes - the AGGFlow routing program
     proposalId,       // from GenLayer validation response (informational)
     mandateId,        // consensus-issued mandate, if the trade was validated that way
     validationApproved,
@@ -136,12 +136,12 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing required trade parameters' });
   }
 
-  // Cheap client-side hint. NOT the gate — the real check is the on-chain
+  // Cheap client-side hint. NOT the gate - the real check is the on-chain
   // verdict lookup in STEP 0a below.
   if (!validationApproved) {
     return res.status(403).json({
       success: false,
-      error: 'Settlement blocked: GenLayer validation was not approved — fail-closed',
+      error: 'Settlement blocked: GenLayer validation was not approved - fail-closed',
     });
   }
 
@@ -193,7 +193,7 @@ export default async function handler(req, res) {
     let derivedProposalId = null;
 
     // Kick the ERC-20 pre-flight off now so it overlaps the GenLayer verdict
-    // lookup instead of running after it — these are independent RPC round
+    // lookup instead of running after it - these are independent RPC round
     // trips against different chains.
     const preflightPromise = (tokenInAddr !== zeroAddress)
       ? (async () => {
@@ -226,7 +226,7 @@ export default async function handler(req, res) {
         }
       }
 
-      // Mandate path — OFF BY DEFAULT.
+      // Mandate path - OFF BY DEFAULT.
       //
       // A mandate's authority does originate from a consensus WRITE
       // (`issue_trading_mandate`), but each individual trade is then admitted by
@@ -265,7 +265,7 @@ export default async function handler(req, res) {
         error:
           'Settlement blocked: no GenLayer consensus verdict exists on-chain for these exact trade parameters. '
           + 'The trade must be validated by a validate_proposal consensus write on the AgentValidator '
-          + 'Intelligent Contract before it can settle — fail-closed.',
+          + 'Intelligent Contract before it can settle - fail-closed.',
         derivedProposalId,
       });
     }
@@ -275,7 +275,7 @@ export default async function handler(req, res) {
     // ── STEP 0: Pre-flight allowance / balance check ─────────────────────────
     // AgentExecutor pulls tokenIn from the user with transferFrom. If the user
     // has not approved THIS executor (or is short on balance), the token's own
-    // SafeMath reverts with "ds-math-sub-underflow" — an opaque message that
+    // SafeMath reverts with "ds-math-sub-underflow" - an opaque message that
     // reads like a routing or liquidity bug. Check first and say plainly what
     // is wrong and which contract needs approving.
     const preflight = await preflightPromise;
@@ -301,8 +301,8 @@ export default async function handler(req, res) {
 
     // ── STEP 0b: Re-quote against live pool state ────────────────────────────
     // minAmountOut is computed when the quote is generated and then sits in the
-    // client's React state. If the pool moves — or the page simply held the
-    // proposal for a while, or a hot reload left a stale proposal on screen —
+    // client's React state. If the pool moves - or the page simply held the
+    // proposal for a while, or a hot reload left a stale proposal on screen -
     // that minimum becomes unreachable and settlement reverts with
     // AGGFlowEntrypoint_InsufficientAmountAfterFees() (0x499c1728), which tells
     // the user nothing about the actual remedy (re-quote).
@@ -325,7 +325,7 @@ export default async function handler(req, res) {
       if (!fresh?.amountOutRaw) {
         // No pool can fill this pair. The proposal's minAmountOut came from the
         // reference-price fallback in /api/agent-v2, which is a display estimate
-        // and not backed by any liquidity — settling it could only ever revert.
+        // and not backed by any liquidity - settling it could only ever revert.
         return res.status(400).json({
           success: false,
           notRoutable: true,
@@ -359,7 +359,7 @@ export default async function handler(req, res) {
         }
       }
     } catch (e) {
-      // A quoter failure must not block settlement — the on-chain minAmountOut
+      // A quoter failure must not block settlement - the on-chain minAmountOut
       // check is still the real guard.
       console.warn('[agent-execute] live re-quote unavailable:', e.message);
     }
@@ -375,7 +375,7 @@ export default async function handler(req, res) {
     console.log(`[agent-execute] user=${user} tokenIn=${tokenInAddr} tokenOut=${tokenOutAddr}`);
     console.log(`[agent-execute] amountIn=${amountInBig} minOut=${minAmountOutBig} slippage=${slippageBpsBig}bps`);
 
-    // ── STEP 1: approveTradeWithParams (onlyAgent — server-side only) ─────────
+    // ── STEP 1: approveTradeWithParams (onlyAgent - server-side only) ─────────
     // Writes keccak256(abi.encode(user, tokenIn, tokenOut, amountIn, minOut, slippage, deadline))
     // to approvedTrades[tradeHash] = true in AgentExecutor storage.
     const approveTxHash = await sendWithRetry(() => walletClient.writeContract({
@@ -395,17 +395,17 @@ export default async function handler(req, res) {
     if (approveReceipt.status !== 'success') {
       return res.status(500).json({
         success: false,
-        error: 'approveTradeWithParams transaction reverted — settlement aborted (fail-closed)',
+        error: 'approveTradeWithParams transaction reverted - settlement aborted (fail-closed)',
         approveTxHash,
       });
     }
 
     console.log(`[agent-execute] Approval confirmed in block ${approveReceipt.blockNumber}. Executing swap...`);
 
-    // ── STEP 2: executeSwap (onlyAgent — server-side only) ────────────────────
+    // ── STEP 2: executeSwap (onlyAgent - server-side only) ────────────────────
     // AgentExecutor internally:
     //   1. Validates all params
-    //   2. Reads+deletes approvedTrades[tradeHash] — reverts with TradeNotApproved if missing or tampered
+    //   2. Reads+deletes approvedTrades[tradeHash] - reverts with TradeNotApproved if missing or tampered
     //   3. Pulls tokenIn from user → approves entrypoint → calls AGGFlowEntrypoint.executeSwapWithReceiver
     //   4. Output tokens go directly to user
     const isNative = tokenInAddr === zeroAddress;
@@ -438,7 +438,7 @@ export default async function handler(req, res) {
     if (execReceipt.status !== 'success') {
       return res.status(500).json({
         success: false,
-        error: 'executeSwap transaction reverted — TradeNotApproved or parameter mismatch',
+        error: 'executeSwap transaction reverted - TradeNotApproved or parameter mismatch',
         execTxHash,
         approveReceipt: approveTxHash,
       });
@@ -465,15 +465,15 @@ export default async function handler(req, res) {
     console.error('[agent-execute] Settlement error (fail-closed):', err);
 
     // Map known revert errors to helpful messages
-    let errorMessage = err?.shortMessage || err?.message || 'Settlement failed — fail-closed';
+    let errorMessage = err?.shortMessage || err?.message || 'Settlement failed - fail-closed';
     if (errorMessage.includes('TradeNotApproved')) {
-      errorMessage = 'Trade hash mismatch — parameters were tampered after approval. Settlement reverted.';
+      errorMessage = 'Trade hash mismatch - parameters were tampered after approval. Settlement reverted.';
     } else if (errorMessage.includes('Unauthorized')) {
-      errorMessage = 'Agent wallet is not authorised on AgentExecutor — check AGENT_PRIVATE_KEY.';
+      errorMessage = 'Agent wallet is not authorised on AgentExecutor - check AGENT_PRIVATE_KEY.';
     } else if (errorMessage.includes('DeadlineExpired')) {
-      errorMessage = 'Trade deadline has expired — request a new validation and retry.';
+      errorMessage = 'Trade deadline has expired - request a new validation and retry.';
     } else if (errorMessage.includes('SlippageExceeded')) {
-      errorMessage = 'Slippage exceeds the on-chain cap — GenLayer validator should have caught this.';
+      errorMessage = 'Slippage exceeds the on-chain cap - GenLayer validator should have caught this.';
     }
 
     return res.status(500).json({

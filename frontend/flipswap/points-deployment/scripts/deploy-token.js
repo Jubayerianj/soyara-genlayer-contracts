@@ -5,7 +5,7 @@ require("dotenv").config();
 
 const RPC_URL = "https://liteforge.rpc.caldera.xyz/infra-partner-http";
 
-// Existing proxy — stays the same forever
+// Existing proxy - stays the same forever
 const EXISTING_PROXY = "0xF664B56933f3cF0d7d69982b5A8eC9101b80059D";
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -30,7 +30,7 @@ async function deployContract(wallet, artifact, label, constructorArgs = []) {
 
   const existingCode = await withRetry(() => provider.getCode(deployedAddress), "getCode");
   if (existingCode && existingCode !== "0x") {
-    console.log(`   ✅ Already deployed — skipping.`);
+    console.log(`   ✅ Already deployed - skipping.`);
     return deployedAddress;
   }
 
@@ -50,12 +50,12 @@ async function deployContract(wallet, artifact, label, constructorArgs = []) {
       const is504 = e.message?.includes("504") || e.message?.includes("Gateway Timeout");
       const isDone = e.message?.includes("nonce too low") || e.message?.includes("already been used");
       if (isDone) {
-        console.log(`   ℹ️  Nonce already used — checking pre-computed address for code...`);
+        console.log(`   ℹ️  Nonce already used - checking pre-computed address for code...`);
         const code = await withRetry(() => provider.getCode(deployedAddress), "getCode");
         if (code && code !== "0x") { console.log(`✅ ${label} at: ${deployedAddress}`); return deployedAddress; }
         throw new Error(`Nonce used but no code at pre-computed address.`);
       }
-      if (is504) { console.log(`   ⚠️  504 — retrying in 10s...`); await sleep(10000); continue; }
+      if (is504) { console.log(`   ⚠️  504 - retrying in 10s...`); await sleep(10000); continue; }
       throw e;
     }
   }
@@ -88,7 +88,7 @@ async function sendTxWithRetry(wallet, contract, method, args, label) {
       const is504 = e.message?.includes("504") || e.message?.includes("Gateway Timeout");
       const isDone = e.message?.includes("nonce too low") || e.message?.includes("already been used");
       if (isDone) { console.log(`   ℹ️  Already mined.`); return; }
-      if (is504) { console.log(`   ⚠️  504 — retrying in 10s...`); await sleep(10000); continue; }
+      if (is504) { console.log(`   ⚠️  504 - retrying in 10s...`); await sleep(10000); continue; }
       throw e;
     }
   }
@@ -120,7 +120,7 @@ async function main() {
 
   // ── Step 1: Deploy new LitPearlsToken ────────────────────────────────────────
   console.log("1️⃣  Deploying LitPearlsToken...");
-  // Initially owned by deployer — we transfer to proxy after
+  // Initially owned by deployer - we transfer to proxy after
   const newTokenAddress = await deployContract(wallet, tokenArtifact, "LitPearlsToken", [wallet.address]);
 
   // ── Step 2: Transfer token ownership to Proxy ────────────────────────────────
@@ -147,7 +147,7 @@ async function main() {
 
   const ok = onChainToken.toLowerCase() === newTokenAddress.toLowerCase()
           && tokenOwner.toLowerCase()    === EXISTING_PROXY.toLowerCase();
-  console.log(ok ? "\n✅ All verified!" : "\n❌ Mismatch — check manually.");
+  console.log(ok ? "\n✅ All verified!" : "\n❌ Mismatch - check manually.");
 
   // ── Summary ───────────────────────────────────────────────────────────────────
   const existing = JSON.parse(fs.readFileSync(path.join(__dirname, "../deployed-points.json"), "utf8"));

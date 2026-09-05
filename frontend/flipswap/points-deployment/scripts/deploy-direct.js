@@ -44,7 +44,7 @@ async function deployImplementation(wallet, artifact, label) {
   // If already deployed (idempotent), skip
   const existingCode = await withRetry(() => provider.getCode(deployedAddress), "getCode");
   if (existingCode && existingCode !== "0x") {
-    console.log(`   ✅ Already has code — skipping broadcast.`);
+    console.log(`   ✅ Already has code - skipping broadcast.`);
     return deployedAddress;
   }
 
@@ -54,7 +54,7 @@ async function deployImplementation(wallet, artifact, label) {
 
   const factory = new ethers.ContractFactory(artifact.abi, artifact.bytecode, wallet);
 
-  // Broadcast with retry — use SAME nonce on every attempt
+  // Broadcast with retry - use SAME nonce on every attempt
   let txHash = null;
   for (let attempt = 1; attempt <= 10; attempt++) {
     try {
@@ -68,8 +68,8 @@ async function deployImplementation(wallet, artifact, label) {
       const isNonceUsed = e.message?.includes("nonce too low") || e.message?.includes("already been used");
 
       if (isNonceUsed) {
-        // Tx with this nonce was already mined — find deployed address and return
-        console.log(`   ℹ️  Nonce ${nonce} already used — contract may already be deployed.`);
+        // Tx with this nonce was already mined - find deployed address and return
+        console.log(`   ℹ️  Nonce ${nonce} already used - contract may already be deployed.`);
         const code = await withRetry(() => provider.getCode(deployedAddress), "getCode");
         if (code && code !== "0x") {
           console.log(`✅ ${label} already at: ${deployedAddress}`);
@@ -79,7 +79,7 @@ async function deployImplementation(wallet, artifact, label) {
       }
 
       if (is504) {
-        console.log(`   ⚠️  504 Gateway Timeout — retrying broadcast in 10s...`);
+        console.log(`   ⚠️  504 Gateway Timeout - retrying broadcast in 10s...`);
         await sleep(10000);
         continue;
       }
@@ -128,11 +128,11 @@ async function sendTxWithRetry(wallet, contract, method, args, label) {
       const is504 = e.message?.includes("504") || e.message?.includes("Gateway Timeout");
       const isNonceUsed = e.message?.includes("nonce too low") || e.message?.includes("already been used");
       if (isNonceUsed) {
-        console.log(`   ℹ️  Tx with nonce ${nonce} already mined — treating as success.`);
+        console.log(`   ℹ️  Tx with nonce ${nonce} already mined - treating as success.`);
         return;
       }
       if (is504) {
-        console.log(`   ⚠️  504 — retrying in 10s...`);
+        console.log(`   ⚠️  504 - retrying in 10s...`);
         await sleep(10000);
         continue;
       }
@@ -158,7 +158,7 @@ async function main() {
   const provider = new ethers.JsonRpcProvider(RPC_URL);
   const wallet   = new ethers.Wallet(privateKey, provider);
 
-  console.log("🔧 AGGFlow Points Wrapper — UPGRADE to fixed implementation");
+  console.log("🔧 AGGFlow Points Wrapper - UPGRADE to fixed implementation");
   console.log("Deployer    :", wallet.address);
   console.log("Proxy       :", EXISTING_PROXY);
   console.log("Token (FSWP):", EXISTING_TOKEN, "\n");
@@ -185,7 +185,7 @@ async function main() {
   const match = onChainImpl.toLowerCase() === newImplAddress.toLowerCase();
   console.log(`   On-chain impl: ${onChainImpl}`);
   console.log(`   Expected     : ${newImplAddress}`);
-  console.log(match ? "✅ Upgrade verified!" : "❌ Mismatch — check manually.");
+  console.log(match ? "✅ Upgrade verified!" : "❌ Mismatch - check manually.");
 
   // ── Step 4: Verify proxy state ────────────────────────────────────────────────
   console.log("\n4️⃣  Verifying proxy state...");
@@ -225,7 +225,7 @@ async function main() {
   fs.writeFileSync(outPath, JSON.stringify(summary, null, 2));
   console.log(`\n📄 Saved to ${outPath}`);
 
-  console.log("\n⚠️  ACTION REQUIRED — For bridged NFT staking to work:");
+  console.log("\n⚠️  ACTION REQUIRED - For bridged NFT staking to work:");
   console.log(`   NFT contract owner must call setBridgeAddress("${EXISTING_PROXY}")`);
   console.log(`   on NFT contract: ${NFT_ADDRESS}`);
 }

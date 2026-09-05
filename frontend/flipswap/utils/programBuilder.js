@@ -141,7 +141,7 @@ function hexToBytes(hex) {
  * The format already supports this: opcode 0x02 consumes a token pulled from
  * the USER, and 0x01 consumes a token the ROUTER is already holding. So a hop
  * chain is simply "0x02 tokenIn → swap", then one "0x01 intermediate → swap"
- * per additional leg — the same mechanism the wrap/unwrap path has always used.
+ * per additional leg - the same mechanism the wrap/unwrap path has always used.
  *
  * @param fromToken {address,isNative}
  * @param toToken   {address,isNative}
@@ -151,7 +151,7 @@ export function buildMultiHopProgram(fromToken, toToken, hops, wethAddress) {
   if (!Array.isArray(hops) || hops.length === 0) {
     throw new Error('buildMultiHopProgram: at least one hop is required');
   }
-  // A single hop is the ordinary case — reuse the proven builder rather than
+  // A single hop is the ordinary case - reuse the proven builder rather than
   // maintaining two encoders.
   if (hops.length === 1) {
     const h = hops[0];

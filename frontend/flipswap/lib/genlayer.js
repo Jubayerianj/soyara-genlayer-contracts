@@ -29,7 +29,7 @@ export function getGenLayerClient() {
  */
 // GenVM round outcomes where the network never REACHED a verdict. genlayer-js
 // counts these as "decided states", so waitForTransactionReceipt({status:'ACCEPTED'})
-// resolves on them and the receipt carries no `result` — which previously fell
+// resolves on them and the receipt carries no `result` - which previously fell
 // through to the generic branch below and got labelled "Rejected by GenLayer
 // consensus". That is wrong and was the cause of trades being shown as rejected
 // when the validator had actually approved them (or simply never voted):
@@ -63,7 +63,7 @@ function interpretValidationReceipt(receipt, ctx) {
       approved: false, // still fail-closed: settlement stays blocked
       retryable: true,
       reason:
-        `GenVM round ended as ${receipt.statusName} — the validator set did not reach a majority. ` +
+        `GenVM round ended as ${receipt.statusName} - the validator set did not reach a majority. ` +
         `This is a network condition, not a rejection of your trade. Submitting a fresh consensus round usually resolves it.`,
     };
   }
@@ -74,15 +74,15 @@ function interpretValidationReceipt(receipt, ctx) {
       ...base,
       success: false,
       approved: false,
-      reason: `GenLayer consensus failed: ${receipt?.statusName || receipt?.txExecutionResultName} — failed closed`,
+      reason: `GenLayer consensus failed: ${receipt?.statusName || receipt?.txExecutionResultName} - failed closed`,
     };
   }
 
   // NOTE: `receipt.result` is the CONSENSUS VOTE enum (0 IDLE / 1 AGREE /
-  // 2 DISAGREE / 3 TIMEOUT) — it is NOT the contract's return payload. A write
+  // 2 DISAGREE / 3 TIMEOUT) - it is NOT the contract's return payload. A write
   // transaction's return value cannot be recovered from the receipt at all.
   // Reading `receipt.result.approved` therefore always yielded `undefined`,
-  // which made every validation — including approved ones — report as rejected.
+  // which made every validation - including approved ones - report as rejected.
   //
   // The verdict is now persisted on-chain by validate_proposal and read back
   // with the `get_validation` view; see readValidationVerdict(). This function
@@ -96,27 +96,27 @@ function interpretValidationReceipt(receipt, ctx) {
       success: true,
       approved: false,      // caller must resolve the verdict via get_validation
       needsVerdictLookup: true,
-      reason: 'Consensus reached — reading the recorded verdict.',
+      reason: 'Consensus reached - reading the recorded verdict.',
       details: action ? { action, tokenIn, tokenOut, amountInRaw: String(amountInRaw), minAmountOutRaw: String(minAmountOutRaw), slippageBps, router, deadline } : undefined,
     };
   }
 
-  // Decided state but the contract did not run to completion — ambiguous, so
+  // Decided state but the contract did not run to completion - ambiguous, so
   // treat as retryable rather than asserting the validator rejected the trade.
   return {
     ...base,
     success: true,
     approved: false,
     retryable: true,
-    reason: `GenVM round finished (${receipt?.statusName || 'unknown status'}) without a usable result — retry to run a fresh round.`,
+    reason: `GenVM round finished (${receipt?.statusName || 'unknown status'}) without a usable result - retry to run a fresh round.`,
   };
 }
 
 /**
  * Turn a ConsensusMain submission revert into something a user can act on.
  *
- * A failed `addTransaction` is NOT a verdict — the proposal never reached the
- * validators at all — but it surfaced as a raw "EVM tx ... was reverted", which
+ * A failed `addTransaction` is NOT a verdict - the proposal never reached the
+ * validators at all - but it surfaced as a raw "EVM tx ... was reverted", which
  * reads exactly like a rejected trade. The important case is PendingQueueFull:
  * an Intelligent Contract may hold only so many unresolved consensus rounds, and
  * once stalled rounds fill that queue every new submission bounces until they
@@ -129,7 +129,7 @@ function interpretValidationReceipt(receipt, ctx) {
  * Bradbury returns `-32005 transaction gas rate limit exceeded: node is at
  * capacity, retry in ~Nms` with a `retryAfterMs` hint. The app used to surface
  * this as a flat "Request exceeds defined limit" with `retryable: false`, i.e.
- * as though the validator had refused the trade — when in fact the proposal was
+ * as though the validator had refused the trade - when in fact the proposal was
  * never submitted at all. Throttling is per sender, so simply waiting (or using
  * another funded lane) clears it.
  */
@@ -143,7 +143,7 @@ export function parseRateLimit(err) {
 export async function describeSubmissionRevert(message) {
   const text = String(message || '');
 
-  // A failed addTransaction reads like this, and carries only the tx hash —
+  // A failed addTransaction reads like this, and carries only the tx hash -
   // the revert data is not in the message, so replay the call to recover it.
   const isSubmissionRevert = /consensus contract .* was reverted/i.test(text);
   if (!isSubmissionRevert) return null;
@@ -151,7 +151,7 @@ export async function describeSubmissionRevert(message) {
   const generic = {
     retryable: true,
     reason:
-      'GenLayer did not accept the proposal for consensus, so no round ever started — '
+      'GenLayer did not accept the proposal for consensus, so no round ever started - '
       + 'your trade was neither validated nor rejected. This is a network-side condition; retry shortly.',
   };
 
@@ -181,7 +181,7 @@ export async function describeSubmissionRevert(message) {
 
     // PendingQueueFull(address recipient, uint256 max): an Intelligent Contract
     // may hold only so many unresolved rounds. Once stalled rounds fill that
-    // queue, every new submission bounces until they clear — nothing to do with
+    // queue, every new submission bounces until they clear - nothing to do with
     // the trade itself.
     if (selector === '0xd48a82a3') {
       const max = data.length >= 138 ? parseInt(data.slice(-64), 16) : null;
@@ -191,7 +191,7 @@ export async function describeSubmissionRevert(message) {
         reason:
           `GenLayer could not accept the proposal: the AgentValidator contract already has the maximum `
           + `number of unresolved consensus rounds queued${max ? ` (${max})` : ''}. This is a network backlog, `
-          + `not a rejection — your trade was never validated or refused. Submissions resume once the stalled `
+          + `not a rejection - your trade was never validated or refused. Submissions resume once the stalled `
           + `rounds clear.`,
       };
     }
@@ -200,7 +200,7 @@ export async function describeSubmissionRevert(message) {
         retryable: true,
         reason:
           'GenLayer could not accept the proposal: an earlier round from the same sender is still at the '
-          + 'head of the queue. A collision, not a rejection — retry shortly.',
+          + 'head of the queue. A collision, not a rejection - retry shortly.',
       };
     }
     return generic;
@@ -298,7 +298,7 @@ export async function issueTradingMandate(terms, account) {
         pending: true,
         mandateId: '',
         txHash,
-        reason: 'Mandate round submitted and awaiting GenVM consensus — poll this txHash.',
+        reason: 'Mandate round submitted and awaiting GenVM consensus - poll this txHash.',
         contractAddress: validatorAddress,
       };
     }
@@ -306,7 +306,7 @@ export async function issueTradingMandate(terms, account) {
   }
 }
 
-/** Read a mandate's committed terms (view — instant). */
+/** Read a mandate's committed terms (view - instant). */
 export async function getMandate(mandateId) {
   const client = getGenLayerClient();
   try {
@@ -324,7 +324,7 @@ export async function getMandate(mandateId) {
 /**
  * Fast path: validate a trade against an already consensus-approved mandate.
  *
- * `check_mandate` is a @gl.public.view, so this is a plain read — no consensus
+ * `check_mandate` is a @gl.public.view, so this is a plain read - no consensus
  * round, no activation wait, no multi-minute latency. Its authority comes from
  * `issue_trading_mandate`, which DID run full Optimistic Democracy consensus
  * when the session's mandate was established.
@@ -381,7 +381,7 @@ export async function checkTradeAgainstMandate(mandateId, trade) {
  *
  * These do not clear on their own, they accumulate against the agent account,
  * and once enough pile up new `addTransaction` calls start reverting at the
- * ConsensusMain contract — which surfaced in the UI as a bogus
+ * ConsensusMain contract - which surfaced in the UI as a bogus
  * "Rejected by Validator: transaction reverted" error. `finalizeIdlenessTxs`
  * is GenLayer's own public remedy for idle transactions (the same thing
  * `genlayer finalize-batch` does), so the app calls it itself instead of
@@ -418,7 +418,7 @@ export async function checkSwapValidationStatus(txHash, proposalId = null) {
     // ── Cheap check first: is the verdict already recorded? ──────────────────
     // This is a poll, so it runs repeatedly. waitForTransactionReceipt blocks
     // for ~11s before giving up (retries x interval), which made each poll cost
-    // far more than the sleep between polls — a finished round could sit
+    // far more than the sleep between polls - a finished round could sit
     // undetected for ten seconds. `get_validation` is a single view read, so
     // ask it directly and return the instant the verdict exists.
     if (proposalId) {
@@ -458,7 +458,7 @@ export async function checkSwapValidationStatus(txHash, proposalId = null) {
         // Re-read a few times before giving up.
         //
         // State can lag the round by a moment, and the caller's response to
-        // "not readable" is to run an ENTIRE fresh consensus round — 60-120s to
+        // "not readable" is to run an ENTIRE fresh consensus round - 60-120s to
         // recover from what is often a 1-2s lag. Liquidity felt far slower than
         // swaps largely because of this. A cheap view read is the right retry.
         for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -471,12 +471,12 @@ export async function checkSwapValidationStatus(txHash, proposalId = null) {
         return {
           ...interpreted,
           retryable: true,
-          reason: 'Consensus reached but the contract recorded no verdict — the round failed closed. A fresh round is needed.',
+          reason: 'Consensus reached but the contract recorded no verdict - the round failed closed. A fresh round is needed.',
         };
       }
 
       // Consensus SUCCEEDED but we have no proposal id to look the verdict up
-      // with. That is a lookup gap on our side, not a verdict — returning it as
+      // with. That is a lookup gap on our side, not a verdict - returning it as
       // {approved:false, retryable:false} made the UI render a red "Rejected by
       // Validator" for a round the validators had just accepted. Anything that
       // reaches this branch must stay retryable.
@@ -484,7 +484,7 @@ export async function checkSwapValidationStatus(txHash, proposalId = null) {
         ...interpreted,
         retryable: true,
         reason:
-          'Consensus reached, but this app could not read the verdict back — the proposal id was '
+          'Consensus reached, but this app could not read the verdict back - the proposal id was '
           + 'not carried through the poll. Your trade was NOT rejected. Re-checking resolves it.',
       };
     }
@@ -495,7 +495,7 @@ export async function checkSwapValidationStatus(txHash, proposalId = null) {
         success: true,
         approved: false,
         pending: true,
-        reason: 'Still awaiting GenVM consensus — not rejected, check back shortly.',
+        reason: 'Still awaiting GenVM consensus - not rejected, check back shortly.',
         proposalId: '',
         statusName: 'PENDING',
         txHash,
@@ -510,7 +510,7 @@ export async function checkSwapValidationStatus(txHash, proposalId = null) {
     return {
       success: false,
       approved: false,
-      reason: err?.shortMessage || err?.message || 'Status check failed — failed closed',
+      reason: err?.shortMessage || err?.message || 'Status check failed - failed closed',
       proposalId: '',
       txHash,
       contractAddress: validatorAddress,
@@ -564,7 +564,7 @@ export function resolveTokenAddress(tokenOrAddress) {
  * Fails CLOSED on any consensus failure: approved: false is returned, never true.
  *
  * @param {object} proposal  - Trade proposal fields
- * @param {object} options   - { account, privateKey } — signer for the write tx.
+ * @param {object} options   - { account, privateKey } - signer for the write tx.
  *                             If neither is provided, falls back to readContract
  *                             (non-state-mutating preview only, for UI display).
  */
@@ -657,7 +657,7 @@ export async function validateSwapProposal(proposal, options = {}) {
     }
   }
 
-  // ── Fast path: trade covered by a consensus-approved mandate — OPT-IN ─────
+  // ── Fast path: trade covered by a consensus-approved mandate - OPT-IN ─────
   // A GenVM write has to be activated by the network before validators can vote,
   // which on Bradbury can take minutes. `check_mandate` is a view, so it answers
   // immediately, and the mandate it reads was itself established by a full
@@ -693,9 +693,9 @@ export async function validateSwapProposal(proposal, options = {}) {
   }
 
   // ── GenLayer Write Flow (correct path) ────────────────────────────────────
-  // validate_proposal is @gl.public.write — it MUST be called as a write
+  // validate_proposal is @gl.public.write - it MUST be called as a write
   // transaction so GenLayer's Optimistic Democracy consensus is triggered.
-  // readContract only simulates locally on one node — it bypasses consensus.
+  // readContract only simulates locally on one node - it bypasses consensus.
   const account = options.account || (options.privateKey ? createAccount(options.privateKey) : null);
 
   if (account && typeof client.writeContract === 'function') {
@@ -720,7 +720,7 @@ export async function validateSwapProposal(proposal, options = {}) {
             // on purpose: shrinking the set weakens the Optimistic Democracy
             // quorum, which is the exact property the GenLayer review is
             // assessing. Set GENLAYER_VALIDATORS=1 only for demos where latency
-            // matters more than quorum strength — never for a submission.
+            // matters more than quorum strength - never for a submission.
             ...(process.env.GENLAYER_VALIDATORS
               ? { numOfInitialValidators: Number(process.env.GENLAYER_VALIDATORS) }
               : {}),
@@ -738,13 +738,13 @@ export async function validateSwapProposal(proposal, options = {}) {
       if (typeof client.waitForTransactionReceipt === 'function') {
         // NOTE: wait for ACCEPTED, not FINALIZED. ACCEPTED is the point at which
         // Optimistic Democracy consensus has decided the result (genlayer-js's own
-        // DECIDED_STATES includes ACCEPTED) — the execution result is already final
+        // DECIDED_STATES includes ACCEPTED) - the execution result is already final
         // at this point. FINALIZED only comes after the appeal-bond window closes.
         //
         // Bradbury testnet consensus rounds can occasionally take much longer than
         // any reasonable synchronous HTTP request should block for (observed: several
         // minutes under load). Rather than waiting indefinitely (bad UX) or timing out
-        // and reporting a false "rejected" (misleading — the trade may still approve
+        // and reporting a false "rejected" (misleading - the trade may still approve
         // moments later), this waits a bounded amount and, on timeout, returns
         // pending:true with the txHash so the caller can poll checkSwapValidationStatus
         // instead of treating a slow round as a rejection.
@@ -766,9 +766,9 @@ export async function validateSwapProposal(proposal, options = {}) {
             if (verdict) {
               return { ...interpreted, approved: verdict.approved, reason: verdict.reason, proposalId, needsVerdictLookup: false };
             }
-            // Round succeeded but the verdict is not readable yet — retryable,
+            // Round succeeded but the verdict is not readable yet - retryable,
             // never a rejection.
-            return { ...interpreted, retryable: true, reason: 'Consensus reached but the verdict is not yet readable — retry shortly.' };
+            return { ...interpreted, retryable: true, reason: 'Consensus reached but the verdict is not yet readable - retry shortly.' };
           }
           return interpreted;
         } catch (waitErr) {
@@ -777,7 +777,7 @@ export async function validateSwapProposal(proposal, options = {}) {
               success: true,
               approved: false,
               pending: true,
-              reason: 'Still awaiting GenVM Optimistic Democracy consensus — this can take several minutes on Bradbury testnet under load. Not rejected — check back shortly.',
+              reason: 'Still awaiting GenVM Optimistic Democracy consensus - this can take several minutes on Bradbury testnet under load. Not rejected - check back shortly.',
               // Carry the id so the poller can read the verdict once it lands.
               proposalId: proposalId || '',
               txHash,
@@ -792,7 +792,7 @@ export async function validateSwapProposal(proposal, options = {}) {
         }
       }
     } catch (writeErr) {
-      // A submission revert means the round never started — decode it so this
+      // A submission revert means the round never started - decode it so this
       // does not read as "your trade was rejected".
       const submissionDetail = await describeSubmissionRevert(writeErr?.shortMessage || writeErr?.message);
       // Write tx failed (network, rejected, etc.) → fail closed
@@ -805,12 +805,12 @@ export async function validateSwapProposal(proposal, options = {}) {
         reason:
           (parseRateLimit(writeErr)
             ? 'The GenLayer RPC node is at capacity and throttled the submission, so no consensus round started. '
-              + 'Your trade was not validated or rejected — retry in a moment.'
+              + 'Your trade was not validated or rejected - retry in a moment.'
             : null)
           || submissionDetail?.reason
           || writeErr?.shortMessage
           || writeErr?.message
-          || 'GenLayer write transaction failed — consensus unavailable, failed closed',
+          || 'GenLayer write transaction failed - consensus unavailable, failed closed',
         proposalId: '',
         contractAddress: validatorAddress,
         contractName: 'AgentValidator (GenLayer IC)',
@@ -837,7 +837,7 @@ export async function validateSwapProposal(proposal, options = {}) {
     return {
       success: true,
       approved: isApproved,
-      reason: result?.reason || (isApproved ? 'Simulation approved (read-only preview — not consensus)' : 'Simulation rejected by validator'),
+      reason: result?.reason || (isApproved ? 'Simulation approved (read-only preview - not consensus)' : 'Simulation rejected by validator'),
       proposalId: result?.proposal_id || (isApproved ? `sim_${Date.now()}` : ''),
       txHash: null,
       contractAddress: validatorAddress,
@@ -845,7 +845,7 @@ export async function validateSwapProposal(proposal, options = {}) {
       network: GENLAYER_CONFIG.chainName,
       chainId: GENLAYER_CONFIG.chainId,
       timestamp: new Date().toISOString(),
-      isSimulation: true,  // Caller must check this — simulations do NOT gate settlement
+      isSimulation: true,  // Caller must check this - simulations do NOT gate settlement
       details: {
         action,
         tokenIn,
@@ -862,7 +862,7 @@ export async function validateSwapProposal(proposal, options = {}) {
     return {
       success: false,
       approved: false,
-      reason: err?.shortMessage || err?.message || 'GenLayer Intelligent Contract consensus unavailable — failed closed',
+      reason: err?.shortMessage || err?.message || 'GenLayer Intelligent Contract consensus unavailable - failed closed',
       proposalId: '',
       contractAddress: validatorAddress,
       contractName: 'AgentValidator (GenLayer IC)',
@@ -885,7 +885,7 @@ export async function validateLiquidityProposal(proposal, options = {}) {
 
   // ── V2 add-liquidity goes through the SAME enforced path as swaps ─────────
   // Everything below this branch calls `client.readContract`, i.e. a local
-  // simulation on a single node that never triggers Optimistic Democracy — the
+  // simulation on a single node that never triggers Optimistic Democracy - the
   // "validates through a read simulation" the GenLayer review rejected.
   //
   // LiquidityValidator cannot back an enforced flow as deployed: it has no
@@ -908,7 +908,7 @@ export async function validateLiquidityProposal(proposal, options = {}) {
       // Use the WRAPPED address for native on both sides of the flow.
       //
       // AgentExecutor.executeAddLiquidityV2 pulls both sides with transferFrom,
-      // so it can only ever deal in ERC-20s — settlement therefore substitutes
+      // so it can only ever deal in ERC-20s - settlement therefore substitutes
       // WGEN for native GEN. Validation used to resolve GEN to the zero address
       // instead, which produced a DIFFERENT proposal_id from the one settlement
       // derives, so the verdict could never be found and every deposit was
@@ -948,7 +948,7 @@ export async function validateLiquidityProposal(proposal, options = {}) {
 
   // Accept the swap-shaped field names too. The /a2a swarm describes every
   // action with tokenIn/tokenOut, so reading only tokenA/tokenB left both
-  // undefined — and resolveTokenAddress(undefined) returns the zero address,
+  // undefined - and resolveTokenAddress(undefined) returns the zero address,
   // making the pair look like NATIVE/NATIVE. Every liquidity proposal was then
   // rejected with "tokenA and tokenB cannot be the same".
   const rawTokenA = proposal.tokenA ?? proposal.token0 ?? proposal.tokenIn;
@@ -1021,7 +1021,7 @@ export async function validateLiquidityProposal(proposal, options = {}) {
         // proposal is not silently validated against placeholder amounts.
         const amountARaw = String(proposal.amountARaw ?? proposal.amountA ?? proposal.amountInRaw ?? '1000000000000000000');
         const amountBRaw = String(proposal.amountBRaw ?? proposal.amountB ?? proposal.minAmountOutRaw ?? '1000000000000000000');
-        // Minimums default to 0.5% below the desired amounts — comfortably
+        // Minimums default to 0.5% below the desired amounts - comfortably
         // inside the IC's 300 bps implied-slippage cap.
         const minARaw = String(proposal.minAmountARaw ?? proposal.minAmountA ?? (BigInt(amountARaw) * 995n) / 1000n);
         const minBRaw = String(proposal.minAmountBRaw ?? proposal.minAmountB ?? (BigInt(amountBRaw) * 995n) / 1000n);
@@ -1056,7 +1056,7 @@ export async function validateLiquidityProposal(proposal, options = {}) {
     return {
       success: false,
       approved: false,
-      reason: err?.shortMessage || err?.message || 'Liquidity validation failed on GenLayer IC — failed closed',
+      reason: err?.shortMessage || err?.message || 'Liquidity validation failed on GenLayer IC - failed closed',
       proposalId: '',
       contractAddress: validatorAddress,
       contractName: 'LiquidityValidator (GenLayer IC)',

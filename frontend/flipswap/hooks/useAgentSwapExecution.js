@@ -3,12 +3,12 @@
 // Shared GenLayer-validated swap execution logic for the `/ai` page and the
 // `/a2a` swarm UI. Extracted from pages/ai.jsx so both surfaces settle through
 // the exact same path (ERC20 approve → AgentExecutor one-time approval gate
-// via /api/agent-execute) instead of drifting apart — before this extraction,
+// via /api/agent-execute) instead of drifting apart - before this extraction,
 // the /a2a "Execute" button was a 1-second fake timeout that never called the
 // real settlement API at all.
 //
 // UI-agnostic by design: `approve()`/`execute()` return plain result objects
-// (or throw) instead of pushing formatted messages themselves — each caller
+// (or throw) instead of pushing formatted messages themselves - each caller
 // (chat bubbles on /ai, timeline entries on /a2a) formats its own UI text.
 
 import { useMemo, useCallback, useState } from 'react';
@@ -84,7 +84,7 @@ export function useAgentSwapExecution(proposal) {
 
   // ── Balance pre-flight ────────────────────────────────────────────────────
   // Without this the shortfall only surfaced server-side at settlement, as a raw
-  // "wallet holds X but the trade needs Y (raw units)" — after the user had
+  // "wallet holds X but the trade needs Y (raw units)" - after the user had
   // already validated and clicked Execute. Both /ai and /a2a can now refuse the
   // trade up front, which matters most on /a2a where the swarm proposes a size
   // the user never typed.
@@ -173,7 +173,7 @@ export function useAgentSwapExecution(proposal) {
         type: 'function',
       }];
 
-      // Probe the fee tiers concurrently — awaiting them one at a time cost ~1.4s
+      // Probe the fee tiers concurrently - awaiting them one at a time cost ~1.4s
       // on Bradbury against ~0.5s in parallel, all of it before the user sees any
       // progress. Results are still consumed in tier order, so the cheapest tier
       // with a real pool still wins.
@@ -227,20 +227,20 @@ export function useAgentSwapExecution(proposal) {
     return null;
   }, [publicClient, wgenAddress]);
 
-  // Approve token — approves the correct settlement spender (AgentExecutor or AGGFlowEntrypoint)
+  // Approve token - approves the correct settlement spender (AgentExecutor or AGGFlowEntrypoint)
   const approve = useCallback(async () => {
     if (!fromTokenObj?.address || !approvalSpender || !proposal) return null;
     setExecutionError(null);
 
-    // ONE-TIME UNLIMITED APPROVAL — this is an agentic system.
+    // ONE-TIME UNLIMITED APPROVAL - this is an agentic system.
     //
     // Approving only the current trade's amountIn forces a wallet popup before
     // every single swap, which defeats the point of delegating execution to the
     // agent. Approve max once; every later trade then settles with no prompt.
     //
     // This does not weaken the security model. Per-trade authority comes from
-    // AgentExecutor's one-time approval hash — keccak256(abi.encode(user,
-    // tokenIn, tokenOut, amountIn, minAmountOut, slippageBps, deadline)) — which
+    // AgentExecutor's one-time approval hash - keccak256(abi.encode(user,
+    // tokenIn, tokenOut, amountIn, minAmountOut, slippageBps, deadline)) - which
     // is bound by approveTradeWithParams and CONSUMED by executeSwap, and which
     // is only ever bound after GenLayer's AgentValidator approved the proposal.
     // A mismatch reverts with TradeNotApproved and the hash cannot be replayed,
@@ -261,7 +261,7 @@ export function useAgentSwapExecution(proposal) {
   // Execute swap on-chain via the one-time approval gate (/api/agent-execute)
   //
   // IMPORTANT: AgentExecutor.approveTradeWithParams() and AgentExecutor.executeSwap()
-  // are both protected by `onlyAgent` — they will REVERT if called from the user wallet.
+  // are both protected by `onlyAgent` - they will REVERT if called from the user wallet.
   // The server-side /api/agent-execute route holds the agent private key and calls them.
   // The user wallet only handles ERC20 approve (spender=AgentExecutor) before calling the API.
   const execute = useCallback(async (validationResult) => {
@@ -321,7 +321,7 @@ export function useAgentSwapExecution(proposal) {
 
       // ── REMOVE_LIQUIDITY settles through its own gated route ────────────────
       // Before this existed, an approved withdrawal validated and then did
-      // nothing on-chain — execute() only ever handled swaps and deposits.
+      // nothing on-chain - execute() only ever handled swaps and deposits.
       if (proposal.action === 'REMOVE_LIQUIDITY') {
         const res = await fetch('/api/agent-remove-liquidity', {
           method: 'POST',
@@ -342,7 +342,7 @@ export function useAgentSwapExecution(proposal) {
         });
         const out = await res.json();
         if (!res.ok || !out.success) {
-          const err = new Error(out.error || 'Withdrawal failed — aborted (fail-closed)');
+          const err = new Error(out.error || 'Withdrawal failed - aborted (fail-closed)');
           err.needsApproval = Boolean(out.needsApproval);
           err.approvalToken = out.token || null;
           err.notValidated = Boolean(out.notValidated);
@@ -379,14 +379,14 @@ export function useAgentSwapExecution(proposal) {
             amountBDesired: String(amountBRaw),
             slippageBps: proposal.slippageBps || 30,
             // `deadlineNum` is declared further down in this function, so it is
-            // in the temporal dead zone here — compute the fallback inline.
+            // in the temporal dead zone here - compute the fallback inline.
             deadline: proposal.deadline || (Math.floor(Date.now() / 1000) + 1800),
             validationApproved: Boolean(validationResult?.approved),
           }),
         });
         const lpResult = await lpRes.json();
         if (!lpRes.ok || !lpResult.success) {
-          const err = new Error(lpResult.error || 'Liquidity settlement failed — aborted (fail-closed)');
+          const err = new Error(lpResult.error || 'Liquidity settlement failed - aborted (fail-closed)');
           err.needsApproval = Boolean(lpResult.needsApproval);
           err.notValidated = Boolean(lpResult.notValidated);
           throw err;
@@ -468,7 +468,7 @@ export function useAgentSwapExecution(proposal) {
 
         const agentResult = await agentExecRes.json();
         if (!agentExecRes.ok || !agentResult.success) {
-          const err = new Error(agentResult.error || 'Agent execution failed — settlement aborted (fail-closed)');
+          const err = new Error(agentResult.error || 'Agent execution failed - settlement aborted (fail-closed)');
           // `stale` means the quote aged out rather than anything being broken;
           // the caller should offer a re-quote instead of showing a hard failure.
           err.stale = Boolean(agentResult.stale);
@@ -498,7 +498,7 @@ export function useAgentSwapExecution(proposal) {
       throw new Error(
         'Settlement unavailable: AgentExecutor is not configured, and settling directly '
         + 'through AGGFlowEntrypoint would bypass the GenLayer-enforced one-time approval. '
-        + 'Configure the AgentExecutor address to enable trading — fail-closed.'
+        + 'Configure the AgentExecutor address to enable trading - fail-closed.'
       );
     } catch (err) {
       const message = err?.shortMessage || err?.message || 'Execution rejected by user or network';
@@ -507,7 +507,7 @@ export function useAgentSwapExecution(proposal) {
     } finally {
       // MUST be in `finally`. Every success path above returns early, so clearing
       // this only in `catch` left `isExecuting` stuck true after a trade that
-      // actually settled — the Execute button then read "Executing on Soyara
+      // actually settled - the Execute button then read "Executing on Soyara
       // DEX..." and stayed disabled forever, which looked like a hung execution.
       setIsExecuting(false);
     }

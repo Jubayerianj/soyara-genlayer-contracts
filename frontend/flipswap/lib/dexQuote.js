@@ -15,7 +15,7 @@
 //  1. V3 is only quoted through the real Quoter (`quoteExactInputSingle`), which
 //     walks ticks and accounts for price impact. Deriving a V3 quote from the
 //     `slot0` spot price ignores price impact entirely and over-promises badly
-//     on thin pools — that is what caused the reverts. If the Quoter is
+//     on thin pools - that is what caused the reverts. If the Quoter is
 //     unavailable or reverts (e.g. liquidity is out of range at the current
 //     price), V3 is treated as UNROUTABLE rather than guessed at.
 //
@@ -70,7 +70,7 @@ export function applyEntrypointFee(amountInWei) {
   return (amountInWei * (10000n - ENTRYPOINT_FEE_BPS)) / 10000n;
 }
 
-/** Exact V2 output — mirrors the on-chain constant-product math (0.30% fee). */
+/** Exact V2 output - mirrors the on-chain constant-product math (0.30% fee). */
 export async function quoteV2(tokenInAddr, tokenOutAddr, amountInWei) {
   const client = getQuoteClient();
   const pair = await client.readContract({
@@ -102,7 +102,7 @@ export async function quoteV2(tokenInAddr, tokenOutAddr, amountInWei) {
 }
 
 /**
- * V3 output via the real Quoter. Returns null when no tier can actually fill —
+ * V3 output via the real Quoter. Returns null when no tier can actually fill -
  * deliberately, so callers never build a minAmountOut the pool cannot honour.
  */
 export async function quoteV3(tokenInAddr, tokenOutAddr, amountInWei) {
@@ -113,7 +113,7 @@ export async function quoteV3(tokenInAddr, tokenOutAddr, amountInWei) {
 
   // Probe every fee tier concurrently. Walking them one at a time meant up to
   // six serial RPC round trips (getPool then simulate, per tier) on the hot
-  // quoting path — the dominant cost of a quote.
+  // quoting path - the dominant cost of a quote.
   const pools = await Promise.all(
     V3_FEE_TIERS.map((fee) =>
       client.readContract({
@@ -176,7 +176,7 @@ export async function quoteBestRoute(tokenInAddr, tokenOutAddr, amountInWei, dex
 // ── Multi-hop routing ───────────────────────────────────────────────────────
 //
 // A real aggregator does not give up when two tokens have no direct pool.
-// WBTC/USDT has no pair, but WBTC→WGEN→USDT does — previously that was reported
+// WBTC/USDT has no pair, but WBTC→WGEN→USDT does - previously that was reported
 // as "no route" and the trade was refused. These are the tokens deep enough to
 // be worth routing through.
 const HOP_TOKENS = ['wgen', 'usdc', 'usdt'];
@@ -244,7 +244,7 @@ export async function quoteBestRouteMultiHop(tokenInAddr, tokenOutAddr, amountIn
 
   if (all.length === 0) return null;
 
-  // Best executable output wins — that is the whole promise of an aggregator.
+  // Best executable output wins - that is the whole promise of an aggregator.
   all.sort((a, b) => (b.amountOutRaw > a.amountOutRaw ? 1 : b.amountOutRaw < a.amountOutRaw ? -1 : 0));
   const best = all[0];
   return {

@@ -73,7 +73,7 @@ async function main() {
       break;
     } catch (e) {
       if (e.message?.includes("504") || e.message?.includes("Gateway Timeout")) {
-        console.log(`   ⚠️  504 — retrying in 10s...`);
+        console.log(`   ⚠️  504 - retrying in 10s...`);
         await sleep(10000);
         continue;
       }
