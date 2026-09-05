@@ -153,7 +153,8 @@ GOV_PRIVATE_KEY=0x<your_key> forge script script/deployGenlayer.sol \
 
 | Component | Contract | Address |
 |---|---|---|
-| **Settlement Gate** | `AgentExecutor` | `0xBda36A9453003E2eEe5D6Cb07ad253e64BaB4729` |
+| **Settlement Gate** | `AgentExecutor` (multi-agent) | `0xa835c0a86dD64726eF23D83a8ca7D60b542EE2e4` |
+| Settlement Gate (retired — single agent only) | `AgentExecutor` | `0xBda36A9453003E2eEe5D6Cb07ad253e64BaB4729` |
 | Settlement Gate (retired — native-out blocked, see below) | `AgentExecutor` | `0xaE547F01f9ddCa4dB66cdbf0727f7563Fc44bC26` |
 | **Aggregator Entrypoint** | `AGGFlowEntrypoint` (new) | `0x95feE6Cb918Ed9C621E36082EE8D998873031EaA` |
 | **Aggregator Router** | `AGGFlowRouter` (new) | `0xafCAD2bf0E85e30a2b54ac6491dC81987cE7767C` |
@@ -479,4 +480,40 @@ liquidity proposal is approved whenever both amounts are positive integers.
 
 Verified on the new contract with the exact failing shape (20x ratio):
 `ACCEPTED | found=true approved=true`.
+
+### Multi-agent authorisation
+
+`authorisedAgent` was a single address, so only one operator could ever settle and
+any third-party agent had to route through that operator's server. The executor
+now also carries `mapping(address => bool) agents`, and `onlyAgent` passes for
+either — existing tooling keeps working with no migration.
+
+```solidity
+function setAgentAuthorisation(address _agent, bool _allowed) external onlyOwner;
+function isAgent(address _who) external view returns (bool);
+```
+
+This does **not** weaken the gate. A registered agent still cannot invent a trade:
+every execution is bound to a consensus-approved parameter hash that is checked
+and deleted on use, and that hash is only ever bound after `AgentValidator`
+approved the proposal. Agents never custody anything — tokens move from the user
+straight through the router in one call — so revoking an agent cannot strand
+funds.
+
+Verified on-chain: `isAgent(lane)` false -> true after `setAgentAuthorisation`,
+and 25/25 Foundry tests including a registered agent settling independently,
+revocation taking effect immediately, and only the owner being able to register.
+
+### Verified end to end on the multi-agent executor
+
+| Step | Result |
+|---|---|
+| Quote | 5 USDC -> 4.9825 USDT |
+| Consensus write | `ACCEPTED`, `found=true approved=true` |
+| Settlement | `success`, 4.984985 USDT received |
+| One-time approval | **consumed** |
+| Tx | `0x50f1454a9cefc119d57e9e3e3ef6aa0eb1e2a87d014d24d332715565987f5263` |
+
+**Redeploying the executor invalidates every existing ERC-20 approval** — users
+must approve the new address once before their first trade.
 
