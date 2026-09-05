@@ -83,14 +83,11 @@ export default function SdkPage() {
             and settlement path the app itself uses.
           </p>
           <div style={{ marginTop: 18, maxWidth: 560 }}>
-            <Code isDark={isDark}>{`git clone https://github.com/Jubayerianj/soyara-genlayer-contracts
-cd soyara-genlayer-contracts/sdk && npm install viem
-
-# then, from your project:
-npm install /path/to/soyara-genlayer-contracts/sdk`}</Code>
+            <Code isDark={isDark}>{`npm install https://raw.githubusercontent.com/Jubayerianj/soyara-genlayer-contracts/main/sdk/dist/soyara-sdk-0.1.0.tgz viem`}</Code>
             <p style={{ color: muted, fontSize: '0.74rem', lineHeight: 1.5, marginTop: 8, marginBottom: 0 }}>
-              Not on npm yet, so install it from the repo. Once it is published this
-              becomes <code>npm install @soyara/sdk viem</code>.
+              It installs as <code>@soyara/sdk</code>, so the imports below work as written.
+              The package is not on the npm registry yet, which is why the install points at
+              the release tarball in the repo rather than at a package name.
             </p>
           </div>
         </div>

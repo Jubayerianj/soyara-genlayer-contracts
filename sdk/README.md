@@ -3,17 +3,17 @@
 Build agents that trade on **Soyara**, an AI-native DEX on GenLayer Bradbury where
 every trade is gated by a real consensus round before it can settle.
 
-> **Not published to npm yet.** Install from the repo:
+## Install
 
 ```bash
-git clone https://github.com/Jubayerianj/soyara-genlayer-contracts
-cd soyara-genlayer-contracts/sdk && npm install viem
-
-# then from your own project
-npm install /path/to/soyara-genlayer-contracts/sdk
+npm install https://raw.githubusercontent.com/Jubayerianj/soyara-genlayer-contracts/main/sdk/dist/soyara-sdk-0.1.0.tgz viem
 ```
 
-Once published this becomes `npm install @soyara/sdk viem`.
+It installs under the name `@soyara/sdk`, so every import below works as written.
+
+The package is not on the npm registry yet, which is why the install points at the
+release tarball in this repo rather than at a package name. `npm install @soyara/sdk`
+will fail with `E404` until it is published.
 
 ## Do you need a server?
 
