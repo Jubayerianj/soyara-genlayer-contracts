@@ -8,7 +8,7 @@ import { parseEther, parseUnits, formatEther, formatUnits, keccak256, encodeAbiP
 import { CONTRACT_ADDRESSES, INTELLIGENT_CONTRACTS } from '../../constants/addresses.js';
 import { TOKEN_LIST, findTokenByAddress } from '../../constants/tokens.js';
 import { buildProgram } from '../../utils/programBuilder.js';
-import { quoteBestRoute, quoteBestRouteMultiHop } from '../../lib/dexQuote.js';
+import { quoteBestRoute, quoteBestRouteMultiHop, getQuoteClient } from '../../lib/dexQuote.js';
 import { parseIntent } from '../../lib/parseIntent.js';
 
 // ── Live on-chain quoting ───────────────────────────────────────────────────
@@ -481,6 +481,38 @@ export class DevInspectorAgent {
 
 // ── Swarm Orchestrator (A2A Message Dialogue Generator) ──────────────────────
 
+
+/**
+ * Which tokens actually have a V2 pool with `symbol`.
+ *
+ * Naming one side of a deposit is not ambiguous enough to refuse — there is a
+ * finite set of pools, so look them up. If exactly one exists we can just use
+ * it; otherwise we can name the real choices instead of repeating a generic
+ * "both tokens for the pool", which sent users round in circles.
+ */
+async function poolPartnersFor(symbol) {
+  const wgen = CONTRACT_ADDRESSES[4221]?.wgen;
+  const factory = CONTRACT_ADDRESSES[4221]?.factory;
+  const self = resolveToken(symbol);
+  const selfAddr = self.isNative ? wgen : self.address;
+  if (!factory || !selfAddr) return [];
+
+  const client = getQuoteClient();
+  const abi = [{ inputs: [{ type: 'address' }, { type: 'address' }], name: 'getPair', outputs: [{ type: 'address' }], stateMutability: 'view', type: 'function' }];
+  const candidates = ['USDC', 'USDT', 'WGEN', 'WBTC', 'ETH', 'FSWP'].filter((c) => c !== self.symbol);
+
+  const found = await Promise.all(candidates.map(async (c) => {
+    const t = resolveToken(c);
+    const addr = t.isNative ? wgen : t.address;
+    if (!addr || addr.toLowerCase() === selfAddr.toLowerCase()) return null;
+    try {
+      const pair = await client.readContract({ address: factory, abi, functionName: 'getPair', args: [selfAddr, addr] });
+      return pair && pair !== '0x0000000000000000000000000000000000000000' ? c : null;
+    } catch { return null; }
+  }));
+  return found.filter(Boolean);
+}
+
 export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
   // Step 1: Intent Agent Wakes Up
   yield {
@@ -497,6 +529,44 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
 
   // Stop before quoting if the request is under-specified. Guessing the other
   // side of a trade is how "swap 34 udc to usdt" became a USDT -> GEN proposal.
+  // One named token for a deposit is resolvable: look up the real pools.
+  if (intent.needs?.length === 1 && intent.needs[0] === 'pair-token') {
+    const known = intent.tokenInSymbol && intent.tokenInSymbol !== 'USDC' ? intent.tokenInSymbol
+      : (intent.tokenOutSymbol || intent.tokenInSymbol);
+    const partners = await poolPartnersFor(known).catch(() => []);
+
+    if (partners.length === 1) {
+      intent.tokenInSymbol = known;
+      intent.tokenOutSymbol = partners[0];
+      intent.needs = [];
+      intent.confident = true;
+      yield {
+        agent: AGENT_REGISTRY.intent,
+        type: 'PAIR_RESOLVED',
+        text: `Only one pool exists for **${known}** — pairing it with **${partners[0]}**.`,
+        status: 'working',
+      };
+    } else if (partners.length > 1) {
+      yield {
+        agent: AGENT_REGISTRY.intent,
+        type: 'INTENT_UNCLEAR',
+        data: intent,
+        text: `I understood **${intent.amountIn} ${known}** for a liquidity deposit. Which token should I pair it with?\n\n${known} has pools with: **${partners.join('**, **')}**.\n\nFor example: *"add ${intent.amountIn} ${known} and ${partners[0]} liquidity"*.`,
+        status: 'error',
+      };
+      return;
+    } else {
+      yield {
+        agent: AGENT_REGISTRY.intent,
+        type: 'INTENT_UNCLEAR',
+        data: intent,
+        text: `**${known}** has no liquidity pool on Soyara DEX yet, so there is nothing to deposit into. Pools exist for **USDC**, **USDT** and **WGEN**.`,
+        status: 'error',
+      };
+      return;
+    }
+  }
+
   if (!intent.confident && intent.needs?.length) {
     yield {
       agent: AGENT_REGISTRY.intent,
