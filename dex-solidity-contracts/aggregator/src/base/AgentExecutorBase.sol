@@ -35,8 +35,20 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
 
     // ── State ─────────────────────────────────────────────────────────────────
 
-    /// @notice Address authorised to call execute* and approveTrade functions
+    /// @notice Primary agent. Kept for backward compatibility: existing
+    ///         deployments and tooling reference this single address.
     address public authorisedAgent;
+
+    /// @notice Additional authorised agents.
+    ///
+    /// A single `authorisedAgent` meant only one operator could ever settle, so
+    /// third-party agents had to route through the primary operator's server.
+    /// Registering an address here lets an independent agent bind and consume
+    /// its own one-time approvals directly, WITHOUT weakening the gate: every
+    /// trade is still bound to a consensus-approved parameter hash that is
+    /// checked and deleted on use, so an agent can only execute trades GenLayer
+    /// has already approved.
+    mapping(address => bool) public agents;
 
     /// @notice AGGFlowEntrypoint for aggregated swaps
     address public aggFlowEntrypoint;
@@ -117,6 +129,8 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
     error SlippageExceeded(uint256 bps, uint256 maxBps);
     error DeadlineExpired();
     error ZeroAmount();
+    event AgentAuthorisationUpdated(address indexed agent, bool allowed);
+
     error ZeroAddress();
     error SameToken();
     error TradeNotApproved(bytes32 tradeHash);
@@ -125,7 +139,7 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
     // ── Modifiers ─────────────────────────────────────────────────────────────
 
     modifier onlyAgent() {
-        if (msg.sender != authorisedAgent) revert Unauthorized();
+        if (msg.sender != authorisedAgent && !agents[msg.sender]) revert Unauthorized();
         _;
     }
 
@@ -177,6 +191,21 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
         if (_agent == address(0)) revert ZeroAddress();
         emit AgentUpdated(authorisedAgent, _agent);
         authorisedAgent = _agent;
+    }
+
+    /// @notice Register or revoke an additional agent.
+    /// @dev Owner-only. Revoking cannot strand funds: agents never custody
+    ///      anything — tokens move from the user straight through the router in
+    ///      a single call.
+    function setAgentAuthorisation(address _agent, bool _allowed) external onlyOwner {
+        if (_agent == address(0)) revert ZeroAddress();
+        agents[_agent] = _allowed;
+        emit AgentAuthorisationUpdated(_agent, _allowed);
+    }
+
+    /// @notice True when `_who` may bind and consume trade approvals.
+    function isAgent(address _who) external view returns (bool) {
+        return _who == authorisedAgent || agents[_who];
     }
 
     function setMaxSlippage(uint256 _bps) external onlyOwner {

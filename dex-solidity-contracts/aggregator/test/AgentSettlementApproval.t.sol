@@ -168,6 +168,69 @@ contract AgentSettlementApprovalTest is Test {
 
     // ── 1. Success Path with One-Time Approval ────────────────────────────────
 
+    // ── Multi-agent authorisation ─────────────────────────────────────────
+    // A single authorisedAgent meant only one operator could settle, so
+    // third-party agents had to route through it. These cover the new mapping.
+
+    function test_SecondAgent_CanSettle_AfterAuthorisation() public {
+        address agent2 = address(0xA2A2);
+
+        vm.prank(owner);
+        executor.setAgentAuthorisation(agent2, true);
+        assertTrue(executor.isAgent(agent2), "agent2 should be authorised");
+        assertTrue(executor.isAgent(agent), "primary agent still authorised");
+
+        bytes32 tradeHash = executor.getTradeHash(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+
+        vm.prank(agent2);
+        executor.approveTrade(tradeHash);
+
+        vm.prank(agent2);
+        uint256 amountOut = executor.executeSwap(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline, "", 0, feeCollector
+        );
+
+        assertGt(amountOut, MIN_AMOUNT_OUT);
+        // The one-time approval is still consumed exactly once.
+        assertFalse(executor.isTradeApproved(tradeHash));
+    }
+
+    function test_RevertIf_RevokedAgent_CannotSettle() public {
+        address agent2 = address(0xA2A2);
+
+        vm.prank(owner);
+        executor.setAgentAuthorisation(agent2, true);
+
+        bytes32 tradeHash = executor.getTradeHash(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        );
+        vm.prank(agent2);
+        executor.approveTrade(tradeHash);
+
+        // Revocation must bite immediately, even with an approval already bound.
+        vm.prank(owner);
+        executor.setAgentAuthorisation(agent2, false);
+        assertFalse(executor.isAgent(agent2));
+
+        vm.prank(agent2);
+        vm.expectRevert();
+        executor.executeSwap(
+            user, address(tokenIn), address(tokenOut),
+            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline, "", 0, feeCollector
+        );
+    }
+
+    function test_RevertIf_NonOwner_AuthorisesAgent() public {
+        vm.prank(agent);
+        vm.expectRevert();
+        executor.setAgentAuthorisation(address(0xBEEF), true);
+    }
+
     function test_ExecuteSwap_Success() public {
         bytes32 tradeHash = executor.getTradeHash(
             user,
