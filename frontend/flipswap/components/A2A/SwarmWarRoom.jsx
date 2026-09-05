@@ -35,7 +35,7 @@ export default function SwarmWarRoom({ mode = 'user' }) {
   // Consensus rounds dominate the wait here, so the timeline gets a live panel
   // showing the real phase and elapsed time rather than sitting silent.
   const [consensus, setConsensus] = useState(null); // {startedAt, statusName, txHash, retry}
-  // Before/after balances around settlement — the agent wallet settles with no
+  // Before/after balances around settlement - the agent wallet settles with no
   // wallet prompt, so this delta is the user's direct confirmation of movement.
   const [balanceSnapshot, setBalanceSnapshot] = useState(null);
   const [liveBalances, setLiveBalances] = useState(null);
@@ -73,7 +73,7 @@ export default function SwarmWarRoom({ mode = 'user' }) {
       // When no pool can fill the pair, RouterMathAgent falls back to a rough
       // 1:1 estimate so the swarm dialogue can still complete. That estimate has
       // no liquidity behind it and can only revert, so it must never be
-      // executable — e.g. ETH has no pool on Bradbury at all.
+      // executable - e.g. ETH has no pool on Bradbury at all.
       executable: route.isLiveQuote !== false,
       notExecutableReason: route.isLiveQuote === false
         ? `No liquidity pool exists for ${route.tokenIn.symbol}/${route.tokenOut.symbol} on Soyara DEX. The rate shown is a rough estimate and cannot be executed.`
@@ -198,7 +198,7 @@ export default function SwarmWarRoom({ mode = 'user' }) {
     }
   };
 
-  // Real settlement through the GenLayer approval gate — see
+  // Real settlement through the GenLayer approval gate - see
   // hooks/useAgentSwapExecution.js (ERC20 approve → AgentExecutor one-time
   // approval → /api/agent-execute). Previously this was a fake 1s timeout
   // that never called any real API or submitted any on-chain transaction.
@@ -220,7 +220,7 @@ export default function SwarmWarRoom({ mode = 'user' }) {
             ...prev,
             {
               agent: AGENT_REGISTRY.risk,
-              text: `⏳ **One-time ${approveResult.symbol} approval submitted.** This is the only approval you sign for this token — every later swarm-executed trade settles with no wallet prompt.\n\nWaiting for confirmation... (Tx: \`${approveResult.hash.slice(0, 10)}...\`)`,
+              text: `⏳ **One-time ${approveResult.symbol} approval submitted.** This is the only approval you sign for this token - every later swarm-executed trade settles with no wallet prompt.\n\nWaiting for confirmation... (Tx: \`${approveResult.hash.slice(0, 10)}...\`)`,
               time: 'Approval'
             }
           ]);
@@ -442,7 +442,7 @@ export default function SwarmWarRoom({ mode = 'user' }) {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '0.5rem 0.75rem', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '0.5rem', color: '#10b981', fontSize: '0.8rem', fontWeight: 600 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <CheckCircle2 size={16} />
-                  Settled — ~{payload.route.expectedOutNum.toFixed(6)} {payload.route.tokenOut.symbol} sent to {userAddress ? `${userAddress.slice(0, 6)}…${userAddress.slice(-4)}` : 'your wallet'}
+                  Settled - ~{payload.route.expectedOutNum.toFixed(6)} {payload.route.tokenOut.symbol} sent to {userAddress ? `${userAddress.slice(0, 6)}…${userAddress.slice(-4)}` : 'your wallet'}
                   {activeTxHash && (
                     <span style={{ marginLeft: 'auto', fontSize: '0.7rem', fontFamily: 'monospace', color: '#10b981' }}>
                       {activeTxHash.slice(0, 10)}…{activeTxHash.slice(-8)}
@@ -454,17 +454,17 @@ export default function SwarmWarRoom({ mode = 'user' }) {
                     an empty page and makes a successful swap look like it failed. */}
                 {activeTxHash && (
                   <div style={{ fontWeight: 500, fontSize: '0.7rem', color: 'var(--text-muted, #94a3b8)' }}>
-                    Settlement is an EVM transaction — the GenLayer explorer only indexes GenVM
+                    Settlement is an EVM transaction - the GenLayer explorer only indexes GenVM
                     consensus transactions, so it will show this hash as empty. Verify with{' '}
                     <code style={{ fontSize: '0.66rem' }}>eth_getTransactionReceipt</code> on {' '}
                     <code style={{ fontSize: '0.66rem' }}>rpc-bradbury.genlayer.com</code>.
                   </div>
                 )}
                 {/* ERC-20 output is invisible in most wallets until the token is
-                    imported — say so, or a successful swap looks like lost funds. */}
+                    imported - say so, or a successful swap looks like lost funds. */}
                 {!payload.route.tokenOut.isNative && (
                   <div style={{ fontWeight: 500, fontSize: '0.72rem', color: 'var(--text-muted, #94a3b8)' }}>
-                    {payload.route.tokenOut.symbol} is an ERC-20 — add token{' '}
+                    {payload.route.tokenOut.symbol} is an ERC-20 - add token{' '}
                     <code style={{ fontSize: '0.68rem' }}>{payload.route.tokenOut.address}</code>{' '}
                     in your wallet to see the balance.
                   </div>

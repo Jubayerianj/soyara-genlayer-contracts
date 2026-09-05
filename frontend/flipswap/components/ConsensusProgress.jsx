@@ -4,7 +4,7 @@
 // both /ai (ProposalPanel) and /a2a (SwarmWarRoom).
 //
 // A consensus round takes tens of seconds and sometimes minutes, and a bare
-// spinner for that long reads as a hang — users concluded their trade had been
+// spinner for that long reads as a hang - users concluded their trade had been
 // rejected when it was simply still being voted on. This shows the REAL
 // lifecycle phase reported by the receipt (statusName), how long it has been
 // running, and plainly what the network is doing, plus the one reassurance that
@@ -114,9 +114,9 @@ export default function ConsensusProgress({
         }}>
           <strong style={{ color: '#f59e0b' }}>This is taking longer than usual.</strong>{' '}
           {stalledAtActivation
-            ? 'The round has not been picked up by a validator set yet. On Bradbury this is a known testnet condition — only the network can activate a transaction, so there is nothing to fix on your side.'
+            ? 'The round has not been picked up by a validator set yet. On Bradbury this is a known testnet condition - only the network can activate a transaction, so there is nothing to fix on your side.'
             : 'The validator set has not returned a verdict yet.'}{' '}
-          Your trade is unaffected and no funds have moved. You can close this page — the round is
+          Your trade is unaffected and no funds have moved. You can close this page - the round is
           saved and will be re-checked automatically when you come back.
         </div>
       )}
@@ -162,7 +162,7 @@ export default function ConsensusProgress({
         <ShieldCheck size={13} color="#34d399" style={{ flexShrink: 0, marginTop: 2 }} />
         <div style={{ fontSize: '0.72rem', color: muted, lineHeight: 1.5 }}>
           <strong style={{ color: isDark ? '#e2e8f0' : '#0f172a' }}>Nothing has moved.</strong>{' '}
-          No tokens have left your wallet and no approval has been bound yet — settlement only
+          No tokens have left your wallet and no approval has been bound yet - settlement only
           happens after the verdict is recorded and read back on-chain. It is safe to wait, and
           safe to leave this page.
         </div>

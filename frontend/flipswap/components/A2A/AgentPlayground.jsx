@@ -4,7 +4,7 @@
 //
 // Nothing here is mocked. Every control changes what the agents really do, and
 // every message on the wire carries the actual payload one agent handed the
-// next — live pool addresses and quotes, the real GenVM consensus transaction,
+// next - live pool addresses and quotes, the real GenVM consensus transaction,
 // and the one-time trade hash bound on AgentExecutor.
 //
 // Design intent: one decision on screen at a time. A dev picks a strategy and
@@ -85,7 +85,7 @@ export default function AgentPlayground() {
     return () => { cancelled = true; clearTimeout(t); };
   }, [prompt, config]);
 
-  // route.priceImpact is a formatted string ("50.060%"), not a number — Number()
+  // route.priceImpact is a formatted string ("50.060%"), not a number - Number()
   // returns NaN on it, which silently blanked the impact readout and disabled
   // the over-ceiling warning.
   const impact = preview ? parseFloat(preview.route.priceImpact) : null;
@@ -210,7 +210,7 @@ export default function AgentPlayground() {
           ))}
         </div>
 
-        {/* Smart preview — real quote against live reserves */}
+        {/* Smart preview - real quote against live reserves */}
         <div style={{
           marginTop: 12, padding: '9px 12px', borderRadius: 9, fontSize: '0.78rem',
           background: noPool || overCeiling ? 'rgba(245,158,11,0.09)' : 'rgba(255,255,255,0.035)',
@@ -223,7 +223,7 @@ export default function AgentPlayground() {
             <span style={muted}>Type an order to see a live quote.</span>
           ) : noPool ? (
             <><AlertTriangle size={14} color="#f59e0b" />
-              <span>No pool exists for <strong>{preview.route.tokenIn.symbol}/{preview.route.tokenOut.symbol}</strong> — this order cannot settle.</span></>
+              <span>No pool exists for <strong>{preview.route.tokenIn.symbol}/{preview.route.tokenOut.symbol}</strong> - this order cannot settle.</span></>
           ) : (
             <>
               <Check size={14} color={overCeiling ? '#f59e0b' : '#34d399'} />
@@ -234,7 +234,7 @@ export default function AgentPlayground() {
               </span>
               {overCeiling && (
                 <span style={{ marginLeft: 'auto', color: '#f59e0b', fontWeight: 600, fontSize: '0.72rem' }}>
-                  above your {config.maxImpactPct}% ceiling — the swarm will halt
+                  above your {config.maxImpactPct}% ceiling - the swarm will halt
                 </span>
               )}
             </>
@@ -290,7 +290,7 @@ export default function AgentPlayground() {
                      style={{ width: '100%', accentColor: ACCENT }} />
             </Tune>
             <Tune label="Max price impact" value={`${config.maxImpactPct}%`}
-                  help="Hard stop — the swarm halts before requesting consensus.">
+                  help="Hard stop - the swarm halts before requesting consensus.">
               <input type="range" min={0.1} max={30} step={0.1} value={config.maxImpactPct}
                      onChange={(e) => setCustom({ ...config, maxImpactPct: Number(e.target.value) })}
                      style={{ width: '100%', accentColor: ACCENT }} />
@@ -343,7 +343,7 @@ export default function AgentPlayground() {
           {bus.length === 0 && !running ? (
             <div style={{ ...muted, fontSize: '0.8rem', lineHeight: 1.65, padding: '1rem 0' }}>
               Launch to watch the agents negotiate. Each message can be expanded to reveal the exact
-              payload handed to the next agent — live pool addresses, quoted amounts in wei, the GenVM
+              payload handed to the next agent - live pool addresses, quoted amounts in wei, the GenVM
               consensus transaction hash, and the one-time trade hash bound on AgentExecutor.
             </div>
           ) : (
@@ -403,7 +403,7 @@ export default function AgentPlayground() {
             <Row k="You earn" v={`${earnings.agent.toFixed(6)} ${earnings.symbol}`} accent="#fbbf24" />
             <div style={{ ...muted, fontSize: '0.64rem', marginTop: 9, lineHeight: 1.5 }}>
               From real routed volume this session. The {PROTOCOL_FEE_BPS} bps protocol fee is live;
-              your agent fee is a model — collecting it needs a fee split in the settlement contract.
+              your agent fee is a model - collecting it needs a fee split in the settlement contract.
             </div>
           </div>
 
@@ -411,7 +411,7 @@ export default function AgentPlayground() {
             <div style={{ display: 'flex', gap: 7, fontSize: '0.7rem', lineHeight: 1.55, opacity: 0.9 }}>
               <AlertTriangle size={13} color="#f59e0b" style={{ flexShrink: 0, marginTop: 2 }} />
               <span>Each launch places a real GenVM consensus transaction. Rounds take about a minute
-                and sometimes time out on the validator set — that is the network, not your policy.</span>
+                and sometimes time out on the validator set - that is the network, not your policy.</span>
             </div>
           </div>
         </div>
@@ -450,7 +450,7 @@ function mdLite(t) {
     .replace(/`(.+?)`/g, '<code style="background:rgba(0,0,0,.3);padding:1px 4px;border-radius:3px;font-size:.92em">$1</code>');
 }
 
-/** BigInt-safe JSON — payloads carry wei values. */
+/** BigInt-safe JSON - payloads carry wei values. */
 function safeJson(d) {
   try {
     return JSON.stringify(d, (_k, v) => (typeof v === 'bigint' ? `${v.toString()} (bigint)` : v), 2);

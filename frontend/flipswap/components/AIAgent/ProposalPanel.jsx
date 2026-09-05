@@ -306,7 +306,7 @@ const ProposalPanel = ({
                   : 'Consensus Did Not Reach a Verdict'}
               </div>
               <div style={{ fontSize: '0.82rem', color: textSub }}>
-                {validationResult.reason || 'Not rejected — the validator round is still in progress. Checking automatically.'}
+                {validationResult.reason || 'Not rejected - the validator round is still in progress. Checking automatically.'}
               </div>
               {validationResult.tx_hash && (
                 <a
@@ -468,7 +468,7 @@ const ProposalPanel = ({
                 padding: '7px 9px', borderRadius: 8,
                 background: isDark ? 'rgba(56,189,248,0.06)' : 'rgba(2,132,199,0.05)',
               }}>
-                Routed by the <strong>AGGFlow aggregator</strong> — it compared every venue and chose{' '}
+                Routed by the <strong>AGGFlow aggregator</strong> - it compared every venue and chose{' '}
                 <strong>{proposal.route}</strong>. Swaps always take the best available route; V2 vs V3
                 is an outcome, not a setting.
               </div>
@@ -485,7 +485,7 @@ const ProposalPanel = ({
                 lineHeight: 1.45,
               }}>
                 <strong>⚠️ High price impact: {proposal.priceImpact}.</strong> This trade is large
-                relative to the pool, so you receive materially less than the market rate — and the
+                relative to the pool, so you receive materially less than the market rate - and the
                 quote can go stale before consensus finishes, which shows up as a
                 &ldquo;price moved&rdquo; refusal. Consider splitting it into smaller trades.
               </div>
@@ -519,7 +519,7 @@ const ProposalPanel = ({
                 textAlign: 'center',
                 padding: '0 4px',
               }}>
-                Settlement runs from the agent wallet via <strong>AgentExecutor</strong> — your
+                Settlement runs from the agent wallet via <strong>AgentExecutor</strong> - your
                 wallet won&apos;t prompt for this step. Tokens arrive directly at your address.
               </div>
             )}

@@ -1,4 +1,4 @@
-// pages/intro.jsx — Responsive HD Cinema Video Experience (SoyaraDex V2 & V3 / Auto-Fit Text)
+// pages/intro.jsx - Responsive HD Cinema Video Experience (SoyaraDex V2 & V3 / Auto-Fit Text)
 import React, { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
 import { 
@@ -918,7 +918,7 @@ export default function ResponsiveAgenticIntroPage() {
   return (
     <>
       <Head>
-        <title>Soyara DEX — Agentic AI Cinema Experience (GenLayer 4221)</title>
+        <title>Soyara DEX - Agentic AI Cinema Experience (GenLayer 4221)</title>
         <meta name="description" content="Watch autonomous AI agents trade and execute on Soyara DEX with GenLayer Intelligent Contracts." />
       </Head>
 

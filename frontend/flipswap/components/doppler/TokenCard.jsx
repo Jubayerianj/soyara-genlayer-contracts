@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { ExternalLink, Copy, Check, Zap, Flame, ShieldCheck } from 'lucide-react';
 import styles from './TokenCard.module.css';
 
-const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '—');
+const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '-');
 
 export function extractTokenLogo(token) {
   if (!token) return null;
@@ -66,8 +66,8 @@ export default function TokenCard({ token, onMigrate }) {
         </div>
         <div className={styles.identity}>
           <div className={styles.nameRow}>
-            <span className={styles.name}>{token.name || '—'}</span>
-            <span className={styles.symbol}>${token.symbol || '—'}</span>
+            <span className={styles.name}>{token.name || '-'}</span>
+            <span className={styles.symbol}>${token.symbol || '-'}</span>
           </div>
           <div className={styles.addrRow}>
             <span className={styles.address}>{shortAddr(token.address)}</span>

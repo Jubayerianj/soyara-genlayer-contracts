@@ -18,7 +18,7 @@ import {
 import { extractTokenLogo } from '../doppler/TokenCard';
 import styles from './CreatedTokenCard.module.css';
 
-const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '—');
+const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '-');
 
 export default function CreatedTokenCard({ token, onClaimTokenFee, isClaiming }) {
   const [copied, setCopied] = useState(false);

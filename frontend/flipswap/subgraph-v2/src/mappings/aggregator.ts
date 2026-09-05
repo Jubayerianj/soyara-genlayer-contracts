@@ -162,7 +162,7 @@ export function handleRouterUpdated(event: RouterUpdatedEvent): void {
 // so we rely on this wrapper event to correctly associate swaps with users.
 // tokenIn is always native zkLTC (address(0)) since the wrapper accepts only native.
 export function handleWrapperSwapExecuted(event: WrapperSwapExecutedEvent): void {
-  // tokenIn is always native zkLTC — the wrapper only accepts native token as input
+  // tokenIn is always native zkLTC - the wrapper only accepts native token as input
   let nativeAddress = Address.fromString(ZERO_ADDRESS);
   let tokenIn = loadOrCreateToken(nativeAddress, event);
   let tokenOut = loadOrCreateToken(normalizedAddress(event.params.tokenOut), event);

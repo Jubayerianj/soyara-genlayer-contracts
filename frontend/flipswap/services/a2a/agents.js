@@ -1,7 +1,7 @@
 // services/a2a/agents.js
 // ============================================================================
 //  Soyara A2A (Agent-to-Agent) Multi-Agent Swarm Engine
-//  100% Native Web3 & Client-Side Intelligence — Zero Third-Party API Keys
+//  100% Native Web3 & Client-Side Intelligence - Zero Third-Party API Keys
 // ============================================================================
 
 import { parseEther, parseUnits, formatEther, formatUnits, keccak256, encodeAbiParameters, parseAbiParameters, createPublicClient, http } from 'viem';
@@ -14,7 +14,7 @@ import { parseIntent } from '../../lib/parseIntent.js';
 // ── Live on-chain quoting ───────────────────────────────────────────────────
 // Shared with /ai via lib/dexQuote.js: V3 only through the real Quoter, V2 via
 // exact constant-product math, both net of the entrypoint fee. The quote feeds
-// minAmountOut, so it must be a lower bound on real output — an optimistic
+// minAmountOut, so it must be a lower bound on real output - an optimistic
 // quote makes settlement revert with AGGFlowEntrypoint_InsufficientAmountAfterFees().
 
 // ── Agent Metadata ─────────────────────────────────────────────────────────
@@ -107,14 +107,14 @@ export class IntentAgent {
    * Thin adapter over lib/parseIntent.js.
    *
    * The parsing logic used to live here AND in pages/api/agent-v2.js, and every
-   * bug had to be fixed twice — the reversed-direction bug and the venue bug
+   * bug had to be fixed twice - the reversed-direction bug and the venue bug
    * both shipped in both copies. One parser now serves both surfaces; this only
    * maps its result onto the shape the swarm expects.
    */
   static parse(query, config = {}) {
     const r = parseIntent(query, { slippageBps: config.slippageBps ?? 100 });
 
-    // COMPARE is a routing question, but the swarm can only act on a trade —
+    // COMPARE is a routing question, but the swarm can only act on a trade -
     // treat it as a swap and let the router report which venue won.
     const action = r.action === 'COMPARE' ? 'SWAP' : r.action;
 
@@ -153,7 +153,7 @@ export class RouterMathAgent {
     const amountInWei = parseUnits(intent.amountIn.toString(), tokenIn.decimals);
 
     // Venue preference is a real routing constraint from the playground, not a
-    // label — 'v2'/'v3' restricts which pool may fill the order.
+    // label - 'v2'/'v3' restricts which pool may fill the order.
     const venue = intent.venuePreference || 'best';
     // Swaps aggregate across direct and multi-hop paths; a deposit targets one
     // specific pool, so it keeps the direct quote.
@@ -180,11 +180,11 @@ export class RouterMathAgent {
       hops = chosen.hops || null;
       isMultiHop = Boolean(chosen.isMultiHop);
     } else {
-      // No live pool for this pair yet — clearly-labeled rough estimate only.
+      // No live pool for this pair yet - clearly-labeled rough estimate only.
       const baseRate = 1.0;
       expectedOutNum = amountInNum * baseRate * 0.997;
       priceImpact = 0;
-      chosenRoute = 'No live pool found — rough 1:1 estimate';
+      chosenRoute = 'No live pool found - rough 1:1 estimate';
       v3Quote = expectedOutNum.toFixed(4);
       v2Quote = expectedOutNum.toFixed(4);
       isLiveQuote = false;
@@ -222,7 +222,7 @@ export class RiskValidatorAgent {
   /**
    * @param onProgress optional callback invoked while a consensus round is in
    *   flight. The swarm generator cannot yield from inside this function, so
-   *   progress is pushed to the UI directly — otherwise /a2a sat silent for the
+   *   progress is pushed to the UI directly - otherwise /a2a sat silent for the
    *   whole round and looked frozen.
    */
   static async validate(intent, route, userAddress, onProgress = null) {
@@ -321,7 +321,7 @@ export class RiskValidatorAgent {
       };
     }
 
-    // A slow consensus round is NOT a rejection — poll the same tx (never resubmits)
+    // A slow consensus round is NOT a rejection - poll the same tx (never resubmits)
     // for a bounded window before treating it as approved/rejected. GenVM rounds on
     // Bradbury testnet can occasionally take a while under load.
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -332,7 +332,7 @@ export class RiskValidatorAgent {
       pollAttempts++;
       if (onProgress) {
         onProgress(
-          `⏳ GenVM round in flight — check ${pollAttempts}/12. Validators have not returned a verdict yet; this is not a rejection.`,
+          `⏳ GenVM round in flight - check ${pollAttempts}/12. Validators have not returned a verdict yet; this is not a rejection.`,
           { statusName: genlayerResult?.statusName || null, txHash: genlayerResult?.tx_hash || null, retry: false }
         );
       }
@@ -352,11 +352,11 @@ export class RiskValidatorAgent {
 
     // If the round finished without a majority (UNDETERMINED / LEADER_TIMEOUT /
     // VALIDATORS_TIMEOUT) that is a validator-set condition, not a verdict on the
-    // trade — run exactly one fresh round rather than reporting a false rejection.
+    // trade - run exactly one fresh round rather than reporting a false rejection.
     if (genlayerResult?.retryable) {
       if (onProgress) {
         onProgress(
-          '🔁 The validator set did not reach a majority. Submitting one fresh consensus round — your trade was not rejected.',
+          '🔁 The validator set did not reach a majority. Submitting one fresh consensus round - your trade was not rejected.',
           { retry: true, statusName: null }
         );
       }
@@ -376,7 +376,7 @@ export class RiskValidatorAgent {
           retryPolls++;
           if (onProgress) {
             onProgress(
-              `🔁 First round ended without a majority — running a fresh round, check ${retryPolls}/12.`,
+              `🔁 First round ended without a majority - running a fresh round, check ${retryPolls}/12.`,
               { statusName: genlayerResult?.statusName || null, txHash: genlayerResult?.tx_hash || null, retry: true }
             );
           }
@@ -392,7 +392,7 @@ export class RiskValidatorAgent {
           }
         }
       } catch {
-        // keep the undecided result — surfaced below as retryable, not rejected
+        // keep the undecided result - surfaced below as retryable, not rejected
       }
     }
 
@@ -420,7 +420,7 @@ export class RiskValidatorAgent {
           name: 'GenVM AI Coherence Consensus',
           passed: Boolean(genlayerResult?.approved),
           detail: isPending
-            ? `Still awaiting consensus (tx ${genlayerResult?.tx_hash?.slice(0, 10)}...) — not rejected`
+            ? `Still awaiting consensus (tx ${genlayerResult?.tx_hash?.slice(0, 10)}...) - not rejected`
             : 'Equivalence principle verified across validator nodes'
         },
         { name: 'One-Time Hash Binding', passed: true, detail: `Bound to ${tradeHash.slice(0, 10)}...` }
@@ -448,25 +448,25 @@ export class DevInspectorAgent {
         {
           param: 'amountIn',
           tamperedValue: (parseFloat(intent.amountIn) * 1.5).toString(),
-          predictedRevert: 'TradeNotApproved(0x...) — Hash mismatch',
+          predictedRevert: 'TradeNotApproved(0x...) - Hash mismatch',
           secure: true
         },
         {
           param: 'minAmountOut',
           tamperedValue: '0',
-          predictedRevert: 'TradeNotApproved(0x...) — Hash mismatch',
+          predictedRevert: 'TradeNotApproved(0x...) - Hash mismatch',
           secure: true
         },
         {
           param: 'recipient (user)',
           tamperedValue: '0xAttackerAddress000000000000000000000000',
-          predictedRevert: 'TradeNotApproved(0x...) — Hash mismatch',
+          predictedRevert: 'TradeNotApproved(0x...) - Hash mismatch',
           secure: true
         },
         {
           param: 'replay execution',
           tamperedValue: 'executeSwap() 2nd time',
-          predictedRevert: 'TradeNotApproved(0x...) — Approval deleted on 1st use',
+          predictedRevert: 'TradeNotApproved(0x...) - Approval deleted on 1st use',
           secure: true
         }
       ],
@@ -485,7 +485,7 @@ export class DevInspectorAgent {
 /**
  * Which tokens actually have a V2 pool with `symbol`.
  *
- * Naming one side of a deposit is not ambiguous enough to refuse — there is a
+ * Naming one side of a deposit is not ambiguous enough to refuse - there is a
  * finite set of pools, so look them up. If exactly one exists we can just use
  * it; otherwise we can name the real choices instead of repeating a generic
  * "both tokens for the pool", which sent users round in circles.
@@ -522,7 +522,7 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
     status: 'working'
   };
 
-  // Cosmetic pacing delays removed — they added ~1.5s of pure wait per run.
+  // Cosmetic pacing delays removed - they added ~1.5s of pure wait per run.
   // A 0ms yield is still enough for React to paint each handoff.
   const yieldFrame = () => new Promise((r) => setTimeout(r, 0));
   const intent = IntentAgent.parse(userPrompt, config);
@@ -543,7 +543,7 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
       yield {
         agent: AGENT_REGISTRY.intent,
         type: 'PAIR_RESOLVED',
-        text: `Only one pool exists for **${known}** — pairing it with **${partners[0]}**.`,
+        text: `Only one pool exists for **${known}** - pairing it with **${partners[0]}**.`,
         status: 'working',
       };
     } else if (partners.length > 1) {
@@ -572,7 +572,7 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
       agent: AGENT_REGISTRY.intent,
       type: 'INTENT_UNCLEAR',
       data: intent,
-      text: `❓ **I need one more detail before I can quote this.** I could not determine: ${intent.needs.join(', ')}.\n\nSupported tokens: **USDC, USDT, GEN, WGEN, WBTC, ETH, FSWP**. Try e.g. *"swap 50 USDC to USDT"* or *"add liquidity 10 WGEN and 200 USDC"*.\n\nNo proposal was prepared — guessing a token would risk trading something you did not ask for.`,
+      text: `❓ **I need one more detail before I can quote this.** I could not determine: ${intent.needs.join(', ')}.\n\nSupported tokens: **USDC, USDT, GEN, WGEN, WBTC, ETH, FSWP**. Try e.g. *"swap 50 USDC to USDT"* or *"add liquidity 10 WGEN and 200 USDC"*.\n\nNo proposal was prepared - guessing a token would risk trading something you did not ask for.`,
       status: 'error',
     };
     return;
@@ -602,9 +602,9 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
     agent: AGENT_REGISTRY.router,
     type: 'MESSAGE',
     text: intent.action === 'SWAP'
-      // Say plainly that venue is not a user choice for swaps — the aggregator
+      // Say plainly that venue is not a user choice for swaps - the aggregator
       // compares every pool and takes the best fill.
-      ? `Scanning every venue through the **AGGFlow aggregator** — V2 constant-product and V3 concentrated liquidity — and taking whichever fills best. Venue is never something you pick for a swap; the aggregator decides.`
+      ? `Scanning every venue through the **AGGFlow aggregator** - V2 constant-product and V3 concentrated liquidity - and taking whichever fills best. Venue is never something you pick for a swap; the aggregator decides.`
       : `Locating the **${(intent.venuePreference || 'v2').toUpperCase()}** pool for this position...`,
     status: 'working'
   };
@@ -634,7 +634,7 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
     text: intent.action === 'ADD_LIQUIDITY'
       // A deposit is not a trade: describing it with a swap "output" made an
       // add-liquidity request read as though the swarm were selling one side.
-      ? `Pool located: **${route.tokenIn.symbol}/${route.tokenOut.symbol}** on ${route.chosenRoute}. Deposit will be paired at the pool's live ratio — the second amount is derived from reserves, and any excess is refunded by the router. Handing off to **${AGENT_REGISTRY.risk.name}**...`
+      ? `Pool located: **${route.tokenIn.symbol}/${route.tokenOut.symbol}** on ${route.chosenRoute}. Deposit will be paired at the pool's live ratio - the second amount is derived from reserves, and any excess is refunded by the router. Handing off to **${AGENT_REGISTRY.risk.name}**...`
       : `Simulation complete! **${route.chosenRoute}** selected. Estimated Output: **${route.expectedOutNum.toFixed(4)} ${route.tokenOut.symbol}** ${route.savingsVsV2 && !String(route.savingsVsV2).startsWith('-100') ? `(${route.savingsVsV2} better output vs alternative)` : '(only one venue could fill this size)'}. Price impact: ${route.priceImpact}. Handing off proposal to **${AGENT_REGISTRY.risk.name}**...`,
     status: 'complete'
   };
@@ -643,7 +643,7 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
   yield {
     agent: AGENT_REGISTRY.risk,
     type: 'MESSAGE',
-text: `Broadcasting to the AgentValidator Intelligent Contract (\`${INTELLIGENT_CONTRACTS.agentValidator.slice(0, 8)}...\`) for GenVM consensus. Every ${intent.action === 'SWAP' ? 'trade' : 'deposit'} is validated by a real consensus round before anything settles — that round is the wait, and it is the network, not the app. Repeating the same request inside 10 minutes reuses the recorded verdict and is near-instant.`,
+text: `Broadcasting to the AgentValidator Intelligent Contract (\`${INTELLIGENT_CONTRACTS.agentValidator.slice(0, 8)}...\`) for GenVM consensus. Every ${intent.action === 'SWAP' ? 'trade' : 'deposit'} is validated by a real consensus round before anything settles - that round is the wait, and it is the network, not the app. Repeating the same request inside 10 minutes reuses the recorded verdict and is near-instant.`,
     status: 'working'
   };
 
@@ -657,9 +657,9 @@ text: `Broadcasting to the AgentValidator Intelligent Contract (\`${INTELLIGENT_
       ? `✅ **GenLayer Consensus Reached!** All ${risk.checks.length} guardrails passed. One-time cryptographic trade hash bound: \`${risk.tradeHash.slice(0, 14)}...\`. Requesting calldata dissection from **${AGENT_REGISTRY.dev.name}**...`
       : risk.isPending
         // The round has not returned a verdict yet (still in flight, or it ended
-        // without a validator majority). That is a network condition — calling it
+        // without a validator majority). That is a network condition - calling it
         // "Rejected" here misreports a trade the validator never actually refused.
-        ? `⏳ **Awaiting GenVM Consensus** — the validator round has not returned a verdict yet. This is not a rejection. ${risk.reason}`
+        ? `⏳ **Awaiting GenVM Consensus** - the validator round has not returned a verdict yet. This is not a rejection. ${risk.reason}`
         : `❌ **GenLayer Validation Rejected**: ${risk.reason}. Fail-closed security activated.`,
     status: risk.isApproved ? 'complete' : risk.isPending ? 'working' : 'error'
   };
@@ -667,7 +667,7 @@ text: `Broadcasting to the AgentValidator Intelligent Contract (\`${INTELLIGENT_
   // A refused proposal ends the swarm here.
   //
   // The flow used to continue into calldata inspection and then announce
-  // "Swarm agreement ready — execute this trade", directly under a red
+  // "Swarm agreement ready - execute this trade", directly under a red
   // rejection. Nothing is executable at that point, and offering an Execute
   // button for a proposal consensus refused is the most dangerous thing this
   // page could do.
@@ -676,7 +676,7 @@ text: `Broadcasting to the AgentValidator Intelligent Contract (\`${INTELLIGENT_
       agent: AGENT_REGISTRY.intent,
       type: 'SWARM_HALTED',
       payload: { intent, route, risk },
-      text: `⛔ **Swarm halted — nothing will be executed.** GenLayer consensus did not approve this proposal, so no settlement is possible and no funds have moved. ${risk.reason || ''}`,
+      text: `⛔ **Swarm halted - nothing will be executed.** GenLayer consensus did not approve this proposal, so no settlement is possible and no funds have moved. ${risk.reason || ''}`,
       status: 'error',
     };
     return;

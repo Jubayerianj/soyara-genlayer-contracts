@@ -169,7 +169,7 @@ export default function AIPage() {
         // round here means it runs while the user is still reading the quote and
         // connecting their wallet, so by the time they hit Execute the approval
         // is usually already in hand. Same enforced flow and same one-time
-        // approval hash — just moved off the user's critical path.
+        // approval hash - just moved off the user's critical path.
         handleValidateRef.current?.(0, data.proposal);
       }
 
@@ -195,7 +195,7 @@ export default function AIPage() {
     }
   };
 
-  // Poll a pending validate_proposal tx (does NOT resubmit — just re-checks status)
+  // Poll a pending validate_proposal tx (does NOT resubmit - just re-checks status)
   // until it resolves or we give up. GenVM consensus rounds on Bradbury testnet can
   // occasionally take several minutes under load; treating a slow round as an
   // immediate hard rejection is misleading, so this keeps checking in the background.
@@ -207,7 +207,7 @@ export default function AIPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         // On the final attempt, ask the server to clear the round if validators
-        // never voted — otherwise idle txs pile up on the agent account and
+        // never voted - otherwise idle txs pile up on the agent account and
         // start making new submissions revert at ConsensusMain.
         body: JSON.stringify({ checkTxHash: txHash, proposalId, finalizeIfStuck: attempt >= MAX_ATTEMPTS }),
       });
@@ -224,14 +224,14 @@ export default function AIPage() {
       }
 
       // The round finished without a verdict (UNDETERMINED / LEADER_TIMEOUT /
-      // VALIDATORS_TIMEOUT). That is a network condition, not a rejection —
+      // VALIDATORS_TIMEOUT). That is a network condition, not a rejection -
       // polling the same dead round forever is pointless, so run one fresh round.
       if (data.retryable && retryRound < MAX_RETRY_ROUNDS) {
         setMessages((prev) => [
           ...prev,
           {
             role: 'assistant',
-            content: `🔄 **GenVM round ended without a majority** — this is a validator-set condition, not a rejection. Automatically submitting a fresh consensus round...`,
+            content: `🔄 **GenVM round ended without a majority** - this is a validator-set condition, not a rejection. Automatically submitting a fresh consensus round...`,
             toolsUsed: ['AgentValidator IC', 'GenVM Consensus'],
           }
         ]);
@@ -269,7 +269,7 @@ export default function AIPage() {
           {
             role: 'assistant',
             content: data.pending
-              ? `⏳ **Still Awaiting GenVM Consensus**\n\nThe validator round is taking longer than usual. Tx: \`${txHash.slice(0, 10)}...\` — you can check the [explorer](https://explorer-bradbury.genlayer.com/tx/${txHash}) or try Validate again shortly.`
+              ? `⏳ **Still Awaiting GenVM Consensus**\n\nThe validator round is taking longer than usual. Tx: \`${txHash.slice(0, 10)}...\` - you can check the [explorer](https://explorer-bradbury.genlayer.com/tx/${txHash}) or try Validate again shortly.`
               : data.retryable
                 ? `🔄 **GenVM Consensus Did Not Reach a Verdict**\n\n${data.reason}\n\nPress **Validate** again to run another round.`
                 : `⚠️ **GenLayer IC Validation Rejected**\n\nReason: *${data.reason}*`,
@@ -289,11 +289,11 @@ export default function AIPage() {
   // ended without a majority (UNDETERMINED / LEADER_TIMEOUT / VALIDATORS_TIMEOUT).
   const handleValidate = async (retryRoundArg = 0, proposalOverride = null) => {
     // ProposalPanel wires this straight to onClick, so the first arg can be a
-    // React SyntheticEvent — only trust it when it is actually a number.
+    // React SyntheticEvent - only trust it when it is actually a number.
     const retryRound = typeof retryRoundArg === 'number' ? retryRoundArg : 0;
 
     // When pre-validating we are called in the same tick the proposal arrives,
-    // before `currentProposal` state has flushed — so accept it directly.
+    // before `currentProposal` state has flushed - so accept it directly.
     const proposal = proposalOverride || currentProposal;
 
     if (!proposal) return;
@@ -310,13 +310,13 @@ export default function AIPage() {
         headers: { 'Content-Type': 'application/json' },
         // `user` is required for the mandate fast path (check_mandate is bound to
         // a specific user). Without it every validation fell through to a full
-        // GenVM consensus round — minutes instead of seconds.
+        // GenVM consensus round - minutes instead of seconds.
         body: JSON.stringify({ ...proposal, user: userAddress }),
       });
 
       const data = await res.json();
 
-      // Consensus round still in flight — poll status instead of reporting rejection.
+      // Consensus round still in flight - poll status instead of reporting rejection.
       if (data.pending && data.tx_hash) {
         // Persist immediately: a consensus round outlives the page, and without
         // this a user who closed the tab lost the tx hash and proposal id and
@@ -337,7 +337,7 @@ export default function AIPage() {
           ...prev,
           {
             role: 'assistant',
-            content: `⏳ **Validating with GenLayer IC...**\n\nConsensus tx submitted: \`${data.tx_hash.slice(0, 10)}...\`. This can take a bit longer during testnet congestion — I'll keep checking automatically.`,
+            content: `⏳ **Validating with GenLayer IC...**\n\nConsensus tx submitted: \`${data.tx_hash.slice(0, 10)}...\`. This can take a bit longer during testnet congestion - I'll keep checking automatically.`,
             toolsUsed: ['AgentValidator IC', 'GenVM Consensus'],
           }
         ]);
@@ -345,13 +345,13 @@ export default function AIPage() {
         return;
       }
 
-      // Round returned immediately but without a verdict — run one fresh round.
+      // Round returned immediately but without a verdict - run one fresh round.
       if (data.retryable && retryRound < 1) {
         setMessages((prev) => [
           ...prev,
           {
             role: 'assistant',
-            content: `🔄 **GenVM round ended without a majority** — not a rejection. Submitting a fresh consensus round...`,
+            content: `🔄 **GenVM round ended without a majority** - not a rejection. Submitting a fresh consensus round...`,
             toolsUsed: ['AgentValidator IC', 'GenVM Consensus'],
           }
         ]);
@@ -396,7 +396,7 @@ export default function AIPage() {
   // Let pollValidationStatus trigger a fresh validation round without a circular dep.
   handleValidateRef.current = handleValidate;
 
-  // Approve token — approves the correct settlement spender (AgentExecutor or AGGFlowEntrypoint)
+  // Approve token - approves the correct settlement spender (AgentExecutor or AGGFlowEntrypoint)
   const handleApprove = async () => {
     try {
       const result = await approve();
@@ -405,7 +405,7 @@ export default function AIPage() {
         ...prev,
         {
           role: 'assistant',
-          content: `⏳ **One-time approval submitted for ${result.symbol}.** This is the only approval you'll sign for this token — every future agent-executed trade settles without a wallet prompt.\n\nWaiting for confirmation... (Tx: \`${result.hash.slice(0, 10)}...\`)`,
+          content: `⏳ **One-time approval submitted for ${result.symbol}.** This is the only approval you'll sign for this token - every future agent-executed trade settles without a wallet prompt.\n\nWaiting for confirmation... (Tx: \`${result.hash.slice(0, 10)}...\`)`,
         }
       ]);
     } catch (err) {
@@ -414,7 +414,7 @@ export default function AIPage() {
     }
   };
 
-  // Execute swap on-chain via the one-time approval gate (/api/agent-execute) —
+  // Execute swap on-chain via the one-time approval gate (/api/agent-execute) -
   // see hooks/useAgentSwapExecution.js for the full flow (approve → resolve pool
   // route → build program → AgentExecutor one-time approval → settle).
   const handleExecute = async () => {
@@ -483,7 +483,7 @@ export default function AIPage() {
           ...prev,
           {
             role: 'assistant',
-            content: `🚀 **Trade Submitted!**\n\nExecution is broadcasting on GenLayer Bradbury Testnet...\n\n⚠️ *Note: Running in fallback mode — AgentExecutor not yet deployed.*\n\nTx Hash: [${result.hash.slice(0, 10)}...${result.hash.slice(-8)}](https://explorer-bradbury.genlayer.com/tx/${result.hash})`,
+            content: `🚀 **Trade Submitted!**\n\nExecution is broadcasting on GenLayer Bradbury Testnet...\n\n⚠️ *Note: Running in fallback mode - AgentExecutor not yet deployed.*\n\nTx Hash: [${result.hash.slice(0, 10)}...${result.hash.slice(-8)}](https://explorer-bradbury.genlayer.com/tx/${result.hash})`,
             toolsUsed: ['AGGFlowEntrypoint', 'GenLayer Bradbury'],
           }
         ]);
@@ -494,7 +494,7 @@ export default function AIPage() {
       // A stale quote is not a failure the user should have to fix by retyping
       // their request. These pools are small enough that a real trade moves the
       // price between quote and settlement, and enforced per-trade consensus
-      // widens that window — so re-quote automatically and re-validate.
+      // widens that window - so re-quote automatically and re-validate.
       if (err?.stale) {
         const p = currentProposal;
         if (!p) return;
@@ -502,7 +502,7 @@ export default function AIPage() {
           ...prev,
           {
             role: 'assistant',
-            content: `⚠️ **The pool moved past your ${(p.slippageBps || 30) / 100}% slippage tolerance while this quote was validating.**\n\nFetching a fresh quote and re-validating automatically — no need to retype your request.`,
+            content: `⚠️ **The pool moved past your ${(p.slippageBps || 30) / 100}% slippage tolerance while this quote was validating.**\n\nFetching a fresh quote and re-validating automatically - no need to retype your request.`,
             toolsUsed: ['Live pool re-quote'],
           },
         ]);
@@ -524,7 +524,7 @@ export default function AIPage() {
               ...prev,
               {
                 role: 'assistant',
-                content: `🔄 **Fresh quote:** ${data.proposal.amountIn} ${data.proposal.tokenIn} → **${data.proposal.expectedOutput}** (min ${data.proposal.minAmountOut}, impact ${data.proposal.priceImpact}).\n\nRe-validating through GenLayer consensus now — press Execute once it turns green.`,
+                content: `🔄 **Fresh quote:** ${data.proposal.amountIn} ${data.proposal.tokenIn} → **${data.proposal.expectedOutput}** (min ${data.proposal.minAmountOut}, impact ${data.proposal.priceImpact}).\n\nRe-validating through GenLayer consensus now - press Execute once it turns green.`,
                 toolsUsed: ['AgentValidator IC'],
               },
             ]);
@@ -552,7 +552,7 @@ export default function AIPage() {
   return (
     <>
       <Head>
-        <title>Soyara AI Trading — GenLayer Intelligent Contracts</title>
+        <title>Soyara AI Trading - GenLayer Intelligent Contracts</title>
         <meta name="description" content="Soyara DEX - AI-Validated DeFi Execution on GenLayer Bradbury Testnet" />
       </Head>
 

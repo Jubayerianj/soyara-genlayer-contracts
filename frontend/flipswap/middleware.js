@@ -88,6 +88,6 @@ export function middleware(request) {
 // 2. Or conditionally apply in the proxy function
 
 export const config = {
-  // Must be a string or string[] — see the prefetch note in middleware() above.
+  // Must be a string or string[] - see the prefetch note in middleware() above.
   matcher: ['/((?!api|_next/static|_next/image|favicon.ico|sw.js|manifest.json).*)'],
 }

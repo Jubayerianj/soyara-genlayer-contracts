@@ -69,7 +69,7 @@ async function main() {
     await tx.wait();
     console.log("   ✅ setBridgeAddress confirmed.");
   } else {
-    console.log("\n✅ [1/2] Bridge already set and authorized — skipping.");
+    console.log("\n✅ [1/2] Bridge already set and authorized - skipping.");
   }
 
   // Step 2: Authorize the staking wrapper proxy
@@ -80,7 +80,7 @@ async function main() {
     await tx2.wait();
     console.log("   ✅ setAuthorizedBridge confirmed.");
   } else {
-    console.log("\n✅ [2/2] Staking wrapper already authorized — skipping.");
+    console.log("\n✅ [2/2] Staking wrapper already authorized - skipping.");
   }
 
   // Final verification

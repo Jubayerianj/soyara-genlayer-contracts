@@ -1,13 +1,13 @@
 // pages/api/genlayer-validate.js
 //
-// Validation route — calls AgentValidator GenLayer IC using the WRITE flow.
+// Validation route - calls AgentValidator GenLayer IC using the WRITE flow.
 // validate_proposal is @gl.public.write and mutates state (validated_count etc).
 // It MUST be called as writeContract + waitForTransactionReceipt to trigger
 // GenLayer's Optimistic Democracy consensus across all validator nodes.
 //
 // When AGENT_PRIVATE_KEY is set in .env.local, the server-side agent wallet
 // signs the write transaction. If not set, falls back to read simulation
-// (marked isSimulation=true — callers must NOT use simulations to gate settlement).
+// (marked isSimulation=true - callers must NOT use simulations to gate settlement).
 
 import { validateSwapProposal, validateLiquidityProposal, checkSwapValidationStatus, finalizeStuckValidation, GENLAYER_CONFIG } from '../../lib/genlayer.js';
 import { leaseAgent, getKeeperAccount, poolStatus } from '../../lib/agentPool.js';
@@ -28,11 +28,11 @@ export default async function handler(req, res) {
 
   // ── Polling path: check status of an already-submitted validate_proposal tx ──
   // Used when a prior call returned pending:true. This does NOT resubmit a
-  // transaction — it just re-checks the existing one, so polling repeatedly
+  // transaction - it just re-checks the existing one, so polling repeatedly
   // never adds more load to the network.
   if (proposal.checkTxHash) {
     try {
-      // proposalId lets the status check read the recorded verdict — a write's
+      // proposalId lets the status check read the recorded verdict - a write's
       // return value is not recoverable from its receipt.
       let statusResult = await checkSwapValidationStatus(proposal.checkTxHash, proposal.proposalId || null);
 
@@ -47,7 +47,7 @@ export default async function handler(req, res) {
             ...statusResult,
             pending: false,
             retryable: true,
-            reason: 'GenVM validators never voted on this round, so it was cleared automatically. This is a network condition, not a rejection — run another round to continue.',
+            reason: 'GenVM validators never voted on this round, so it was cleared automatically. This is a network condition, not a rejection - run another round to continue.',
           };
         }
       }
@@ -60,7 +60,7 @@ export default async function handler(req, res) {
         // Echo back the id the caller supplied when the status check itself
         // could not resolve one. Otherwise a poller that follows this response
         // loses the proposal id after the first poll and can never look the
-        // verdict up — the round then reports "Consensus reached — reading the
+        // verdict up - the round then reports "Consensus reached - reading the
         // recorded verdict" forever.
         proposal_id:      statusResult.proposalId || proposal.proposalId || '',
         genlayer_contract: statusResult.contractAddress,
@@ -78,7 +78,7 @@ export default async function handler(req, res) {
       });
     } catch (error) {
       console.error('API /genlayer-validate status-check error (failing closed):', error);
-      return res.status(503).json({ approved: false, pending: true, reason: 'Status check unavailable — try again shortly' });
+      return res.status(503).json({ approved: false, pending: true, reason: 'Status check unavailable - try again shortly' });
     }
   }
 
@@ -100,13 +100,13 @@ export default async function handler(req, res) {
   if (!lease) {
     const status = poolStatus();
     if (status.total === 0) {
-      console.warn('[genlayer-validate] no agent keys configured — falling back to read simulation');
+      console.warn('[genlayer-validate] no agent keys configured - falling back to read simulation');
     } else {
       // Every lane is mid-round. This is congestion, not a rejection.
       return res.status(200).json({
         approved: false,
         pending: true,
-        reason: `All ${status.total} validation lanes are mid-round. This is queue congestion, not a rejection — retrying shortly will go through.`,
+        reason: `All ${status.total} validation lanes are mid-round. This is queue congestion, not a rejection - retrying shortly will go through.`,
         proposal_id: '',
         genlayer_contract: GENLAYER_CONFIG.agentValidator,
         contract_name: 'AgentValidator (GenLayer IC)',
@@ -129,7 +129,7 @@ export default async function handler(req, res) {
     let validationResult;
 
     // The RPC node throttles PER SENDER, so a lane that is at capacity stays at
-    // capacity no matter how long we wait — while another funded lane submits
+    // capacity no matter how long we wait - while another funded lane submits
     // instantly. Waiting is the wrong remedy; rotating is. Try successive lanes
     // before reporting a throttle to the user.
     const run = (opts) => (action === 'SWAP'
@@ -144,12 +144,12 @@ export default async function handler(req, res) {
       validationResult = await run(opts);
       if (!validationResult.rateLimited || attempt >= 3) break;
 
-      // This lane is throttled — hand it back and take a different one.
+      // This lane is throttled - hand it back and take a different one.
       if (currentLease) triedLeases.push(currentLease);
       const nextLease = leaseAgent();
       if (!nextLease || (currentLease && nextLease.account?.address === currentLease.account?.address)) {
         if (nextLease && nextLease !== currentLease) nextLease.release();
-        break; // no distinct lane free — report the throttle honestly
+        break; // no distinct lane free - report the throttle honestly
       }
       console.warn(`[genlayer-validate] lane ${currentLease?.account?.address?.slice(0, 10)} throttled, rotating to ${nextLease.account.address.slice(0, 10)}`);
       currentLease = nextLease;
@@ -187,9 +187,9 @@ export default async function handler(req, res) {
       rate_limited:     Boolean(validationResult.rateLimited),
       via_mandate:      Boolean(validationResult.viaMandate),
       consensus_mode:   validationResult.viaMandate
-        ? 'Mandate (pre-approved by GenVM consensus — instant view check)'
+        ? 'Mandate (pre-approved by GenVM consensus - instant view check)'
         : validationResult.isSimulation
-        ? 'Read simulation (no consensus — not write flow)'
+        ? 'Read simulation (no consensus - not write flow)'
         : 'Optimistic Democracy (GenVM write tx)',
       is_write_flow:    !validationResult.isSimulation,
       live_execution:   Boolean(validationResult.success),
@@ -202,7 +202,7 @@ export default async function handler(req, res) {
     // FAIL CLOSED: Never return approved=true when consensus is unavailable
     return res.status(503).json({
       approved:         false,
-      reason:           'Consensus unavailable — failed closed',
+      reason:           'Consensus unavailable - failed closed',
       proposal_id:      '',
       genlayer_contract: action === 'SWAP' ? GENLAYER_CONFIG.agentValidator : GENLAYER_CONFIG.liquidityValidator,
       contract_name:    action === 'SWAP' ? 'AgentValidator (GenLayer IC)' : 'LiquidityValidator (GenLayer IC)',

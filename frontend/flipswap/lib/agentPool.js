@@ -12,7 +12,7 @@
 //     single slow round blocks that sender for a long time.
 //
 // The app previously signed every validation with one shared AGENT_PRIVATE_KEY,
-// so the whole product was serialised behind a single queue lane — and one stuck
+// so the whole product was serialised behind a single queue lane - and one stuck
 // round made every subsequent swap fail. Those reverts surfaced in the UI as
 // "Rejected by Validator: transaction reverted", which looked like the validator
 // refusing the trade when it was really a queue collision.
@@ -55,7 +55,7 @@ function initPool() {
   }
 
   if (lanes.length === 0) {
-    console.warn('[agentPool] no agent keys configured — consensus writes will be unavailable');
+    console.warn('[agentPool] no agent keys configured - consensus writes will be unavailable');
   } else if (lanes.length === 1) {
     console.warn(
       '[agentPool] only ONE agent key configured. GenLayer serialises rounds per sender, ' +
@@ -77,7 +77,7 @@ function isFree(lane, now) {
  * Reserve a sender for one consensus round.
  *
  * @returns {{account: object, release: Function, markSubmitted: Function}|null}
- *          null when every lane is currently mid-round — the caller should
+ *          null when every lane is currently mid-round - the caller should
  *          report that as "busy / try again", never as a rejection.
  */
 export function leaseAgent() {
@@ -91,7 +91,7 @@ export function leaseAgent() {
   // On a long-running server the busy flags make `find` spread naturally, but
   // under serverless (Vercel) every invocation gets a FRESH module instance, so
   // `busySince` is always 0 and every request picks lane 0. The whole pool then
-  // funnels through one sender and the RPC node throttles it per sender —
+  // funnels through one sender and the RPC node throttles it per sender -
   // surfacing as "Request exceeds defined limit" even with five idle lanes.
   // A random start spreads isolated invocations across the pool.
   const offset = Math.floor(Math.random() * pool.length);

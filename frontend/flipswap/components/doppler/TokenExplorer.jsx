@@ -36,7 +36,7 @@ import styles from './TokenExplorer.module.css';
 const AIRLOCK_DEPLOYMENT_BLOCK = 40120000n;
 const ITEMS_PER_PAGE = 50;
 
-const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '—');
+const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '-');
 
 const formatPriceUSD = (val) => {
   const num = Number(val || 0);

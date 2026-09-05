@@ -20,7 +20,7 @@
 // enforcement path.
 //
 // Before this route existed, an approved liquidity proposal on /a2a validated and
-// then did nothing at all on-chain — the Execute button only ever settled swaps.
+// then did nothing at all on-chain - the Execute button only ever settled swaps.
 
 import { createPublicClient, createWalletClient, http, zeroAddress } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -48,8 +48,8 @@ const ERC20_MINI_ABI = [
  *
  * Bradbury replies `-32005 transaction gas rate limit exceeded: node is at
  * capacity, retry in ~Nms`. Settlement cannot rotate senders the way validation
- * can — AgentExecutor's onlyAgent modifier means these calls must come from the
- * authorised agent — so waiting the hinted interval is the correct remedy here.
+ * can - AgentExecutor's onlyAgent modifier means these calls must come from the
+ * authorised agent - so waiting the hinted interval is the correct remedy here.
  * Without this the throttle surfaced mid-flow as a bare
  * "Request exceeds defined limit", which reads like a failed trade when in fact
  * nothing was submitted.
@@ -78,10 +78,10 @@ export default async function handler(req, res) {
     || process.env.AGENT_EXECUTOR_ADDRESS;
 
   if (!agentPrivateKey) {
-    return res.status(503).json({ success: false, error: 'Settlement agent not configured — fail-closed' });
+    return res.status(503).json({ success: false, error: 'Settlement agent not configured - fail-closed' });
   }
   if (!agentExecutorAddress || agentExecutorAddress === zeroAddress) {
-    return res.status(503).json({ success: false, error: 'AgentExecutor not deployed — settlement blocked (fail-closed)' });
+    return res.status(503).json({ success: false, error: 'AgentExecutor not deployed - settlement blocked (fail-closed)' });
   }
 
   const {
@@ -101,7 +101,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing required liquidity parameters' });
   }
   if (!validationApproved) {
-    return res.status(403).json({ success: false, error: 'Settlement blocked: GenLayer validation was not approved — fail-closed' });
+    return res.status(403).json({ success: false, error: 'Settlement blocked: GenLayer validation was not approved - fail-closed' });
   }
 
   try {
@@ -149,7 +149,7 @@ export default async function handler(req, res) {
         error:
           'Settlement blocked: no GenLayer consensus verdict exists on-chain for these exact liquidity parameters. '
           + 'The deposit must be validated by a validate_proposal consensus write on the AgentValidator '
-          + 'Intelligent Contract before it can settle — fail-closed.',
+          + 'Intelligent Contract before it can settle - fail-closed.',
         derivedProposalId,
       });
     }
@@ -184,7 +184,7 @@ export default async function handler(req, res) {
     // A V2 deposit must match the pool ratio. The router uses one side and
     // derives the other, and reverts with INSUFFICIENT_A_AMOUNT /
     // INSUFFICIENT_B_AMOUNT if the derived amount falls under the caller's
-    // minimum — which happens whenever the two requested amounts drift even
+    // minimum - which happens whenever the two requested amounts drift even
     // slightly off-ratio. Compute the correct pairing here and reduce the
     // over-supplied side, so the deposit goes through and the excess is simply
     // never pulled. Verification above already ran against the parameters the
@@ -250,7 +250,7 @@ export default async function handler(req, res) {
     }), 'approveTrade');
     await publicClient.waitForTransactionReceipt({ hash: approveTxHash });
 
-    // ── STEP 4: Execute — checks and CONSUMES the approval ──────────────────
+    // ── STEP 4: Execute - checks and CONSUMES the approval ──────────────────
     const execTxHash = await sendWithRetry(() => walletClient.writeContract({
       address: agentExecutorAddress,
       abi: AGENT_EXECUTOR_ABI,

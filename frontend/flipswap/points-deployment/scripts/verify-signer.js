@@ -44,13 +44,13 @@ async function main() {
   console.log("trustedSigner :", litvmSigner);
   console.log("isPaused      :", litvmPaused);
   if (litvmSigner.toLowerCase() === signerWallet.address.toLowerCase()) {
-    console.log("✅ MATCH — LitVM bridge will accept signatures from your key.");
+    console.log("✅ MATCH - LitVM bridge will accept signatures from your key.");
   } else {
-    console.error("❌ MISMATCH — LitVM bridge trustedSigner does not match your key!");
+    console.error("❌ MISMATCH - LitVM bridge trustedSigner does not match your key!");
     console.error("   Fix: call bridge.setTrustedSigner(\"" + signerWallet.address + "\") as owner on LitVM.");
   }
   if (litvmPaused) {
-    console.error("⚠️  LitVM bridge is PAUSED — claimNFT() will revert until unpaused.");
+    console.error("⚠️  LitVM bridge is PAUSED - claimNFT() will revert until unpaused.");
   }
 
   // Check Arbitrum bridge
@@ -64,13 +64,13 @@ async function main() {
   console.log("trustedSigner :", arbSigner);
   console.log("isPaused      :", arbPaused);
   if (arbSigner.toLowerCase() === signerWallet.address.toLowerCase()) {
-    console.log("✅ MATCH — Arbitrum bridge will accept signatures from your key.");
+    console.log("✅ MATCH - Arbitrum bridge will accept signatures from your key.");
   } else {
-    console.error("❌ MISMATCH — Arbitrum bridge trustedSigner does not match your key!");
+    console.error("❌ MISMATCH - Arbitrum bridge trustedSigner does not match your key!");
     console.error("   Fix: call bridge.setTrustedSigner(\"" + signerWallet.address + "\") as owner on Arbitrum.");
   }
   if (arbPaused) {
-    console.error("⚠️  Arbitrum bridge is PAUSED — claimNFT() will revert until unpaused.");
+    console.error("⚠️  Arbitrum bridge is PAUSED - claimNFT() will revert until unpaused.");
   }
 }
 

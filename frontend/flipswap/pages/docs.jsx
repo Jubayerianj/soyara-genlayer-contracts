@@ -179,7 +179,7 @@ export default function DocsPage() {
   return (
     <>
       <Head>
-        <title>Soyara DEX Documentation — Intelligent Contracts & Autonomous Agents</title>
+        <title>Soyara DEX Documentation - Intelligent Contracts & Autonomous Agents</title>
         <meta name="description" content="Comprehensive developer guide for Soyara DEX, GenLayer Intelligent Contracts, GenVM consensus, Agent-to-Agent (A2A) execution, and AI-validated DeFi trading." />
       </Head>
 

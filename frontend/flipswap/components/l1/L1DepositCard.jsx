@@ -25,7 +25,7 @@ export function L1DepositCard({
   const sendAmount = transaction?.sendAmount || txStatus?.amountSend || txStatus?.amountExpectedFrom || '1';
 
   // Explicitly extract receive payout amount (target ticker e.g. 0.0236726 ETH)
-  const receiveAmount = txStatus?.amountReceive || txStatus?.amountExpectedTo || transaction?.receiveAmount || '—';
+  const receiveAmount = txStatus?.amountReceive || txStatus?.amountExpectedTo || transaction?.receiveAmount || '-';
 
   const getDepositUri = (ticker, addr, amt) => {
     const t = ticker.toLowerCase();

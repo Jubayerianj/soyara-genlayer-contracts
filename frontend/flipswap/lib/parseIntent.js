@@ -4,7 +4,7 @@
 // /a2a (services/a2a/agents.js).
 //
 // There used to be two independent parsers, and every parsing bug had to be
-// found and fixed twice — the reversed-direction bug ("swap 0.1 GEN to USDC"
+// found and fixed twice - the reversed-direction bug ("swap 0.1 GEN to USDC"
 // buying GEN) and the venue bug both shipped in both files. One parser, one set
 // of tests.
 //
@@ -14,7 +14,7 @@
 //     `needs` so the caller can ask, rather than defaulting to a pair the user
 //     never named and trading it.
 //  2. Order tokens by POSITION IN THE SENTENCE, never by position in a list.
-//  3. Match tokens on word boundaries — "wgen" contains "gen".
+//  3. Match tokens on word boundaries - "wgen" contains "gen".
 //  4. Swaps always route 'best' through the aggregator. A venue is only
 //     meaningful for liquidity, where it selects which pool the position lives
 //     in.
@@ -114,7 +114,7 @@ export function parseIntent(input, defaults = {}) {
   // "and" joins the two sides of a DEPOSIT; "to"/"for"/"into" mark the
   // destination of a SWAP. This distinction matters more than the word
   // "liquidity": "add 10 usdt and usdc on v3" contains no liquidity keyword at
-  // all, and was previously parsed as a swap — which then really did sell the
+  // all, and was previously parsed as a swap - which then really did sell the
   // user's USDT instead of depositing it.
   const joinsWithAnd = /\b(?:and|\+|&|plus|with)\b/.test(text);
   const hasSwapPreposition = /\b(?:to|for|into)\s+[a-z]/i.test(text);
@@ -162,12 +162,12 @@ export function parseIntent(input, defaults = {}) {
     if (tokenIn && tokenOut && tokenIn === tokenOut) needs.push('two different tokens');
     // A deposit verb on something we read as a swap is the dangerous ambiguity:
     // "add 10 usdt and usdc" once parsed as SWAP and really did sell the user's
-    // USDT. When both readings are plausible, ask — never trade on a guess.
+    // USDT. When both readings are plausible, ask - never trade on a guess.
     if (addVerb) needs.push('whether you meant to SWAP these tokens or ADD LIQUIDITY with them');
     if (removeVerb) needs.push('whether you meant to SWAP or REMOVE LIQUIDITY');
   }
   if (action === 'ADD_LIQUIDITY') {
-    // One named token is not a dead end — the caller can look up which pools
+    // One named token is not a dead end - the caller can look up which pools
     // exist for it and either pick the only one or offer the choices. Telling
     // the user "both tokens for the pool" and nothing else made them retry the
     // same request over and over.

@@ -3,7 +3,7 @@
 // Wallet balances for the two tokens in a trade, shown on /ai and /a2a.
 //
 // Two jobs. Before executing it answers "can I actually afford this, and what am
-// I holding?" — previously only discoverable by opening a wallet. After settling
+// I holding?" - previously only discoverable by opening a wallet. After settling
 // it shows before → after with the delta, which is the only direct confirmation
 // that a trade moved real funds: settlement runs from the agent wallet, so there
 // is no wallet popup and no obvious moment where anything visibly happened.
@@ -19,16 +19,16 @@ const ERC20_ABI = [
 
 /** Trim to a readable number of places without rounding a tiny amount to zero. */
 function fmt(raw, decimals = 18) {
-  if (raw === null || raw === undefined) return '—';
+  if (raw === null || raw === undefined) return '-';
   const n = Number(formatUnits(raw, decimals));
-  if (!Number.isFinite(n)) return '—';
+  if (!Number.isFinite(n)) return '-';
   if (n === 0) return '0';
   const places = n >= 1000 ? 2 : n >= 1 ? 4 : 8;
   return n.toFixed(places).replace(/\.?0+$/, '');
 }
 
 /**
- * @param tokens   [{symbol, address, isNative, decimals}] — usually tokenIn/tokenOut
+ * @param tokens   [{symbol, address, isNative, decimals}] - usually tokenIn/tokenOut
  * @param snapshot balances captured before execution, keyed by symbol (bigint)
  * @param refreshKey change it to force a re-read (e.g. after a settlement)
  */
@@ -68,7 +68,7 @@ export default function BalanceStrip({ tokens = [], snapshot = null, refreshKey 
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
         <Wallet size={12} color={muted} />
         <span style={{ fontSize: '0.7rem', color: muted, fontWeight: 600, letterSpacing: '0.03em' }}>
-          {snapshot ? 'YOUR BALANCE — BEFORE / AFTER' : 'YOUR BALANCE'}
+          {snapshot ? 'YOUR BALANCE - BEFORE / AFTER' : 'YOUR BALANCE'}
         </span>
       </div>
 

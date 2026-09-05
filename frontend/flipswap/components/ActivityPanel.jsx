@@ -17,7 +17,7 @@ const STATUS = {
   approved: { icon: CheckCircle2, color: '#34d399', label: 'Approved' },
   settled: { icon: CheckCircle2, color: '#34d399', label: 'Settled' },
   rejected: { icon: XCircle, color: '#ef4444', label: 'Rejected' },
-  undecided: { icon: AlertTriangle, color: '#f59e0b', label: 'No majority — retryable' },
+  undecided: { icon: AlertTriangle, color: '#f59e0b', label: 'No majority - retryable' },
   failed: { icon: XCircle, color: '#ef4444', label: 'Failed' },
 };
 

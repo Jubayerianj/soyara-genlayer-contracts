@@ -107,7 +107,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, message: 'Already claimed on target chain.', alreadyClaimed: true });
     }
 
-    // FIX: Always use LITVM_CLAIM_SIGNER_PRIVATE_KEY — never fall back to PRIVATE_KEY.
+    // FIX: Always use LITVM_CLAIM_SIGNER_PRIVATE_KEY - never fall back to PRIVATE_KEY.
     // The key used here MUST match the address stored as `trustedSigner` in the bridge contract.
     // Using PRIVATE_KEY (the deployer key) as a fallback would sign with a different address
     // than trustedSigner, causing claimNFT() to revert with "Invalid signature".
