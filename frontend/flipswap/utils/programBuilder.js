@@ -134,3 +134,65 @@ function hexToBytes(hex) {
   }
   return bytes;
 }
+
+/**
+ * Build a chained AGGFlow program for a multi-hop route.
+ *
+ * The format already supports this: opcode 0x02 consumes a token pulled from
+ * the USER, and 0x01 consumes a token the ROUTER is already holding. So a hop
+ * chain is simply "0x02 tokenIn → swap", then one "0x01 intermediate → swap"
+ * per additional leg — the same mechanism the wrap/unwrap path has always used.
+ *
+ * @param fromToken {address,isNative}
+ * @param toToken   {address,isNative}
+ * @param hops      [{pool, poolType, fee, tokenIn, tokenOut}] in execution order
+ */
+export function buildMultiHopProgram(fromToken, toToken, hops, wethAddress) {
+  if (!Array.isArray(hops) || hops.length === 0) {
+    throw new Error('buildMultiHopProgram: at least one hop is required');
+  }
+  // A single hop is the ordinary case — reuse the proven builder rather than
+  // maintaining two encoders.
+  if (hops.length === 1) {
+    const h = hops[0];
+    return buildProgram(fromToken, toToken, {
+      poolAddress: h.pool, poolType: h.poolType, fee: h.fee, dexName: h.poolType,
+    }, wethAddress);
+  }
+
+  const isNativeIn = !!fromToken?.isNative;
+  const isNativeOut = !!toToken?.isNative;
+  const bytes = [];
+
+  const leg = (opcode, token, hop) => {
+    bytes.push(opcode);
+    bytes.push(...hexToBytes(token));
+    bytes.push(0x01);        // one leg
+    bytes.push(0xff, 0xff);  // 100% of the balance
+    addSwap(bytes, { poolAddress: hop.pool, poolType: hop.poolType, fee: hop.fee }, hop.tokenIn, hop.tokenOut);
+  };
+
+  if (isNativeIn) {
+    // Wrap first, then the router holds WETH/WGEN for hop 1.
+    bytes.push(0x03, 0x01, 0xff, 0xff, 0x02, 0x01);
+    leg(0x01, wethAddress, hops[0]);
+  } else {
+    leg(0x02, fromToken.address, hops[0]);
+  }
+
+  // Every later hop consumes what the router now holds.
+  for (let i = 1; i < hops.length; i += 1) {
+    leg(0x01, hops[i].tokenIn, hops[i]);
+  }
+
+  if (isNativeOut) {
+    bytes.push(0x01);
+    bytes.push(...hexToBytes(wethAddress));
+    bytes.push(0x01, 0xff, 0xff, 0x02, 0x00);
+  }
+
+  const programHex = '0x' + bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
+  console.log(`✅ MULTI-HOP PROGRAM (${hops.length} hops, ${bytes.length} bytes)`);
+  console.log('   path:', hops.map((h) => `${h.tokenIn.slice(0, 8)}→${h.tokenOut.slice(0, 8)} (${h.poolType})`).join('  →  '));
+  return programHex;
+}

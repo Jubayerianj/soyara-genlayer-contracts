@@ -460,6 +460,15 @@ export default function AIPage() {
             toolsUsed: ['AgentExecutor', 'AGGFlowEntrypoint', 'GenLayer Bradbury'],
           }
         ]);
+      } else if (result.kind === 'remove_liquidity') {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `💸 **Liquidity Withdrawn via AgentExecutor!**\n\n✅ One-time approval bound and consumed.\n\nLP burned: \`${result.lpBurned}\`\nApprove Tx: \`${result.approveTxHash?.slice(0, 10)}...\`\n\nExecution Tx: [${result.hash?.slice(0, 10)}...${result.hash?.slice(-8)}](${result.explorerUrl})`,
+            toolsUsed: ['AgentExecutor', 'UniswapV2Router', 'GenLayer Bradbury'],
+          }
+        ]);
       } else if (result.kind === 'add_liquidity') {
         setMessages((prev) => [
           ...prev,

@@ -122,6 +122,24 @@ function interpretValidationReceipt(receipt, ctx) {
  * once stalled rounds fill that queue every new submission bounces until they
  * clear.
  */
+/**
+ * True when a write failed because the RPC node is throttling, not because the
+ * transaction is bad.
+ *
+ * Bradbury returns `-32005 transaction gas rate limit exceeded: node is at
+ * capacity, retry in ~Nms` with a `retryAfterMs` hint. The app used to surface
+ * this as a flat "Request exceeds defined limit" with `retryable: false`, i.e.
+ * as though the validator had refused the trade — when in fact the proposal was
+ * never submitted at all. Throttling is per sender, so simply waiting (or using
+ * another funded lane) clears it.
+ */
+export function parseRateLimit(err) {
+  const text = `${err?.shortMessage || ''} ${err?.message || ''} ${err?.details || ''}`;
+  if (!/-32005|gas rate limit|at capacity|exceeds defined limit|rate limit/i.test(text)) return null;
+  const hinted = text.match(/retryAfterMs"?\s*:\s*(\d+)/) || text.match(/retry in ~?(\d+)\s*ms/i);
+  return { retryAfterMs: hinted ? Math.min(10000, parseInt(hinted[1], 10)) : 1500 };
+}
+
 export async function describeSubmissionRevert(message) {
   const text = String(message || '');
 
@@ -435,12 +453,40 @@ export async function checkSwapValidationStatus(txHash, proposalId = null) {
     const interpreted = interpretValidationReceipt(receipt, { txHash, validatorAddress });
 
     // The receipt cannot carry the contract's verdict, so read it back.
-    if (interpreted.needsVerdictLookup && proposalId) {
-      const verdict = await readValidationVerdict(proposalId);
-      if (verdict) {
-        return { ...interpreted, approved: verdict.approved, reason: verdict.reason, proposalId, needsVerdictLookup: false };
+    if (interpreted.needsVerdictLookup) {
+      if (proposalId) {
+        // Re-read a few times before giving up.
+        //
+        // State can lag the round by a moment, and the caller's response to
+        // "not readable" is to run an ENTIRE fresh consensus round — 60-120s to
+        // recover from what is often a 1-2s lag. Liquidity felt far slower than
+        // swaps largely because of this. A cheap view read is the right retry.
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          const verdict = await readValidationVerdict(proposalId);
+          if (verdict) {
+            return { ...interpreted, approved: verdict.approved, reason: verdict.reason, proposalId, needsVerdictLookup: false };
+          }
+          if (attempt < 3) await new Promise((r) => setTimeout(r, 1500));
+        }
+        return {
+          ...interpreted,
+          retryable: true,
+          reason: 'Consensus reached but the contract recorded no verdict — the round failed closed. A fresh round is needed.',
+        };
       }
-      return { ...interpreted, retryable: true, reason: 'Consensus reached but the verdict is not yet readable — retry shortly.' };
+
+      // Consensus SUCCEEDED but we have no proposal id to look the verdict up
+      // with. That is a lookup gap on our side, not a verdict — returning it as
+      // {approved:false, retryable:false} made the UI render a red "Rejected by
+      // Validator" for a round the validators had just accepted. Anything that
+      // reaches this branch must stay retryable.
+      return {
+        ...interpreted,
+        retryable: true,
+        reason:
+          'Consensus reached, but this app could not read the verdict back — the proposal id was '
+          + 'not carried through the poll. Your trade was NOT rejected. Re-checking resolves it.',
+      };
     }
     return interpreted;
   } catch (err) {
@@ -654,13 +700,40 @@ export async function validateSwapProposal(proposal, options = {}) {
 
   if (account && typeof client.writeContract === 'function') {
     try {
-      const txHash = await client.writeContract({
-        account,
-        address: validatorAddress,
-        functionName: 'validate_proposal',
-        args: callArgs,
-        value: 0n,
-      });
+      // The node throttles per sender and tells us how long to wait, so a
+      // throttled submission is worth retrying rather than reporting as a
+      // rejected trade. Nothing has been submitted when this fires.
+      let txHash;
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          txHash = await client.writeContract({
+            account,
+            address: validatorAddress,
+            functionName: 'validate_proposal',
+            args: callArgs,
+            value: 0n,
+            // Size of the validator set for this round.
+            //
+            // Fewer validators = fewer independent re-executions (each of which
+            // makes its own LLM call inside strict_eq) and less commit/reveal
+            // coordination, so rounds finish sooner. It is left UNSET by default
+            // on purpose: shrinking the set weakens the Optimistic Democracy
+            // quorum, which is the exact property the GenLayer review is
+            // assessing. Set GENLAYER_VALIDATORS=1 only for demos where latency
+            // matters more than quorum strength — never for a submission.
+            ...(process.env.GENLAYER_VALIDATORS
+              ? { numOfInitialValidators: Number(process.env.GENLAYER_VALIDATORS) }
+              : {}),
+          });
+          break;
+        } catch (submitErr) {
+          const limited = parseRateLimit(submitErr);
+          if (!limited || attempt >= 3) throw submitErr;
+          const wait = limited.retryAfterMs + 250 * attempt;
+          console.warn(`[genlayer] node at capacity, retrying submit in ${wait}ms (attempt ${attempt + 1}/4)`);
+          await new Promise((r) => setTimeout(r, wait));
+        }
+      }
 
       if (typeof client.waitForTransactionReceipt === 'function') {
         // NOTE: wait for ACCEPTED, not FINALIZED. ACCEPTED is the point at which
@@ -728,8 +801,13 @@ export async function validateSwapProposal(proposal, options = {}) {
         success: false,
         approved: false,
         ...submissionDetail,
+        ...(parseRateLimit(writeErr) ? { retryable: true, rateLimited: true } : {}),
         reason:
-          submissionDetail?.reason
+          (parseRateLimit(writeErr)
+            ? 'The GenLayer RPC node is at capacity and throttled the submission, so no consensus round started. '
+              + 'Your trade was not validated or rejected — retry in a moment.'
+            : null)
+          || submissionDetail?.reason
           || writeErr?.shortMessage
           || writeErr?.message
           || 'GenLayer write transaction failed — consensus unavailable, failed closed',
@@ -819,7 +897,11 @@ export async function validateLiquidityProposal(proposal, options = {}) {
   // approval. Mapping is tokenA→token_in, tokenB→token_out,
   // amountA→amount_in, amountB→min_amount_out; the settlement route derives the
   // proposal id from exactly the same mapping.
-  if (!isV3 && !isRemove) {
+  // Withdrawals validate through AgentValidator as well, so the verdict is
+  // recorded and /api/agent-remove-liquidity can read it back. Mapping matches
+  // the settlement route: tokenA/tokenB, amountIn = LP burned, minAmountOut =
+  // the minimum of side A.
+  if (!isV3) {
     const tokenAIn = proposal.tokenA ?? proposal.token0 ?? proposal.tokenIn;
     const tokenBIn = proposal.tokenB ?? proposal.token1 ?? proposal.tokenOut;
     if (tokenAIn && tokenBIn) {
@@ -842,7 +924,10 @@ export async function validateLiquidityProposal(proposal, options = {}) {
       const result = await validateSwapProposal(
         {
           ...proposal,
-          action: 'ADD_LIQUIDITY',
+          // Use the PROPOSAL's action. Hardcoding ADD_LIQUIDITY meant a
+          // withdrawal was validated as a deposit, so settlement (which derives
+          // the id with REMOVE_LIQUIDITY) could never find the verdict.
+          action: isRemove ? 'REMOVE_LIQUIDITY' : 'ADD_LIQUIDITY',
           tokenIn: asErc20(tokenAIn),
           tokenOut: asErc20(tokenBIn),
           amountInRaw: amountARaw,

@@ -8,7 +8,8 @@ import { parseEther, parseUnits, formatEther, formatUnits, keccak256, encodeAbiP
 import { CONTRACT_ADDRESSES, INTELLIGENT_CONTRACTS } from '../../constants/addresses.js';
 import { TOKEN_LIST, findTokenByAddress } from '../../constants/tokens.js';
 import { buildProgram } from '../../utils/programBuilder.js';
-import { quoteBestRoute } from '../../lib/dexQuote.js';
+import { quoteBestRoute, quoteBestRouteMultiHop } from '../../lib/dexQuote.js';
+import { parseIntent } from '../../lib/parseIntent.js';
 
 // ── Live on-chain quoting ───────────────────────────────────────────────────
 // Shared with /ai via lib/dexQuote.js: V3 only through the real Quoter, V2 via
@@ -102,119 +103,38 @@ export function computeTradeHash(user, tokenIn, tokenOut, amountIn, minAmountOut
 // ── Agent 1: Intent & Strategy Parsing (Client-Side NLP) ────────────────────
 
 export class IntentAgent {
+  /**
+   * Thin adapter over lib/parseIntent.js.
+   *
+   * The parsing logic used to live here AND in pages/api/agent-v2.js, and every
+   * bug had to be fixed twice — the reversed-direction bug and the venue bug
+   * both shipped in both copies. One parser now serves both surfaces; this only
+   * maps its result onto the shape the swarm expects.
+   */
   static parse(query, config = {}) {
-    const text = (query || '').toLowerCase();
-    
-    // Default Fallback Intent
-    let action = 'SWAP';
-    let tokenIn = 'USDC';
-    let tokenOut = 'WGEN';
-    let amountIn = '100';
-    // 1% by default, matching /api/agent-v2's DEFAULT_SLIPPAGE_BPS. 0.3% could
-    // not survive the ~50s enforced-consensus window on these thin pools.
-    let slippageBps = 100; // 1.00%
-    let mode = 'standard';
+    const r = parseIntent(query, { slippageBps: config.slippageBps ?? 100 });
 
-    // 1. Action detection
-    if (text.includes('arbitrage') || text.includes('arb') || text.includes('divergence')) {
-      action = 'ARBITRAGE_SCAN';
-      mode = 'quant';
-    } else if (text.includes('add liquidity') || text.includes('pool') || text.includes('lp') || text.includes('deposit')) {
-      action = 'ADD_LIQUIDITY';
-      tokenIn = 'WGEN';
-      tokenOut = 'USDC';
-      amountIn = '10';
-    } else if (text.includes('remove') || text.includes('withdraw')) {
-      action = 'REMOVE_LIQUIDITY';
-    } else if (text.includes('tamper') || text.includes('attack') || text.includes('stress') || text.includes('security')) {
-      action = 'SECURITY_TEST';
-      mode = 'dev_security';
-    }
-
-    // 2. Amount extraction
-    // Strip the slippage percentage before reading the trade size, otherwise
-    // "swap 5 USDC with 0.3% slippage" can pick up 0.3 as the amount.
-    const amountText = text.replace(/\d+(\.\d+)?\s*%/g, ' ');
-    const amountMatch = amountText.match(/(\d+(\.\d+)?)\s*(usdc|usdt|wgen|gen|wbtc|eth|fswp)?/i);
-    if (amountMatch && amountMatch[1]) {
-      amountIn = amountMatch[1];
-    }
-
-    // 3. Token extraction
-    // Two things matter here, and both were wrong before:
-    //
-    //  1. ORDER BY POSITION IN THE SENTENCE, not by position in `supported`.
-    //     Scanning the list in a fixed order made "swap 0.1 GEN to USDC" come
-    //     back as tokenIn=USDC / tokenOut=GEN — a proposal to buy the token the
-    //     user asked to sell.
-    //  2. MATCH ON WORD BOUNDARIES, not substrings. `"wgen".includes("gen")` is
-    //     true, so every WGEN trade also matched GEN and corrupted the ordering.
-    //
-    // (`\bgen\b` cannot match inside "wgen" — both characters are word
-    // characters, so there is no boundary between them.)
-    const supported = ['USDC', 'USDT', 'WGEN', 'GEN', 'WBTC', 'ETH', 'FSWP'];
-    const tokensFound = supported
-      .map((sym) => {
-        const m = new RegExp(`\\b${sym.toLowerCase()}\\b`, 'i').exec(text);
-        return m ? { sym, at: m.index } : null;
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.at - b.at)
-      .map((f) => f.sym);
-
-    if (tokensFound.length >= 2) {
-      // ETH is a distinct ERC-20 on Bradbury (0x0F56b4E7...), NOT native GEN.
-      // Rewriting it to GEN meant "1 eth to usdc" was silently parsed — and
-      // quoted, validated and offered for execution — as a GEN trade.
-      tokenIn = tokensFound[0];
-      tokenOut = tokensFound[1];
-    } else if (tokensFound.length === 1) {
-      if (text.includes('to ' + tokensFound[0].toLowerCase()) || text.includes('for ' + tokensFound[0].toLowerCase()) || text.includes('buy ' + tokensFound[0].toLowerCase())) {
-        tokenOut = tokensFound[0];
-        tokenIn = tokenOut === 'USDC' ? 'WGEN' : 'USDC';
-      } else {
-        tokenIn = tokensFound[0];
-        tokenOut = tokenIn === 'USDC' ? 'WGEN' : 'USDC';
-      }
-    }
-
-    // 4. Slippage extraction
-    const slippageMatch = text.match(/(\d+(\.\d+)?)\s*%/);
-    if (slippageMatch && slippageMatch[1]) {
-      slippageBps = Math.round(parseFloat(slippageMatch[1]) * 100);
-    }
-
-    // Playground overrides. These are real controls, not display settings: the
-    // slippage the dev picks is the slippage validated by the IC and enforced
-    // on-chain at settlement.
-    if (config.slippageBps != null && !slippageMatch) {
-      slippageBps = Number(config.slippageBps);
-    }
-
-    // Swaps ALWAYS take the aggregator's best route.
-    //
-    // Soyara is an aggregator: AGGFlowEntrypoint exists to compare venues and
-    // fill wherever the output is best, so pinning V2 or V3 can only ever match
-    // or worsen the fill. It also breaks outright — forcing V3 on a pair whose
-    // V3 pool cannot fill the size makes quoteBestRoute return null, which drops
-    // the request into the reference-price fallback and produces a quote with no
-    // liquidity behind it. The venue is an OUTCOME to display, never an input.
-    //
-    // A deposit is different: it targets one specific pool, so liquidity actions
-    // may still carry a venue.
-    const venuePreference = action === 'ADD_LIQUIDITY' || action === 'REMOVE_LIQUIDITY'
-      ? (/\bv3\b|\bconcentrated\b/.test(text) ? 'v3' : config.venuePreference || 'v2')
-      : 'best';
+    // COMPARE is a routing question, but the swarm can only act on a trade —
+    // treat it as a swap and let the router report which venue won.
+    const action = r.action === 'COMPARE' ? 'SWAP' : r.action;
 
     return {
       action,
-      tokenInSymbol: tokenIn,
-      tokenOutSymbol: tokenOut,
-      amountIn,
-      slippageBps,
-      mode,
-      venuePreference,
-      rawQuery: query
+      tokenInSymbol: r.tokenIn || 'USDC',
+      tokenOutSymbol: r.tokenOut || (r.tokenIn === 'GEN' ? 'USDC' : 'GEN'),
+      amountIn: r.amountIn != null ? String(r.amountIn) : '100',
+      amountInB: r.amountOut != null ? String(r.amountOut) : null,
+      percent: r.percent,
+      slippageBps: r.slippageBps,
+      mode: 'standard',
+      // Swaps always take the aggregator's best route; a venue only selects a
+      // pool for liquidity actions.
+      venuePreference: r.venue,
+      venueRequested: r.venueRequested,
+      // Surfaced so the swarm can ask instead of trading something unintended.
+      needs: r.needs,
+      confident: r.confident,
+      rawQuery: query,
     };
   }
 }
@@ -235,22 +155,30 @@ export class RouterMathAgent {
     // Venue preference is a real routing constraint from the playground, not a
     // label — 'v2'/'v3' restricts which pool may fill the order.
     const venue = intent.venuePreference || 'best';
-    const routed = await quoteBestRoute(tokenInAddr, tokenOutAddr, amountInWei, venue).catch(() => null);
+    // Swaps aggregate across direct and multi-hop paths; a deposit targets one
+    // specific pool, so it keeps the direct quote.
+    const routed = intent.action === 'SWAP'
+      ? await quoteBestRouteMultiHop(tokenInAddr, tokenOutAddr, amountInWei, venue).catch(() => null)
+      : await quoteBestRoute(tokenInAddr, tokenOutAddr, amountInWei, venue).catch(() => null);
     const v3 = routed?.v3 || null;
     const v2 = routed?.v2 || null;
     const chosen = routed;
 
-    let expectedOutNum, priceImpact, chosenRoute, v3Quote, v2Quote, isLiveQuote;
+    let expectedOutNum, priceImpact, chosenRoute, v3Quote, v2Quote, isLiveQuote, hops = null, isMultiHop = false;
 
     if (chosen) {
       expectedOutNum = parseFloat(formatUnits(chosen.amountOutRaw, tokenOut.decimals));
       priceImpact = Math.min(99.99, chosen.priceImpactPct);
-      chosenRoute = chosen.dex === 'v3'
-        ? `V3 Concentrated Liquidity (${(chosen.feeTier / 10000).toFixed(2)}% Fee Tier)`
-        : 'V2 Constant Product Pool (0.30% Fee Tier)';
+      chosenRoute = chosen.isMultiHop
+        ? `Aggregated ${chosen.hops.length}-hop route (${chosen.dex})`
+        : chosen.dex === 'v3'
+          ? `V3 Concentrated Liquidity (${(chosen.feeTier / 10000).toFixed(2)}% Fee Tier)`
+          : 'V2 Constant Product Pool (0.30% Fee Tier)';
       v3Quote = v3 ? formatUnits(v3.amountOutRaw, tokenOut.decimals) : '0';
       v2Quote = v2 ? formatUnits(v2.amountOutRaw, tokenOut.decimals) : '0';
       isLiveQuote = true;
+      hops = chosen.hops || null;
+      isMultiHop = Boolean(chosen.isMultiHop);
     } else {
       // No live pool for this pair yet — clearly-labeled rough estimate only.
       const baseRate = 1.0;
@@ -268,6 +196,8 @@ export class RouterMathAgent {
     const minAmountOutWei = parseUnits(minAmountOutNum.toFixed(Math.min(tokenOut.decimals, 6)), tokenOut.decimals).toString();
 
     return {
+      hops,
+      isMultiHop,
       tokenIn,
       tokenOut,
       amountInNum,
@@ -565,6 +495,30 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
   const yieldFrame = () => new Promise((r) => setTimeout(r, 0));
   const intent = IntentAgent.parse(userPrompt, config);
 
+  // Stop before quoting if the request is under-specified. Guessing the other
+  // side of a trade is how "swap 34 udc to usdt" became a USDT -> GEN proposal.
+  if (!intent.confident && intent.needs?.length) {
+    yield {
+      agent: AGENT_REGISTRY.intent,
+      type: 'INTENT_UNCLEAR',
+      data: intent,
+      text: `❓ **I need one more detail before I can quote this.** I could not determine: ${intent.needs.join(', ')}.\n\nSupported tokens: **USDC, USDT, GEN, WGEN, WBTC, ETH, FSWP**. Try e.g. *"swap 50 USDC to USDT"* or *"add liquidity 10 WGEN and 200 USDC"*.\n\nNo proposal was prepared — guessing a token would risk trading something you did not ask for.`,
+      status: 'error',
+    };
+    return;
+  }
+
+  // A named venue is a real choice for liquidity, but only V2 deposits are
+  // implemented today. Say so rather than silently using V2.
+  if (intent.action === 'ADD_LIQUIDITY' && intent.venueRequested === 'v3') {
+    yield {
+      agent: AGENT_REGISTRY.intent,
+      type: 'VENUE_UNSUPPORTED',
+      text: `ℹ️ You asked for a **V3** position. V3 deposits need a tick range through the PositionManager and are not wired up yet, so this will be routed to the **V2** pool instead. Say the word if you want V3 support built.`,
+      status: 'working',
+    };
+  }
+
   yield {
     agent: AGENT_REGISTRY.intent,
     type: 'INTENT_PARSED',
@@ -577,7 +531,11 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
   yield {
     agent: AGENT_REGISTRY.router,
     type: 'MESSAGE',
-    text: `Querying Bradbury testnet pool liquidity graph across V2 Constant Product and V3 Concentrated Liquidity...`,
+    text: intent.action === 'SWAP'
+      // Say plainly that venue is not a user choice for swaps — the aggregator
+      // compares every pool and takes the best fill.
+      ? `Scanning every venue through the **AGGFlow aggregator** — V2 constant-product and V3 concentrated liquidity — and taking whichever fills best. Venue is never something you pick for a swap; the aggregator decides.`
+      : `Locating the **${(intent.venuePreference || 'v2').toUpperCase()}** pool for this position...`,
     status: 'working'
   };
 
@@ -615,7 +573,7 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
   yield {
     agent: AGENT_REGISTRY.risk,
     type: 'MESSAGE',
-    text: `Broadcasting execution proposal to GenLayer Intelligent Contract (\`${INTELLIGENT_CONTRACTS.agentValidator.slice(0, 8)}...\`) for GenVM Optimistic Democracy consensus...`,
+text: `Broadcasting to the AgentValidator Intelligent Contract (\`${INTELLIGENT_CONTRACTS.agentValidator.slice(0, 8)}...\`) for GenVM consensus. Every ${intent.action === 'SWAP' ? 'trade' : 'deposit'} is validated by a real consensus round before anything settles — that round is the wait, and it is the network, not the app. Repeating the same request inside 10 minutes reuses the recorded verdict and is near-instant.`,
     status: 'working'
   };
 
@@ -635,6 +593,24 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
         : `❌ **GenLayer Validation Rejected**: ${risk.reason}. Fail-closed security activated.`,
     status: risk.isApproved ? 'complete' : risk.isPending ? 'working' : 'error'
   };
+
+  // A refused proposal ends the swarm here.
+  //
+  // The flow used to continue into calldata inspection and then announce
+  // "Swarm agreement ready — execute this trade", directly under a red
+  // rejection. Nothing is executable at that point, and offering an Execute
+  // button for a proposal consensus refused is the most dangerous thing this
+  // page could do.
+  if (!risk.isApproved && !risk.isPending) {
+    yield {
+      agent: AGENT_REGISTRY.intent,
+      type: 'SWARM_HALTED',
+      payload: { intent, route, risk },
+      text: `⛔ **Swarm halted — nothing will be executed.** GenLayer consensus did not approve this proposal, so no settlement is possible and no funds have moved. ${risk.reason || ''}`,
+      status: 'error',
+    };
+    return;
+  }
 
   // Step 4: Dev Inspector Agent Dissects Calldata & Security
   yield {
@@ -664,9 +640,13 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
       risk,
       devInspection
     },
-    text: intent.action === 'ADD_LIQUIDITY'
-      ? `🎉 **Swarm agreement ready.** Execute to deposit into the **${route.tokenIn.symbol}/${route.tokenOut.symbol}** pool through the GenLayer-gated one-time approval.`
-      : `🎉 **Multi-Agent Swarm Consensual Agreement Ready!** You can now execute this trade with one-click non-custodial settlement.`,
+    text: risk.isPending
+      // Still undecided: the swarm has done its part, but there is no verdict to
+      // execute against yet. Saying "ready" here would be untrue.
+      ? `⏳ **Swarm finished, consensus still pending.** The validator round has not returned a verdict, so Execute stays disabled until it does. Your trade was not rejected.`
+      : intent.action === 'ADD_LIQUIDITY'
+        ? `🎉 **Swarm agreement ready.** Execute to deposit into the **${route.tokenIn.symbol}/${route.tokenOut.symbol}** pool through the GenLayer-gated one-time approval.`
+        : `🎉 **Multi-Agent Swarm Consensual Agreement Ready!** You can now execute this trade with one-click non-custodial settlement.`,
     status: 'ready'
   };
 }

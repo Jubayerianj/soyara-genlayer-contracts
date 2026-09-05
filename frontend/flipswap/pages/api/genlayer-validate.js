@@ -95,7 +95,7 @@ export default async function handler(req, res) {
   // GenLayer serialises consensus rounds per sender, so two rounds signed by
   // the same key collide and the second reverts. Each in-flight round gets its
   // own account from the pool.
-  const lease = leaseAgent();
+  let lease = leaseAgent();
 
   if (!lease) {
     const status = poolStatus();
@@ -128,11 +128,37 @@ export default async function handler(req, res) {
   try {
     let validationResult;
 
-    if (action === 'SWAP') {
-      validationResult = await validateSwapProposal(proposal, options);
-    } else {
-      validationResult = await validateLiquidityProposal(proposal, options);
+    // The RPC node throttles PER SENDER, so a lane that is at capacity stays at
+    // capacity no matter how long we wait — while another funded lane submits
+    // instantly. Waiting is the wrong remedy; rotating is. Try successive lanes
+    // before reporting a throttle to the user.
+    const run = (opts) => (action === 'SWAP'
+      ? validateSwapProposal(proposal, opts)
+      : validateLiquidityProposal(proposal, opts));
+
+    let currentLease = lease;
+    let opts = options;
+    const triedLeases = [];
+
+    for (let attempt = 0; ; attempt += 1) {
+      validationResult = await run(opts);
+      if (!validationResult.rateLimited || attempt >= 3) break;
+
+      // This lane is throttled — hand it back and take a different one.
+      if (currentLease) triedLeases.push(currentLease);
+      const nextLease = leaseAgent();
+      if (!nextLease || (currentLease && nextLease.account?.address === currentLease.account?.address)) {
+        if (nextLease && nextLease !== currentLease) nextLease.release();
+        break; // no distinct lane free — report the throttle honestly
+      }
+      console.warn(`[genlayer-validate] lane ${currentLease?.account?.address?.slice(0, 10)} throttled, rotating to ${nextLease.account.address.slice(0, 10)}`);
+      currentLease = nextLease;
+      opts = { account: nextLease.account };
     }
+
+    // Release every lane we tried and did not keep.
+    for (const l of triedLeases) { try { l.release(); } catch { /* already released */ } }
+    lease = currentLease;
 
     // Keep the lane reserved only while its round is genuinely in flight;
     // a decided round frees it immediately for the next request.
@@ -158,6 +184,7 @@ export default async function handler(req, res) {
       tx_hash:          validationResult.txHash || null,
       statusName:       validationResult.statusName || null,
       queue_full:       Boolean(validationResult.queueFull),
+      rate_limited:     Boolean(validationResult.rateLimited),
       via_mandate:      Boolean(validationResult.viaMandate),
       consensus_mode:   validationResult.viaMandate
         ? 'Mandate (pre-approved by GenVM consensus — instant view check)'
