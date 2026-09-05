@@ -18,7 +18,8 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 
 | Contract | Address | Transaction Hash |
 |---|---|---|
-| **AgentValidator** (current — action-aware LLM review) | `0x78FA2A758bdB65a66F4B9C08D8DC54066d0e0395` | `0x3f70ffa33317575dbb9e3a482e2901f5b3e82bed5e67e4a75ac8949b291ec85b` |
+| **AgentValidator** (current — passes `genvm-lint`) | `0x7ABa94668afC24463Be323f9bB65BD4b4F480d89` | `0x527fa134b17d499efc967807cdb153a9fcc2e37fbba4e446911220f0f7cdaf86` |
+| AgentValidator (retired — failed genvm-lint, 12 errors) | `0x78FA2A758bdB65a66F4B9C08D8DC54066d0e0395` | `0x3f70ffa33317575dbb9e3a482e2901f5b3e82bed5e67e4a75ac8949b291ec85b` |
 | AgentValidator (retired — swap-shaped rules broke liquidity consensus) | `0x69c33B036a982e7C7107b1634451A0C227cB2BBA` | `0x56cd8a4628f0234a47a668e03a12dd8019fbc7041b9314de1a5f1395102357e4` |
 | AgentValidator (retired — queue exhausted, see PendingQueueFull below) | `0x683cBF11F807aB184ed2B4a5dDDC9E49dbBa0f51` | `0x874ff1cb09c15abb3b5e0817911879e00f2b92ba4807e6614a46197c1606661f` |
 | AgentValidator (retired — determinism fix, no persisted verdicts) | `0x440FB164C93cC5657a1b1F53e8B4E1113c43AB9D` | `0x53d3a96a97976070b246e49d25e36a5b03917c456168268c3c1d5dd673a09711` |
@@ -516,4 +517,64 @@ revocation taking effect immediately, and only the owner being able to register.
 
 **Redeploying the executor invalidates every existing ERC-20 approval** — users
 must approve the new address once before their first trade.
+
+## The lint failure, reproduced and fixed
+
+GenLayer's linter is **`genvm-linter`**, documented at
+<https://docs.genlayer.com/api-references/genlayer-linter>:
+
+```bash
+pip install genvm-linter     # 0.11.0
+genvm-lint check AgentValidator.py
+```
+
+### A trap that hid this for two review cycles
+
+`genvm-linter>=0.1.0` requires **Python >= 3.10**. On Python 3.9, pip silently
+installs `0.0.1` — a placeholder whose entire contents are `__version__ =
+"0.0.1"`. It provides no `genvm-lint` binary and checks nothing. Anyone lint-
+checking on 3.9 sees an apparently successful install and no errors, while the
+reviewer on 3.10+ sees a genuine failure.
+
+### The actual failure — 12 errors
+
+```
+line 493: self.validated_count in 'AgentValidator.validate_proposal' reachable from
+          non-deterministic block; storage writes are forbidden in non-deterministic contexts
+line 519: gl.eq_principle.strict_eq() ... nested non-deterministic blocks are forbidden
+```
+
+**Cause.** In `SafeEntryPointFinder`, the linter treats the scope *containing* an
+inline nondet lambda as a non-deterministic context:
+
+```python
+# Track lambdas that contain nondet - their containing scope is safe
+self.lambda_scopes: set[str] = set()
+all_safe = entry_finder.safe_functions | entry_finder.lambda_scopes
+```
+
+So `gl.eq_principle.strict_eq(lambda: self._llm_review(...))` written inline in
+`validate_proposal` made that whole method non-deterministic, and every
+`self.x = ...` in it illegal.
+
+**Fix**, matching the pattern in GenLayer's own contract template: move the
+nondet call into a dedicated helper and pass a **named nested `def`**, never an
+inline lambda.
+
+```python
+def _consensus_review(self, ...) -> bool:
+    def review() -> bool:
+        return self._llm_review(...)
+    return gl.eq_principle.strict_eq(review)
+```
+
+The caller stays deterministic and may write storage.
+
+```
+AgentValidator.py     ✓ Lint passed (3 checks)   ✓ Validation passed
+LiquidityValidator.py ✓ Lint passed (3 checks)   ✓ Validation passed
+```
+
+Consensus verified on the redeployed contract: SWAP 45s `ACCEPTED found=true
+approved=true`; ADD_LIQUIDITY 42s `ACCEPTED found=true approved=true`.
 

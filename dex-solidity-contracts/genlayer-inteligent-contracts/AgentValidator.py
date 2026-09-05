@@ -292,8 +292,8 @@ class AgentValidator(gl.Contract):
         # Only a boolean crosses the strict_eq boundary — see _llm_review for why
         # returning LLM-authored text here makes consensus impossible.
         try:
-            llm_approved = gl.eq_principle.strict_eq(
-                lambda: self._llm_mandate_review(len(requested), cap, int(max_slippage_bps), int(max_trades))
+            llm_approved = self._consensus_mandate_review(
+                len(requested), cap, int(max_slippage_bps), int(max_trades)
             )
         except Exception:
             return self._reject_mandate("Consensus unavailable — failed closed")
@@ -516,8 +516,8 @@ class AgentValidator(gl.Contract):
         # why validations were stalling. Only the boolean crosses the boundary; all
         # human-readable text is composed deterministically out here.
         try:
-            llm_approved = gl.eq_principle.strict_eq(
-                lambda: self._llm_review(action, slippage_bps, amount_in, min_amount_out, extra_data)
+            llm_approved = self._consensus_review(
+                action, slippage_bps, amount_in, min_amount_out, extra_data
             )
         except Exception:
             self.rejected_count = self.rejected_count + u256(1)
@@ -619,6 +619,47 @@ class AgentValidator(gl.Contract):
     # -----------------------------------------------------------------------
     # Phase 2 — LLM coherence check (non-deterministic, reaches consensus)
     # -----------------------------------------------------------------------
+
+    # ── Consensus wrappers ────────────────────────────────────────────────
+    #
+    # The nondeterministic call is isolated in its own method on purpose.
+    # genvm-lint marks the scope CONTAINING an inline `strict_eq(lambda: ...)`
+    # as a non-deterministic context, and storage writes are forbidden there —
+    # which is why `validate_proposal` and `issue_trading_mandate` previously
+    # failed lint with "storage writes are forbidden in non-deterministic
+    # contexts" and "nested non-deterministic blocks are forbidden". Keeping the
+    # lambda here means the callers stay deterministic and may write state.
+    #
+    # Only a BARE BOOLEAN crosses the strict_eq boundary — see _llm_review.
+
+    def _consensus_review(
+        self,
+        action:         str,
+        slippage_bps:   u256,
+        amount_in:      str,
+        min_amount_out: str,
+        extra_data:     str,
+    ) -> bool:
+        # A nested def passed BY NAME, not an inline lambda. genvm-lint marks the
+        # scope containing an inline nondet lambda as a non-deterministic context,
+        # which then makes this very strict_eq call read as a nested nondet block.
+        # This is the pattern GenLayer's own contract template uses.
+        def review() -> bool:
+            return self._llm_review(action, slippage_bps, amount_in, min_amount_out, extra_data)
+
+        return gl.eq_principle.strict_eq(review)
+
+    def _consensus_mandate_review(
+        self,
+        token_count:      int,
+        cap:              int,
+        max_slippage_bps: int,
+        max_trades:       int,
+    ) -> bool:
+        def review() -> bool:
+            return self._llm_mandate_review(token_count, cap, max_slippage_bps, max_trades)
+
+        return gl.eq_principle.strict_eq(review)
 
     def _llm_review(
         self,
