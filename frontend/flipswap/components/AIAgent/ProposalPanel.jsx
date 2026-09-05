@@ -462,6 +462,18 @@ const ProposalPanel = ({
               )}
             </button>
 
+            {proposal.action === 'SWAP' && proposal.route && (
+              <div style={{
+                fontSize: '0.72rem', color: textMuted, lineHeight: 1.45,
+                padding: '7px 9px', borderRadius: 8,
+                background: isDark ? 'rgba(56,189,248,0.06)' : 'rgba(2,132,199,0.05)',
+              }}>
+                Routed by the <strong>AGGFlow aggregator</strong> — it compared every venue and chose{' '}
+                <strong>{proposal.route}</strong>. Swaps always take the best available route; V2 vs V3
+                is an outcome, not a setting.
+              </div>
+            )}
+
             {proposal.highImpact && !isNotExecutable && (
               <div style={{
                 fontSize: '0.78rem',

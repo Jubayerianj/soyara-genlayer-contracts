@@ -17,7 +17,7 @@ import { parseUnits, zeroAddress } from 'viem';
 import { CONTRACT_ADDRESSES } from '../constants/addresses';
 import { TOKEN_LIST, findTokenByAddress } from '../constants/tokens';
 import { ERC20_ABI } from '../constants/abis';
-import { buildProgram } from '../utils/programBuilder';
+import { buildProgram, buildMultiHopProgram } from '../utils/programBuilder';
 
 export function useAgentSwapExecution(proposal) {
   const { address: userAddress } = useAccount();
@@ -319,6 +319,46 @@ export function useAgentSwapExecution(proposal) {
         isNative: toTokenObj.isNative || toTokenObj.symbol === 'GEN',
       };
 
+      // ── REMOVE_LIQUIDITY settles through its own gated route ────────────────
+      // Before this existed, an approved withdrawal validated and then did
+      // nothing on-chain — execute() only ever handled swaps and deposits.
+      if (proposal.action === 'REMOVE_LIQUIDITY') {
+        const res = await fetch('/api/agent-remove-liquidity', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user: userAddress,
+            tokenA: tokenInFormatted.isNative ? wgenAddress : tokenInFormatted.address,
+            tokenB: tokenOutFormatted.isNative ? wgenAddress : tokenOutFormatted.address,
+            percent: proposal.percent ?? 100,
+            lpAmount: proposal.lpAmountRaw ?? null,
+            // Same minimum the proposal was validated with, so settlement
+            // derives the identical proposal id.
+            validatedMinOut: proposal.minAmountOutRaw ?? null,
+            slippageBps: proposal.slippageBps || 100,
+            deadline: proposal.deadline || (Math.floor(Date.now() / 1000) + 1800),
+            validationApproved: Boolean(validationResult?.approved),
+          }),
+        });
+        const out = await res.json();
+        if (!res.ok || !out.success) {
+          const err = new Error(out.error || 'Withdrawal failed — aborted (fail-closed)');
+          err.needsApproval = Boolean(out.needsApproval);
+          err.approvalToken = out.token || null;
+          err.notValidated = Boolean(out.notValidated);
+          throw err;
+        }
+        setActiveTxHash(out.execTxHash);
+        return {
+          kind: 'remove_liquidity',
+          hash: out.execTxHash,
+          opHash: out.opHash,
+          lpBurned: out.lpBurned,
+          approveTxHash: out.approveTxHash,
+          explorerUrl: out.explorerUrl,
+        };
+      }
+
       // ── ADD_LIQUIDITY settles through its own gated route ───────────────────
       // Previously execute() only ever handled swaps, so an approved liquidity
       // proposal on /a2a validated and then did nothing on-chain at all.
@@ -395,7 +435,12 @@ export function useAgentSwapExecution(proposal) {
         throw new Error(`No active liquidity pool found on Soyara DEX for ${fromTokenObj.symbol}/${toTokenObj.symbol}`);
       }
 
-      const program = buildProgram(tokenInFormatted, tokenOutFormatted, resolvedRoute, wgenAddress);
+      // Use the aggregator's chosen path when it found one. Rebuilding the route
+      // here instead would discard a multi-hop win and could pick a different
+      // pool from the one that was quoted and validated.
+      const program = Array.isArray(proposal.hops) && proposal.hops.length > 0
+        ? buildMultiHopProgram(tokenInFormatted, tokenOutFormatted, proposal.hops, wgenAddress)
+        : buildProgram(tokenInFormatted, tokenOutFormatted, resolvedRoute, wgenAddress);
       const feeCollector = CONTRACT_ADDRESSES[4221]?.dexFeeVault || '0x48234eD645676b794a4CbC7483513e58cB04e22E';
       const deadlineNum = Math.floor(Date.now() / 1000) + 1800;
       const slippageNum = proposal.slippageBps || 30;

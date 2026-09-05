@@ -172,3 +172,87 @@ export async function quoteBestRoute(tokenInAddr, tokenOutAddr, amountInWei, dex
   if (!chosen) return null;
   return { ...chosen, effectiveAmountInRaw: effectiveIn, v3, v2 };
 }
+
+// ── Multi-hop routing ───────────────────────────────────────────────────────
+//
+// A real aggregator does not give up when two tokens have no direct pool.
+// WBTC/USDT has no pair, but WBTC→WGEN→USDT does — previously that was reported
+// as "no route" and the trade was refused. These are the tokens deep enough to
+// be worth routing through.
+const HOP_TOKENS = ['wgen', 'usdc', 'usdt'];
+
+function hopAddresses() {
+  const c = CONTRACT_ADDRESSES[4221] || {};
+  const list = [c.wgen, c.usdc, c.usdt].filter(Boolean);
+  // Fall back to the known addresses if the constants are shaped differently.
+  return list.length ? list : [
+    '0x315374AA9b5536037Cc1Efeea2439CCC0913A77e',
+    '0x58B6CD7891cd0A682226E25607b958a6479195A6',
+    '0x4B54235778c26Ee8ac27744A53d4c5BC4c9D46fc',
+  ];
+}
+
+/**
+ * Best executable route including two-hop paths.
+ *
+ * Returns the same shape as quoteBestRoute plus `hops`, an ordered list of
+ * {pool, poolType, fee, tokenIn, tokenOut} the program builder turns into a
+ * chained AGGFlow program. A direct route is simply a one-hop path, so callers
+ * can treat both uniformly.
+ */
+export async function quoteBestRouteMultiHop(tokenInAddr, tokenOutAddr, amountInWei, dexPref = 'best') {
+  const direct = await quoteBestRoute(tokenInAddr, tokenOutAddr, amountInWei, dexPref).catch(() => null);
+
+  const inLower = String(tokenInAddr).toLowerCase();
+  const outLower = String(tokenOutAddr).toLowerCase();
+
+  const candidates = hopAddresses().filter((m) => {
+    const ml = String(m).toLowerCase();
+    return ml !== inLower && ml !== outLower;
+  });
+
+  // Price each two-hop path end to end: the first leg's real output is the
+  // second leg's input, so impact compounds correctly rather than being
+  // estimated.
+  const twoHop = await Promise.all(candidates.map(async (mid) => {
+    try {
+      const legA = await quoteBestRoute(tokenInAddr, mid, amountInWei, dexPref);
+      if (!legA?.amountOutRaw) return null;
+      const legB = await quoteBestRoute(mid, tokenOutAddr, legA.amountOutRaw, dexPref);
+      if (!legB?.amountOutRaw) return null;
+      return {
+        amountOutRaw: legB.amountOutRaw,
+        dex: `${legA.dex}+${legB.dex}`,
+        priceImpactPct: (legA.priceImpactPct || 0) + (legB.priceImpactPct || 0),
+        pool: legA.pool,
+        feeTier: legA.feeTier,
+        via: mid,
+        hops: [
+          { pool: legA.pool, poolType: legA.dex, fee: legA.feeTier, tokenIn: tokenInAddr, tokenOut: mid },
+          { pool: legB.pool, poolType: legB.dex, fee: legB.feeTier, tokenIn: mid, tokenOut: tokenOutAddr },
+        ],
+      };
+    } catch {
+      return null;
+    }
+  }));
+
+  const all = [
+    direct ? { ...direct, hops: [{ pool: direct.pool, poolType: direct.dex, fee: direct.feeTier, tokenIn: tokenInAddr, tokenOut: tokenOutAddr }] } : null,
+    ...twoHop,
+  ].filter(Boolean);
+
+  if (all.length === 0) return null;
+
+  // Best executable output wins — that is the whole promise of an aggregator.
+  all.sort((a, b) => (b.amountOutRaw > a.amountOutRaw ? 1 : b.amountOutRaw < a.amountOutRaw ? -1 : 0));
+  const best = all[0];
+  return {
+    ...best,
+    effectiveAmountInRaw: applyEntrypointFee(amountInWei),
+    isMultiHop: best.hops.length > 1,
+    improvedOverDirect: direct && best.amountOutRaw > direct.amountOutRaw
+      ? Number(((best.amountOutRaw - direct.amountOutRaw) * 10000n) / direct.amountOutRaw) / 100
+      : 0,
+  };
+}

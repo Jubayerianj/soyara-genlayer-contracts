@@ -1,6 +1,7 @@
 // pages/api/agent-v2.js
 import { formatUnits, parseUnits } from 'viem';
-import { quoteBestRoute } from '../../lib/dexQuote.js';
+import { parseIntent } from '../../lib/parseIntent.js';
+import { quoteBestRouteMultiHop, quoteBestRoute } from '../../lib/dexQuote.js';
 import { TOKEN_LIST, GEN_NATIVE_TOKEN } from '../../constants/tokens.js';
 import { CONTRACT_ADDRESSES, INTELLIGENT_CONTRACTS } from '../../constants/addresses.js';
 
@@ -32,7 +33,10 @@ async function getOnChainQuote(tokenInObj, tokenOutObj, amountInNum, dexPref = '
   const tokenOutAddr = tokenOutObj.isNative ? wgenAddress : tokenOutObj.address;
   const decimalsIn = tokenInObj.decimals || 18;
   const amountInWei = parseUnits(String(amountInNum), decimalsIn);
-  return quoteBestRoute(tokenInAddr, tokenOutAddr, amountInWei, dexPref);
+  // Aggregate across direct AND two-hop paths. A pair with no direct pool
+  // (WBTC/USDT, FSWP/USDC) used to be reported unroutable; routing through a
+  // deep intermediate makes it tradable.
+  return quoteBestRouteMultiHop(tokenInAddr, tokenOutAddr, amountInWei, dexPref);
 }
 
 const GENLAYER_KNOWLEDGE = {
@@ -161,6 +165,11 @@ async function calculateQuote(tokenInSym, tokenOutSym, amountInNum, dex = 'best'
           minAmountOut,
           amountOutRaw: amountOutRawStr,
           minAmountOutRaw: minAmountOutRawStr,
+          // Ordered path the aggregator chose; settlement rebuilds the program
+          // from this rather than re-deriving a (possibly different) route.
+          hops: onChain.hops || null,
+          isMultiHop: Boolean(onChain.isMultiHop),
+          via: onChain.via || null,
           fee: isV3 ? `${(onChain.feeTier / 10000).toFixed(2)}%` : '0.30%',
           priceImpact: `${Math.min(99.99, onChain.priceImpactPct).toFixed(2)}%`,
           // Numeric impact so the UI can warn rather than just display a string.
@@ -170,7 +179,9 @@ async function calculateQuote(tokenInSym, tokenOutSym, amountInNum, dex = 'best'
           // settlement.
           priceImpactPct: Number(onChain.priceImpactPct.toFixed(2)),
           highImpact: onChain.priceImpactPct >= 5,
-          route: isV3 ? `V3 Concentrated (${(onChain.feeTier / 10000).toFixed(2)}% fee tier)` : 'V2 Classic AMM (0.30% fee)',
+          route: onChain.isMultiHop
+            ? `Aggregated ${onChain.hops.length}-hop route (${onChain.dex})`
+            : isV3 ? `V3 Concentrated (${(onChain.feeTier / 10000).toFixed(2)}% fee tier)` : 'V2 Classic AMM (0.30% fee)',
           dex: onChain.dex,
           poolAddress: onChain.pool,
           isLiveQuote: true,
@@ -320,6 +331,9 @@ async function buildProposalObject(action, params) {
       // pick a V3 pool that cannot actually fill, reverting with
       // AGGFlowEntrypoint_InsufficientAmountAfterFees().
       dex: quote.dex,
+      hops: quote.hops || null,
+      isMultiHop: Boolean(quote.isMultiHop),
+      via: quote.via || null,
       router: defaultRouter,
       deadline,
       // A quote from the reference-price fallback is a display estimate with no
@@ -450,6 +464,32 @@ async function generateComprehensiveDiscussion(message) {
   const numberMatches = text.replace(/\bv[23]\b/gi, '').match(/\d+(?:\.\d+)?/g);
   const amount = numberMatches ? parseFloat(numberMatches[0]) : 100;
   const isV3 = text.includes('v3') || text.includes('concentrated') || text.includes('low fee');
+
+  // Shared parser first — same logic /a2a uses, so the two surfaces cannot
+  // drift apart the way they did on token direction and venue handling.
+  const intent = parseIntent(message);
+  if (intent.action === 'SWAP' || intent.action === 'COMPARE') {
+    if (!intent.confident) {
+      return {
+        reply: `### ❓ I need one more detail\n\nI could not determine: **${intent.needs.join(', ')}**.\n\nSupported tokens: **USDC, USDT, GEN, WGEN, WBTC, ETH, FSWP**.\n\nFor example: *"swap 50 USDC to USDT"*.\n\nI have not prepared a proposal, because guessing a token would risk trading something you did not ask for.`,
+        proposal: null,
+        toolsUsed: [],
+      };
+    }
+    const quote = await calculateQuote(intent.tokenIn, intent.tokenOut, intent.amountIn ?? 100, 'best');
+    const proposal = await buildProposalObject('SWAP', {
+      tokenIn: intent.tokenIn,
+      tokenOut: intent.tokenOut,
+      amountIn: intent.amountIn ?? 100,
+      dex: 'best',
+    });
+    const rate = (parseFloat(quote.amountOut) / (intent.amountIn ?? 100)).toFixed(6);
+    return {
+      reply: `### ⚡ Swap Execution Proposal Prepared\n\n- **Route:** ${quote.route} (best route chosen by the aggregator)\n- **Rate:** 1 ${intent.tokenIn} ≈ ${rate} ${intent.tokenOut}${quote.isLiveQuote ? ' (live pool price)' : ' (estimated — no live pool)'}\n- **Expected Output:** **${quote.amountOut} ${intent.tokenOut}**\n- **Min. Received (${(intent.slippageBps / 100).toFixed(2)}% slippage):** ${quote.minAmountOut} ${intent.tokenOut}\n- **Price Impact:** ${quote.priceImpact}\n\n👉 **Next:** click **"Validate with GenLayer IC"** to run this through GenVM consensus.`,
+      proposal,
+      toolsUsed: ['get_quote', 'best-route aggregator', 'AgentValidator IC'],
+    };
+  }
 
   if (text.includes('swap') || text.includes('trade') || text.includes('buy') || text.includes('sell') || text.includes('exchange') || text.includes('convert')) {
     // NEVER invent the other side of a trade.

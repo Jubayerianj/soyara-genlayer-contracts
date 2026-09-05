@@ -85,7 +85,21 @@ export function leaseAgent() {
   if (pool.length === 0) return null;
 
   const now = Date.now();
-  const lane = pool.find((l) => isFree(l, now));
+
+  // Start scanning from a rotating offset rather than always at index 0.
+  //
+  // On a long-running server the busy flags make `find` spread naturally, but
+  // under serverless (Vercel) every invocation gets a FRESH module instance, so
+  // `busySince` is always 0 and every request picks lane 0. The whole pool then
+  // funnels through one sender and the RPC node throttles it per sender —
+  // surfacing as "Request exceeds defined limit" even with five idle lanes.
+  // A random start spreads isolated invocations across the pool.
+  const offset = Math.floor(Math.random() * pool.length);
+  let lane = null;
+  for (let i = 0; i < pool.length; i += 1) {
+    const candidate = pool[(offset + i) % pool.length];
+    if (isFree(candidate, now)) { lane = candidate; break; }
+  }
   if (!lane) return null;
 
   lane.busySince = now;

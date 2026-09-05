@@ -43,6 +43,33 @@ const ERC20_MINI_ABI = [
   { name: 'balanceOf', type: 'function', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] },
 ];
 
+/**
+ * Retry a write that the RPC node throttled.
+ *
+ * Bradbury replies `-32005 transaction gas rate limit exceeded: node is at
+ * capacity, retry in ~Nms`. Settlement cannot rotate senders the way validation
+ * can — AgentExecutor's onlyAgent modifier means these calls must come from the
+ * authorised agent — so waiting the hinted interval is the correct remedy here.
+ * Without this the throttle surfaced mid-flow as a bare
+ * "Request exceeds defined limit", which reads like a failed trade when in fact
+ * nothing was submitted.
+ */
+async function sendWithRetry(fn, label) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      const text = `${err?.shortMessage || ''} ${err?.message || ''} ${err?.details || ''}`;
+      const throttled = /-32005|gas rate limit|at capacity|exceeds defined limit/i.test(text);
+      if (!throttled || attempt >= 4) throw err;
+      const hint = text.match(/retryAfterMs"?\s*:\s*(\d+)/) || text.match(/retry in ~?(\d+)\s*ms/i);
+      const wait = Math.min(8000, (hint ? parseInt(hint[1], 10) : 1500) + attempt * 500);
+      console.warn(`[settlement] ${label} throttled by node, retrying in ${wait}ms (attempt ${attempt + 1}/5)`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -215,21 +242,21 @@ export default async function handler(req, res) {
       args: [user, tokenA, tokenB, aFinal, bFinal, aMinFinal, bMinFinal, deadlineBig],
     });
 
-    const approveTxHash = await walletClient.writeContract({
+    const approveTxHash = await sendWithRetry(() => walletClient.writeContract({
       address: agentExecutorAddress,
       abi: AGENT_EXECUTOR_ABI,
       functionName: 'approveTrade',
       args: [opHash],
-    });
+    }), 'approveTrade');
     await publicClient.waitForTransactionReceipt({ hash: approveTxHash });
 
     // ── STEP 4: Execute — checks and CONSUMES the approval ──────────────────
-    const execTxHash = await walletClient.writeContract({
+    const execTxHash = await sendWithRetry(() => walletClient.writeContract({
       address: agentExecutorAddress,
       abi: AGENT_EXECUTOR_ABI,
       functionName: 'executeAddLiquidityV2',
       args: [user, tokenA, tokenB, aFinal, bFinal, aMinFinal, bMinFinal, deadlineBig],
-    });
+    }), 'executeAddLiquidityV2');
     const execReceipt = await publicClient.waitForTransactionReceipt({ hash: execTxHash });
 
     if (execReceipt.status !== 'success') {

@@ -4,6 +4,20 @@ import { NextResponse } from 'next/server'
 export function middleware(request) {
   const pathname = request.nextUrl.pathname;
 
+  // Router prefetches are skipped here rather than in `config.matcher`.
+  // The matcher used to express this with the object form
+  // ({ source, missing: [...] }), which `next build` accepts but Vercel's
+  // middleware compiler rejects outright:
+  //   "Middleware's `config.matcher` must be a path matcher (string) or an
+  //    array of path matchers (string[])"
+  // Same behaviour, expressed where it is portable.
+  if (
+    request.headers.get('next-router-prefetch') !== null
+    || request.headers.get('purpose') === 'prefetch'
+  ) {
+    return NextResponse.next();
+  }
+
   // Case normalization: Redirect to lowercase path if it contains uppercase characters
   if (pathname !== pathname.toLowerCase()) {
     const url = request.nextUrl.clone();
@@ -74,13 +88,6 @@ export function middleware(request) {
 // 2. Or conditionally apply in the proxy function
 
 export const config = {
-  matcher: [
-    {
-      source: '/((?!api|_next/static|_next/image|favicon.ico|sw.js|manifest.json).*)',
-      missing: [
-        { type: 'header', key: 'next-router-prefetch' },
-        { type: 'header', key: 'purpose', value: 'prefetch' },
-      ],
-    },
-  ],
+  // Must be a string or string[] — see the prefetch note in middleware() above.
+  matcher: ['/((?!api|_next/static|_next/image|favicon.ico|sw.js|manifest.json).*)'],
 }

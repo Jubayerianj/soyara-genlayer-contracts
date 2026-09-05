@@ -66,6 +66,9 @@ export default function SwarmWarRoom({ mode = 'user' }) {
       minAmountOutRaw: route.minAmountOutWei,
       slippageBps: intent?.slippageBps || 100,
       dex: route.chosenRoute?.includes('V3') ? 'v3' : 'v2',
+      // The aggregator's chosen path, so settlement rebuilds exactly what was quoted.
+      hops: route.hops || null,
+      isMultiHop: Boolean(route.isMultiHop),
       deadline: payload.risk?.proposal?.deadline,
       // When no pool can fill the pair, RouterMathAgent falls back to a rough
       // 1:1 estimate so the swarm dialogue can still complete. That estimate has
@@ -236,6 +239,8 @@ export default function SwarmWarRoom({ mode = 'user' }) {
         text = `🚀 **Wrap Submitted!** Tx: [${result.hash.slice(0, 10)}...${result.hash.slice(-8)}](https://explorer-bradbury.genlayer.com/tx/${result.hash})`;
       } else if (result.kind === 'unwrap') {
         text = `🚀 **Unwrap Submitted!** Tx: [${result.hash.slice(0, 10)}...${result.hash.slice(-8)}](https://explorer-bradbury.genlayer.com/tx/${result.hash})`;
+      } else if (result.kind === 'remove_liquidity') {
+        text = `💸 **Liquidity Withdrawn via AgentExecutor!** One-time approval bound and consumed.\n\nLP burned: \`${result.lpBurned}\`\n\nExecution Tx: [${result.hash?.slice(0, 10)}...${result.hash?.slice(-8)}](${result.explorerUrl})`;
       } else if (result.kind === 'add_liquidity') {
         text = `💧 **Liquidity Added via AgentExecutor!** One-time approval bound and consumed.\n\nOp Hash: \`${result.opHash?.slice(0, 14)}...\`\n\nExecution Tx: [${result.hash?.slice(0, 10)}...${result.hash?.slice(-8)}](${result.explorerUrl})`;
       } else if (result.kind === 'swap') {
@@ -413,7 +418,7 @@ export default function SwarmWarRoom({ mode = 'user' }) {
 
             <button
               onClick={handleExecute}
-              disabled={!payload.risk.isApproved || execState === 'approving' || execState === 'executing' || isTxWaiting || hasInsufficientBalance || isNotExecutable}
+              disabled={!payload.risk.isApproved || payload.risk.isPending || execState === 'approving' || execState === 'executing' || isTxWaiting || hasInsufficientBalance || isNotExecutable}
               className={styles.executeBtn}
             >
               {(execState === 'approving' || execState === 'executing' || isTxWaiting) && (
