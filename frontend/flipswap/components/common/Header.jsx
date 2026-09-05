@@ -9,7 +9,7 @@ import {
   useSwitchChain
 } from 'wagmi'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Menu, X, Zap, Droplets, User, Sun, Moon, Bot, Sparkles, BookOpen, Terminal } from 'lucide-react'
+import { Menu, X, Zap, Droplets, User, Sun, Moon, Bot, Sparkles, BookOpen, Terminal, Package } from 'lucide-react'
 import { useTheme } from '../contexts/ThemeContext'
 
 import styles from './Header.module.css'
@@ -26,6 +26,7 @@ function GlobalMenu() {
     { label: 'Pools', href: '/pools', icon: <Droplets size={16} /> },
     { label: 'Portfolio', href: '/portfolio', icon: <User size={16} /> },
     { label: 'Docs', href: '/docs', icon: <BookOpen size={16} /> },
+    { label: 'Build Agents', href: '/sdk', icon: <Package size={16} style={{ color: '#0ea5e9' }} /> },
     { label: 'Dev Portal', href: '/dev', icon: <Terminal size={16} /> },
   ]
 
@@ -156,6 +157,12 @@ export default function Header() {
             className={`${styles.navLink} ${router.pathname === '/docs' ? styles.navLinkActive : ''}`}
           >
             Docs
+          </Link>
+          <Link
+            href="/sdk"
+            className={`${styles.navLink} ${router.pathname === '/sdk' ? styles.navLinkActive : ''}`}
+          >
+            Build Agents
           </Link>
           <Link
             href="/dev"
