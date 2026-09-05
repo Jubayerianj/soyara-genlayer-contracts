@@ -13,7 +13,7 @@ export const CONTRACT_ADDRESSES = {
     aggregatorEntrypoint: '0x95feE6Cb918Ed9C621E36082EE8D998873031EaA',
     aggregatorRouter:     '0xafCAD2bf0E85e30a2b54ac6491dC81987cE7767C',
     // Settlement gate — binds and consumes the one-time approval
-    agentExecutor:        '0xBda36A9453003E2eEe5D6Cb07ad253e64BaB4729',
+    agentExecutor:        '0xa835c0a86dD64726eF23D83a8ca7D60b542EE2e4',
     // V2
     factory:              '0x4680BCe1632824d30D2F53656dD610736c3e312e',
     router:               '0xF456737D17C2Bbb348fd4F7D1b000D62A46FB3b5',

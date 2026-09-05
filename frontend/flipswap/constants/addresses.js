@@ -35,7 +35,7 @@ export const CONTRACT_ADDRESSES = {
     // AgentExecutor — deployed 2026-09-04 on GenLayer Bradbury Testnet (chain 4221)
     // Tx: broadcast/deployGenlayer.sol/4221/run-latest.json
     // Deployer/Agent: 0x23D542DCEFb00b1f4268E67a0EC1EF4de0A58fe2
-    agentExecutor: "0xBda36A9453003E2eEe5D6Cb07ad253e64BaB4729",
+    agentExecutor: "0xa835c0a86dD64726eF23D83a8ca7D60b542EE2e4",
   }
 };
 
