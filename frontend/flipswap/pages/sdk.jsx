@@ -82,8 +82,16 @@ export default function SdkPage() {
             it can settle. The SDK gives your agent the same intent parsing, best-route aggregation
             and settlement path the app itself uses.
           </p>
-          <div style={{ marginTop: 18, maxWidth: 420 }}>
-            <Code isDark={isDark}>npm install @soyara/sdk viem</Code>
+          <div style={{ marginTop: 18, maxWidth: 560 }}>
+            <Code isDark={isDark}>{`git clone https://github.com/Jubayerianj/soyara-genlayer-contracts
+cd soyara-genlayer-contracts/sdk && npm install viem
+
+# then, from your project:
+npm install /path/to/soyara-genlayer-contracts/sdk`}</Code>
+            <p style={{ color: muted, fontSize: '0.74rem', lineHeight: 1.5, marginTop: 8, marginBottom: 0 }}>
+              Not on npm yet, so install it from the repo. Once it is published this
+              becomes <code>npm install @soyara/sdk viem</code>.
+            </p>
           </div>
         </div>
 
