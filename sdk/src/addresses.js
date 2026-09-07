@@ -12,8 +12,18 @@ export const CONTRACT_ADDRESSES = {
     // Aggregation
     aggregatorEntrypoint: '0x95feE6Cb918Ed9C621E36082EE8D998873031EaA',
     aggregatorRouter:     '0xafCAD2bf0E85e30a2b54ac6491dC81987cE7767C',
-    // Settlement gate — binds and consumes the one-time approval
-    agentExecutor:        '0xa835c0a86dD64726eF23D83a8ca7D60b542EE2e4',
+    // Settlement gate. The executor itself authenticates the GenLayer verdict:
+    // `recordVerdict` is callable only by the AgentValidator IC over its ghost
+    // contract, and the commitment it authorises is re-derived by the contract
+    // from the whole order, so route, fee, fee collector, recipient, quote,
+    // deadline and nonce are all inside it.
+    //
+    // The address here was `0xa835c0a8...` until 2026-09-07, which is the
+    // PRE-ENFORCEMENT executor: it has no `genLayerValidator` and no
+    // `attestorThreshold` at all. Anything built against it settles on the old
+    // architecture where a privileged agent key, not the contract, enforced the
+    // verdict. test/addresses.mjs now checks this against the live chain.
+    agentExecutor:        '0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1',
     // V2
     factory:              '0x4680BCe1632824d30D2F53656dD610736c3e312e',
     router:               '0xF456737D17C2Bbb348fd4F7D1b000D62A46FB3b5',
@@ -33,8 +43,12 @@ export const CONTRACT_ADDRESSES = {
 };
 
 /** GenLayer Intelligent Contracts. */
+// The AgentValidator and the AgentExecutor are a matched pair and must be
+// updated together: the IC holds the executor's address, and the executor
+// accepts `recordVerdict` only from this IC. The LiquidityValidator authorises
+// nothing on the swap path.
 export const INTELLIGENT_CONTRACTS = {
-  agentValidator:     '0x7ABa94668afC24463Be323f9bB65BD4b4F480d89',
+  agentValidator:     '0xf47492A969b2bC8f99B62Bdf8958541F2234C42b',
   liquidityValidator: '0xEFb9473B5269A79d72Df4b6E73E310791a185eeC',
 };
 
