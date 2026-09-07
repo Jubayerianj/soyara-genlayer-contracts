@@ -28,11 +28,11 @@ const title = (accent) => ({
 const body = { fontSize: '0.72rem', lineHeight: 1.55, color: 'var(--text-sub, #cbd5e1)' };
 
 const DEPTH_TONE = {
-  deep: { tone: '#10b981', words: 'Deep - this order is a rounding error against the pool' },
-  comfortable: { tone: '#38bdf8', words: 'Comfortable - the pool absorbs this size' },
-  thin: { tone: '#f59e0b', words: 'Thin - this order moves the price it trades against' },
-  dominant: { tone: '#ef4444', words: 'Dominant - the order is a large share of the pool' },
-  unknown: { tone: '#94a3b8', words: 'Unverified - no V2 pool could be read for this path' },
+  deep: { tone: '#10b981', words: 'Deep' },
+  comfortable: { tone: '#38bdf8', words: 'Comfortable' },
+  thin: { tone: '#f59e0b', words: 'Thin, this order moves the price' },
+  dominant: { tone: '#ef4444', words: 'Dominant, a large share of the pool' },
+  unknown: { tone: '#94a3b8', words: 'Unverified, no pool could be read' },
 };
 
 /**
@@ -72,8 +72,7 @@ export function MarketReadPanel({ analysis, route }) {
 
       {analysis.venueSpreadPct != null && analysis.venueSpreadPct > 25 && (
         <div style={{ ...body, color: '#ef4444' }}>
-          V2 and V3 disagree by <strong>{analysis.venueSpreadPct.toFixed(1)}%</strong> on this pair. That is a
-          mispricing between venues, not a better route.
+          V2 and V3 disagree by <strong>{analysis.venueSpreadPct.toFixed(1)}%</strong>. A mispricing, not a better route.
         </div>
       )}
 
@@ -88,11 +87,11 @@ export function MarketReadPanel({ analysis, route }) {
 }
 
 const RAIL = {
-  reuse: { tone: '#10b981', label: 'Verdict reuse', note: 'A verdict for this exact commitment is already recorded on the executor.' },
-  attestor: { tone: '#a78bfa', label: 'Attestor quorum', note: 'Signed attestations carry the decided verdict without waiting out the appeal window.' },
-  consensus: { tone: '#f59e0b', label: 'Full appeal window', note: 'The verdict arrives when the GenLayer round finalizes and delivers it over the ghost contract.' },
-  blocked: { tone: '#ef4444', label: 'Blocked', note: '' },
-  unknown: { tone: '#94a3b8', label: 'Unknown', note: '' },
+  reuse: { tone: '#10b981', label: 'Verdict reuse' },
+  attestor: { tone: '#a78bfa', label: 'Attestor quorum' },
+  consensus: { tone: '#f59e0b', label: 'Appeal window' },
+  blocked: { tone: '#ef4444', label: 'Blocked' },
+  unknown: { tone: '#94a3b8', label: 'Unknown' },
 };
 
 /**
@@ -116,7 +115,7 @@ export function SettlementRailPanel({ strategy }) {
           <span style={{ fontSize: '0.72rem', color: 'var(--text-muted, #94a3b8)' }}>{strategy.eta}</span>
         )}
       </div>
-      <div style={body}>{strategy.rationale || r.note}</div>
+      <div style={body}>{strategy.rationale}</div>
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', fontSize: '0.66rem', color: 'var(--text-muted, #94a3b8)' }}>
         {strategy.attestorThreshold > 0 && <span>Attestor threshold {strategy.attestorThreshold}-of-N</span>}
         {mins != null && <span>Verdict valid {mins} min</span>}
@@ -145,7 +144,7 @@ export function BindingsPanel({ audit }) {
   return (
     <div style={card(tone)}>
       <div style={title(tone)}>
-        <ShieldCheck size={12} /> Verdict bindings - verified on-chain
+        <ShieldCheck size={12} /> Bindings
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
         {audit.checks.map((c, i) => (
@@ -181,7 +180,7 @@ export function OutcomePanel({ outcome, route }) {
   if (!outcome.ok) {
     return (
       <div style={card('#ef4444')}>
-        <div style={title('#ef4444')}><AlertTriangle size={12} /> Post-trade audit</div>
+        <div style={title('#ef4444')}><AlertTriangle size={12} /> Settlement failed</div>
         <div style={body}>{outcome.reason || 'The settlement transaction did not succeed.'}</div>
       </div>
     );
@@ -189,14 +188,14 @@ export function OutcomePanel({ outcome, route }) {
   const tone = outcome.honouredMinimum === false ? '#ef4444' : '#10b981';
   return (
     <div style={card(tone)}>
-      <div style={title(tone)}><ShieldCheck size={12} /> Post-trade audit</div>
+      <div style={title(tone)}><ShieldCheck size={12} /> Delivered</div>
       <div style={body}>
         Delivered <strong>{outcome.delivered.toLocaleString(undefined, { maximumFractionDigits: 6 })} {route.tokenOut.symbol}</strong>
         {outcome.quoted != null && <> against a quote of <strong>{outcome.quoted.toLocaleString(undefined, { maximumFractionDigits: 6 })}</strong></>}
         {outcome.slipPct != null && Math.abs(outcome.slipPct) >= 0.01 && (
           <> ({outcome.slipPct > 0 ? '+' : ''}{outcome.slipPct.toFixed(3)}%)</>
         )}
-        . Read from the transfer logs on the receipt, not from the quote.
+{'.'} From the receipt, not the quote.
       </div>
       {outcome.min != null && (
         <div style={{ ...body, color: tone, fontWeight: 700 }}>
@@ -221,10 +220,9 @@ export function OutcomePanel({ outcome, route }) {
 export function PoolsHandoffPanel({ url }) {
   return (
     <div style={card('#38bdf8')}>
-      <div style={title('#38bdf8')}>💧 Liquidity lives on the pools app</div>
+      <div style={title('#38bdf8')}>Liquidity</div>
       <div style={body}>
-        This swarm routes and settles swaps. Adding or withdrawing liquidity is a different job with a
-        different interface, and the pools app is built for it.
+        This swarm settles swaps. Positions are managed on the pools app.
       </div>
       <a
         href={url}
@@ -235,7 +233,7 @@ export function PoolsHandoffPanel({ url }) {
           fontSize: '0.75rem', fontWeight: 700, color: '#38bdf8', textDecoration: 'none',
         }}
       >
-        Open the pools app <ExternalLink size={12} />
+        Open pools <ExternalLink size={12} />
       </a>
     </div>
   );

@@ -10,7 +10,8 @@ import {
   ArrowRightLeft, 
   Zap, 
   Terminal, 
-  Code2, 
+  Code2,
+  Package,
   CheckCircle2, 
   ExternalLink, 
   Search, 
@@ -91,16 +92,17 @@ const DOC_TOPICS = [
   {
     category: 'DEVELOPER SDKS & INTEGRATION',
     items: [
-      { id: 'developer-sdk', title: '15. JavaScript SDK (genlayer-js & Viem)', icon: <Code2 size={16} /> },
-      { id: 'python-sdk', title: '16. Python SDK & Agent Integration', icon: <FileCode2 size={16} /> },
-      { id: 'contracts', title: '17. Verified Contract Directory & ABIs', icon: <Terminal size={16} /> },
+      { id: 'build-with-sdk', title: '15. Build With @soyaradex/sdk', icon: <Package size={16} /> },
+      { id: 'developer-sdk', title: '16. JavaScript SDK (genlayer-js & Viem)', icon: <Code2 size={16} /> },
+      { id: 'python-sdk', title: '17. Python SDK & Agent Integration', icon: <FileCode2 size={16} /> },
+      { id: 'contracts', title: '18. Verified Contract Directory & ABIs', icon: <Terminal size={16} /> },
     ]
   },
   {
     category: 'SECURITY & FUTURE OF AGENTIC FINANCE',
     items: [
-      { id: 'security-roadmap', title: '18. Security Threat Model & Defense Matrix', icon: <Shield size={16} /> },
-      { id: 'future-vision', title: '19. Future: Autonomous Intelligent Finance', icon: <Compass size={16} /> },
+      { id: 'security-roadmap', title: '19. Security Threat Model & Defense Matrix', icon: <Shield size={16} /> },
+      { id: 'future-vision', title: '20. Future: Autonomous Intelligent Finance', icon: <Compass size={16} /> },
     ]
   }
 ];
@@ -1093,11 +1095,232 @@ if __name__ == "__main__":
             )}
 
             {/* ========================================================== */}
-            {/* TOPIC 15: JAVASCRIPT SDK */}
+            {/* TOPIC 15: BUILD WITH THE SDK */}
+            {/* ========================================================== */}
+            {activeTopic === 'build-with-sdk' && (
+              <article className={styles.article}>
+                <h1 className={styles.h1}>15. Build With @soyaradex/sdk</h1>
+                <p className={styles.lead}>
+                  Everything an agent needs to think - understand a request, find the best route across
+                  every venue, judge whether the price is sound, and <strong>prove the authorisation
+                  really covers the trade</strong> - runs from a public RPC with no API key and no
+                  server. One npm install.
+                </p>
+
+                <CodeSnippet language="bash" code={`npm install @soyaradex/sdk viem`} />
+
+                <div className={styles.callout}>
+                  <div className={styles.calloutIcon}>
+                    <ShieldCheck size={22} />
+                  </div>
+                  <div>
+                    <div className={styles.calloutTitle}>The part no other DEX SDK gives you</div>
+                    <div className={styles.calloutBody}>
+                      On most venues an agent has to trust that whatever relays its trade will relay the
+                      trade it asked for. Here it does not have to. Every trade is authorised by a
+                      commitment the settlement contract derives from the whole order, and{' '}
+                      <code className={styles.inlineCode}>verifyBindings()</code> asks that contract to
+                      re-derive it and show you the result. Change the route, the fee, the recipient or
+                      the quote and the hashes diverge, so the trade cannot settle. Your agent can check
+                      this itself, before it spends anything.
+                    </div>
+                  </div>
+                </div>
+
+                <div className={styles.subSection}>
+                  <h2 className={styles.h2}>What you can build</h2>
+                  <div className={styles.grid3}>
+                    <div className={styles.card}>
+                      <div className={styles.cardBadge}>No key needed</div>
+                      <h3 className={styles.cardTitle}>Trading agents</h3>
+                      <p className={styles.cardDesc}>
+                        Turn plain language into a routed, priced order. The parser asks a question
+                        rather than guessing a token, because a wrong guess spends real funds.
+                      </p>
+                    </div>
+                    <div className={styles.card}>
+                      <div className={styles.cardBadge}>No key needed</div>
+                      <h3 className={styles.cardTitle}>Risk guards</h3>
+                      <p className={styles.cardDesc}>
+                        Read the reserves behind a quote. Refuse anything where your order is a large
+                        share of the pool, or where two venues disagree about the price.
+                      </p>
+                    </div>
+                    <div className={styles.card}>
+                      <div className={styles.cardBadge}>No key needed</div>
+                      <h3 className={styles.cardTitle}>Verification services</h3>
+                      <p className={styles.cardDesc}>
+                        Independently audit any Soyara trade: re-derive its commitment on-chain and show
+                        exactly which parameters the verdict binds.
+                      </p>
+                    </div>
+                    <div className={styles.card}>
+                      <div className={styles.cardBadge}>No key needed</div>
+                      <h3 className={styles.cardTitle}>Route monitors</h3>
+                      <p className={styles.cardDesc}>
+                        Watch V2, V3 and multi-hop paths for dislocation and arbitrage. Live pool state,
+                        in token units, with no oracle in the loop.
+                      </p>
+                    </div>
+                    <div className={styles.card}>
+                      <div className={styles.cardBadge}>Your endpoint</div>
+                      <h3 className={styles.cardTitle}>Treasury automation</h3>
+                      <p className={styles.cardDesc}>
+                        Rebalance on a schedule under policy limits. Every move passes a real consensus
+                        round, so an off-chain bug cannot move funds the network did not approve.
+                      </p>
+                    </div>
+                    <div className={styles.card}>
+                      <div className={styles.cardBadge}>Your endpoint</div>
+                      <h3 className={styles.cardTitle}>Multi-agent swarms</h3>
+                      <p className={styles.cardDesc}>
+                        Give each agent one job - routing, depth, settlement timing, audit - and let them
+                        argue. The pieces the Soyara swarm itself is built from.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className={styles.subSection}>
+                  <h2 className={styles.h2}>Where each call runs</h2>
+                  <div className={styles.tableWrapper}>
+                    <table className={styles.table}>
+                      <thead>
+                        <tr><th>Call</th><th>Key?</th><th>Server?</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr><td><code className={styles.inlineCode}>parseIntent</code> / <code className={styles.inlineCode}>understand</code></td><td>no</td><td><strong>no</strong></td></tr>
+                        <tr><td><code className={styles.inlineCode}>quoteBestRouteMultiHop</code></td><td>no</td><td><strong>no</strong></td></tr>
+                        <tr><td><code className={styles.inlineCode}>analyseMarket</code></td><td>no</td><td><strong>no</strong></td></tr>
+                        <tr><td><code className={styles.inlineCode}>buildMultiHopProgram</code></td><td>no</td><td><strong>no</strong></td></tr>
+                        <tr><td><code className={styles.inlineCode}>readSettlementPlan</code></td><td>no</td><td><strong>no</strong></td></tr>
+                        <tr><td><code className={styles.inlineCode}>verifyBindings</code></td><td>no</td><td><strong>no</strong></td></tr>
+                        <tr><td><code className={styles.inlineCode}>SoyaraClient.validate</code></td><td>funded GenLayer account</td><td>yes</td></tr>
+                        <tr><td><code className={styles.inlineCode}>SoyaraClient.settleSwap</code></td><td>authorised agent</td><td>yes</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className={styles.p}>
+                    Only the two calls that sign transactions need a backend, because those keys must
+                    never reach client-side JavaScript.
+                  </p>
+                </div>
+
+                <div className={styles.subSection}>
+                  <h2 className={styles.h2}>An agent, end to end</h2>
+                  <CodeSnippet
+                    language="javascript"
+                    code={`import {
+  understand, verifyBindings, readSettlementPlan, SoyaraClient,
+} from '@soyaradex/sdk';
+
+// 1. Understand, route and judge the market. No key, no server.
+const { intent, quote, analysis, redirect } = await understand(
+  'swap 100 USDC to WGEN'
+);
+
+if (redirect) return reply(redirect.message);   // liquidity lives on the pools app
+if (!intent.confident) return ask(intent.needs); // never guess a token
+
+// A quote can be perfect arithmetic on a mispriced pool.
+if (!analysis.safeToTrade) {
+  for (const c of analysis.concerns) console.warn(c.severity, c.message);
+}
+
+// 2. Run a real consensus round.
+const soyara = new SoyaraClient({ baseUrl: process.env.SOYARA_API });
+const verdict = await soyara.validate(proposal);
+
+// 3. Prove the verdict covers THIS order before spending anything.
+const { bound, checks } = await verifyBindings({
+  order: verdict.order,
+  program: verdict.program,
+  commitment: verdict.commitment,
+  user: myAddress,
+});
+if (!bound) throw new Error('verdict does not bind this order');
+
+// 4. Know what you are waiting for: seconds, or the appeal window.
+const plan = await readSettlementPlan({ commitment: verdict.commitment });
+console.log(plan.rail, \`~\${plan.etaSeconds}s\`);
+
+if (verdict.approved) await soyara.settleSwap(trade);`}
+                  />
+                </div>
+
+                <div className={styles.subSection}>
+                  <h2 className={styles.h2}>Read the pools, not a price feed</h2>
+                  <p className={styles.p}>
+                    There is no oracle in this stack, so the SDK never reports a dollar value. It reports
+                    reserves, your order as a share of them, and whether venues agree. That is what
+                    actually decides whether a fill is real.
+                  </p>
+                  <CodeSnippet
+                    language="javascript"
+                    code={`const { analysis } = await understand('swap 100 USDT to USDC');
+
+analysis.depth            // 'deep' | 'comfortable' | 'thin' | 'dominant'
+analysis.sizeVsDepthPct   // 16.64
+analysis.venueSpreadPct   // how far V2 and V3 disagree
+analysis.verdict          // 'clear' | 'cautioned' | 'contested'
+analysis.safeToTrade      // false when anything is high severity
+
+for (const c of analysis.concerns) console.log(c.severity, c.message);
+// high  This order is 16.6% of the USDT side of the USDT/WGEN pool
+//       (600.96 USDT in reserve). A trade that size moves the price
+//       it trades against.`}
+                  />
+                </div>
+
+                <div className={styles.subSection}>
+                  <h2 className={styles.h2}>Proven against the live contracts</h2>
+                  <p className={styles.p}>
+                    The package ships a suite that runs against deployed Bradbury contracts rather than
+                    mocks, because these functions make claims about what a contract will do. It asserts
+                    the security property directly: mutate any one of the eleven mutable order fields and
+                    the commitment changes.
+                  </p>
+                  <CodeSnippet
+                    language="bash"
+                    code={`npm test
+
+  ok  user changes the commitment
+  ok  amountIn changes the commitment
+  ok  quotedAmountOut changes the commitment
+  ok  router changes the commitment
+  ok  feeBps changes the commitment
+  ok  feeCollector changes the commitment
+  ok  routeHash changes the commitment
+  ...
+  ok  a tampered order fails the binding
+  ok  a substituted route program fails
+  ok  a redirected recipient fails
+
+SDK matches the deployed architecture.  (72 passed)`}
+                  />
+                </div>
+
+                <div className={styles.subSection}>
+                  <h2 className={styles.h2}>Scope</h2>
+                  <p className={styles.p}>
+                    The aggregator routes and settles swaps. Liquidity positions are managed on the pools
+                    app, and <code className={styles.inlineCode}>understand()</code> returns a redirect
+                    rather than a quote for a deposit, so a liquidity request can never be priced as a
+                    trade. If you route by action name, use{' '}
+                    <code className={styles.inlineCode}>normaliseAction()</code>: an unrecognised value
+                    resolves to <code className={styles.inlineCode}>UNKNOWN</code> and goes nowhere,
+                    never to <code className={styles.inlineCode}>SWAP</code>.
+                  </p>
+                </div>
+              </article>
+            )}
+
+            {/* ========================================================== */}
+            {/* TOPIC 16: JAVASCRIPT SDK */}
             {/* ========================================================== */}
             {activeTopic === 'developer-sdk' && (
               <article className={styles.article}>
-                <h1 className={styles.h1}>15. JavaScript SDK (genlayer-js & Viem)</h1>
+                <h1 className={styles.h1}>16. JavaScript SDK (genlayer-js & Viem)</h1>
                 <p className={styles.lead}>
                   Integration guide for JavaScript and TypeScript developers using <code className={styles.inlineCode}>genlayer-js</code> and <code className={styles.inlineCode}>viem</code>.
                 </p>
@@ -1162,11 +1385,11 @@ validateTrade();`}
             )}
 
             {/* ========================================================== */}
-            {/* TOPIC 16: PYTHON SDK */}
+            {/* TOPIC 17: PYTHON SDK */}
             {/* ========================================================== */}
             {activeTopic === 'python-sdk' && (
               <article className={styles.article}>
-                <h1 className={styles.h1}>16. Python SDK & Agent Integration</h1>
+                <h1 className={styles.h1}>17. Python SDK &amp; Agent Integration</h1>
                 <p className={styles.lead}>
                   Guide for Python developers building autonomous AI agents, algorithmic market makers, and backend trading bots.
                 </p>
@@ -1225,11 +1448,11 @@ print("Validation Result:", res)`}
             )}
 
             {/* ========================================================== */}
-            {/* TOPIC 17: VERIFIED CONTRACT DIRECTORY */}
+            {/* TOPIC 18: VERIFIED CONTRACT DIRECTORY */}
             {/* ========================================================== */}
             {activeTopic === 'contracts' && (
               <article className={styles.article}>
-                <h1 className={styles.h1}>17. Verified Contract Directory & ABIs</h1>
+                <h1 className={styles.h1}>18. Verified Contract Directory & ABIs</h1>
                 <p className={styles.lead}>
                   Complete directory of all deployed, verified protocol contracts on GenLayer Bradbury Testnet (Chain ID 4221):
                 </p>
@@ -1319,11 +1542,11 @@ print("Validation Result:", res)`}
             )}
 
             {/* ========================================================== */}
-            {/* TOPIC 18: SECURITY THREAT MODEL */}
+            {/* TOPIC 19: SECURITY THREAT MODEL */}
             {/* ========================================================== */}
             {activeTopic === 'security-roadmap' && (
               <article className={styles.article}>
-                <h1 className={styles.h1}>18. Security Threat Model & Defense Matrix</h1>
+                <h1 className={styles.h1}>19. Security Threat Model & Defense Matrix</h1>
                 <p className={styles.lead}>
                   Comprehensive technical analysis of DeFi threat vectors and Soyara DEX's multi-layered defense architecture:
                 </p>
@@ -1361,11 +1584,11 @@ print("Validation Result:", res)`}
             )}
 
             {/* ========================================================== */}
-            {/* TOPIC 19: THE FUTURE OF AUTONOMOUS FINANCE */}
+            {/* TOPIC 20: THE FUTURE OF AUTONOMOUS FINANCE */}
             {/* ========================================================== */}
             {activeTopic === 'future-vision' && (
               <article className={styles.article}>
-                <h1 className={styles.h1}>19. The Future of Autonomous Intelligent Finance</h1>
+                <h1 className={styles.h1}>20. The Future of Autonomous Intelligent Finance</h1>
                 <p className={styles.lead}>
                   Looking ahead: how GenLayer Intelligent Contracts and Soyara DEX will power the next era of fully autonomous on-chain financial coordination.
                 </p>

@@ -38,20 +38,20 @@ import { useTheme } from '../components/contexts/ThemeContext';
 import aiStyles from '../styles/AIPage.module.css';
 
 const STARTER_PROMPTS = [
-  '⚡ Swap 100 USDC to GEN with best route',
-  '🛡️ How do GenLayer Intelligent Contracts protect my trades?',
-  '📊 Compare V2 vs V3 for 50 WGEN to USDT',
-  '🪙 What tokens are supported on GenLayer?',
-  '🔎 How is the verdict bound to my route and fee?',
-  '🔒 What is the slippage protection policy?',
+  'Swap 100 USDC to GEN with the best route',
+  'How is the verdict bound to my route and fee?',
+  'Compare V2 and V3 for 50 WGEN to USDT',
+  'Which tokens are supported?',
+  'What happens if a pool is mispriced?',
+  'Explain the slippage cap',
 ];
 
 const TOPIC_CHIPS = [
-  { label: '⚡ Trade & Quotes', prompt: 'Swap 100 USDC to GEN on V3 optimal route' },
-  { label: '🛡️ GenVM Validation', prompt: 'How does GenLayer Optimistic Democracy and AgentValidator IC work?' },
-  { label: '📊 V2 vs V3 Fees', prompt: 'What is the fee difference between V2 classic and V3 concentrated pools?' },
-  { label: '🪙 Supported Tokens', prompt: 'List all supported tokens on GenLayer Testnet' },
-  { label: '🔒 Slippage Policy', prompt: 'Explain the 3% slippage cap and MEV safety rules' },
+  { label: 'Trade', prompt: 'Swap 100 USDC to GEN on the best route' },
+  { label: 'Consensus', prompt: 'How does GenLayer Optimistic Democracy and the AgentValidator IC work?' },
+  { label: 'Fees', prompt: 'What is the fee difference between V2 classic and V3 concentrated pools?' },
+  { label: 'Tokens', prompt: 'List all supported tokens on GenLayer Testnet' },
+  { label: 'Slippage', prompt: 'Explain the 3% slippage cap and MEV safety rules' },
 ];
 
 export default function AIPage() {
@@ -151,7 +151,7 @@ export default function AIPage() {
         ...prev,
         {
           role: 'assistant',
-          content: `🎉 **Transaction Confirmed On-Chain!**\n\nYour AI-validated swap has been executed on Soyara DEX.\n\nTx Hash: \`${activeTxHash}\``,
+          content: `**Settled.** Tx \`${activeTxHash}\``,
           toolsUsed: ['GenLayer Bradbury Explorer', 'AGGFlow Entrypoint'],
         }
       ]);
@@ -315,7 +315,7 @@ export default function AIPage() {
           ...prev,
           {
             role: 'assistant',
-            content: `🛡️ **GenLayer IC Validation Approved!**\n\n- **Validator**: \`${data.genlayer_contract}\`\n- **Consensus**: *${data.consensus_mode || 'Optimistic Democracy (GenVM)'}*\n- **Proposal ID**: \`${data.proposal_id}\`\n- **Status**: *${data.reason}*\n\nYou can now proceed to execute the trade on-chain.`,
+            content: `**Consensus approved.** The verdict is bound to a commitment covering your route, fee, recipient and quote. Execute when ready.\n\nValidator \`${data.genlayer_contract}\``,
             toolsUsed: ['AgentValidator IC', 'GenVM Consensus'],
           }
         ]);
@@ -453,7 +453,7 @@ export default function AIPage() {
           ...prev,
           {
             role: 'assistant',
-            content: `🛡️ **GenLayer IC Validation Approved!**\n\n- **Validator**: \`${data.genlayer_contract}\`\n- **Consensus**: *${data.consensus_mode || 'Optimistic Democracy (GenVM)'}*\n- **Proposal ID**: \`${data.proposal_id}\`\n- **Status**: *${data.reason}*\n\nYou can now proceed to execute the trade on-chain.`,
+            content: `**Consensus approved.** The verdict is bound to a commitment covering your route, fee, recipient and quote. Execute when ready.\n\nValidator \`${data.genlayer_contract}\``,
             toolsUsed: ['AgentValidator IC', 'GenVM Consensus'],
           }
         ]);
@@ -563,7 +563,7 @@ export default function AIPage() {
           ...prev,
           {
             role: 'assistant',
-            content: `💧 **Liquidity Added via AgentExecutor!**\n\n✅ One-time approval bound and consumed on AgentExecutor.\n✅ Deposit routed through the GenLayer-consensus-gated approval hash.\n\nOp Hash: \`${result.opHash?.slice(0, 14)}...\`\nApprove Tx: \`${result.approveTxHash?.slice(0, 10)}...\`\n\nExecution Tx: [${result.hash?.slice(0, 10)}...${result.hash?.slice(-8)}](${result.explorerUrl})`,
+            content: `**Liquidity added.** [View transaction](${result.explorerUrl})`,
             toolsUsed: ['AgentExecutor', 'UniswapV2Router', 'GenLayer Bradbury'],
           }
         ]);
@@ -697,10 +697,10 @@ export default function AIPage() {
               </div>
               <div>
                 <div className={aiStyles.bannerTitle}>
-                  GenLayer Intelligent Contracts Active
+                  AI Trading
                 </div>
                 <div className={aiStyles.bannerDesc}>
-                  AgentValidator: <code className={aiStyles.code}>{INTELLIGENT_CONTRACTS.agentValidator.slice(0, 8)}...{INTELLIGENT_CONTRACTS.agentValidator.slice(-6)}</code> · Optimistic Democracy Consensus on GenVM
+                  Validated by <code className={aiStyles.code}>{INTELLIGENT_CONTRACTS.agentValidator.slice(0, 8)}...{INTELLIGENT_CONTRACTS.agentValidator.slice(-6)}</code>, enforced at settlement
                 </div>
               </div>
             </div>
@@ -717,8 +717,7 @@ export default function AIPage() {
         {/* Quick Topic Chips */}
         <div className={aiStyles.topicChipsContainer}>
           <div className={aiStyles.topicChipsTitle}>
-            <Sparkles size={14} style={{ color: '#0284c7' }} />
-            <span>Topics:</span>
+            <span>Topics</span>
           </div>
           <div className={aiStyles.topicChipsScroll}>
             {TOPIC_CHIPS.map((chip, idx) => (
@@ -763,8 +762,7 @@ export default function AIPage() {
           <div className={`${aiStyles.chatCard} ${mobileTab !== 'chat' ? aiStyles.hideOnMobileChat : ''}`}>
             <div className={aiStyles.chatHeader}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Bot size={18} style={{ color: '#0284c7' }} />
-                <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>Soyara AI Assistant</span>
+                <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>Assistant</span>
               </div>
               <button 
                 type="button"
@@ -803,7 +801,7 @@ export default function AIPage() {
                   style={{ display: 'flex', alignItems: 'center', gap: '8px', color: isDark ? '#94a3b8' : '#64748b', fontSize: '0.85rem' }}
                 >
                   <Loader2 size={16} style={{ animation: 'spin 1s linear infinite', color: '#0284c7' }} />
-                  <span>AI Agent is analyzing routes & calculating quotes on GenLayer...</span>
+                  <span>Working...</span>
                 </motion.div>
               )}
 

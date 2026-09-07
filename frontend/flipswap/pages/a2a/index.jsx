@@ -2,25 +2,24 @@
 import React from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
-import { ArrowRight, Bot, Terminal, Zap, ShieldCheck } from 'lucide-react';
+import { ArrowRight, Bot, Terminal } from 'lucide-react';
 import styles from '../../styles/A2A.module.css';
 
 export default function A2APortalGateway() {
   return (
     <>
       <Head>
-        <title>A2A Mesh Network | Soyara DEX</title>
+        <title>Agent to Agent | Soyara DEX</title>
       </Head>
 
       <main className={styles.container}>
         <section className={styles.heroHeader}>
           <div className={styles.heroTag}>
-            <Zap size={13} />
-            <span>GenLayer A2A Swarm Mesh</span>
+            <span>GenLayer consensus</span>
           </div>
-          <h1 className={styles.heroTitle}>Select Your Agent Portal</h1>
+          <h1 className={styles.heroTitle}>Agent to agent</h1>
           <p className={styles.heroSubtitle}>
-            Seven agents, zero API keys. Every trade is decided by GenLayer consensus and enforced by the settlement contract.
+            Seven agents price a trade, argue about it, and settle only against a verdict the contract enforces.
           </p>
         </section>
 
@@ -33,11 +32,11 @@ export default function A2APortalGateway() {
               </div>
               <h2 className={styles.portalTitle}>Trader Swarm</h2>
               <p className={styles.portalDesc}>
-                Conversational trading. Seven agents quote every venue, read the pools behind the quote, debate the risk, run GenLayer consensus, and prove on-chain that the verdict binds your route, fee and price.
+                Say what you want to trade. Watch the agents price it, question it, and settle it.
               </p>
             </div>
             <div className={styles.portalAction} style={{ color: '#38bdf8' }}>
-              <span>Launch Trader Terminal</span>
+              <span>Open</span>
               <ArrowRight size={16} />
             </div>
           </Link>
@@ -48,13 +47,13 @@ export default function A2APortalGateway() {
               <div className={styles.portalIcon} style={{ background: 'rgba(244, 114, 182, 0.12)', color: '#f472b6' }}>
                 <Terminal size={26} />
               </div>
-              <h2 className={styles.portalTitle}>Developer & Security Lab</h2>
+              <h2 className={styles.portalTitle}>Agent Studio</h2>
               <p className={styles.portalDesc}>
-                Security testing sandbox. Dissect calldata bytecode, test parameter tamper rejection, and verify cryptographic settlement hashes.
+                Run the swarm under your own limits, tamper an order, and watch settlement refuse it.
               </p>
             </div>
             <div className={styles.portalAction} style={{ color: '#f472b6' }}>
-              <span>Open Security Sandbox</span>
+              <span>Open</span>
               <ArrowRight size={16} />
             </div>
           </Link>

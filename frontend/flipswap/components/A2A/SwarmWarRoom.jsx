@@ -16,10 +16,10 @@ import { recordActivity } from '../../lib/txStore';
 import styles from '../../styles/A2A.module.css';
 
 const PRESET_CHIPS = [
-  { label: '⚡ 100 USDC ➔ WGEN', query: 'Swap 100 USDC to WGEN with 0.3% slippage' },
-  { label: '🧮 V2 vs V3 500 USDT', query: 'Compare V2 vs V3 route for 500 USDT to GEN' },
-  { label: '📊 Depth check 2 WGEN', query: 'Swap 2 WGEN to USDC' },
-  { label: '🛡️ Test 4% Slippage', query: 'Test 4% slippage to verify fail-closed cap' }
+  { label: '100 USDC to WGEN', query: 'Swap 100 USDC to WGEN with 0.3% slippage' },
+  { label: 'Compare venues', query: 'Compare V2 vs V3 route for 500 USDT to GEN' },
+  { label: 'Thin pool', query: 'Swap 2 WGEN to USDC' },
+  { label: 'Slippage cap', query: 'Test 4% slippage to verify fail-closed cap' },
 ];
 
 export default function SwarmWarRoom({ mode = 'user' }) {
@@ -350,7 +350,7 @@ export default function SwarmWarRoom({ mode = 'user' }) {
         <div className={styles.cardHeader}>
           <div className={styles.cardTitleText}>
             <Zap size={16} color="var(--blue-primary, #0284c7)" />
-            <span>Agent Dialogue Feed</span>
+            <span>Dialogue</span>
           </div>
           <button onClick={() => setTimeline([])} className={styles.chip}>
             <RotateCcw size={11} style={{ display: 'inline', marginRight: '3px' }} /> Clear
@@ -426,7 +426,7 @@ export default function SwarmWarRoom({ mode = 'user' }) {
           {isRunning && (
             <div style={{ display: 'flex', gap: '6px', alignItems: 'center', fontSize: '0.8rem', color: 'var(--text-muted, #94a3b8)', padding: '0.4rem' }}>
               <div className={styles.agentDotWorking} />
-              <span>Agents synthesizing consensus...</span>
+              <span>Working...</span>
             </div>
           )}
           {proposalForExecution && (
@@ -461,7 +461,7 @@ export default function SwarmWarRoom({ mode = 'user' }) {
         <div className={styles.cardHeader}>
           <div className={styles.cardTitleText}>
             <ShieldCheck size={16} color="#10b981" />
-            <span>Settlement Execution</span>
+            <span>Settlement</span>
           </div>
         </div>
 
@@ -496,14 +496,11 @@ export default function SwarmWarRoom({ mode = 'user' }) {
                 border: '1px solid rgba(239, 68, 68, 0.3)',
                 fontSize: '0.72rem', lineHeight: 1.55, color: 'var(--text-sub, #cbd5e1)',
               }}>
-                This route pays about <strong>{payload.route.dislocationFactor.toFixed(1)}x</strong> what the
-                direct pool pays
+Pays <strong>{payload.route.dislocationFactor.toFixed(1)}x</strong> the direct pool
                 {payload.route.directOutNum != null
-                  ? <> (direct: <strong>{payload.route.directOutNum.toFixed(4)} {payload.route.tokenOut.symbol}</strong>)</>
-                  : null}.
-                That gap means the pools on this path disagree about the price, not that the route is
-                better. Expect it to be arbitraged before it settles, and treat the minimum below as
-                unreliable.
+                  ? <> (<strong>{payload.route.directOutNum.toFixed(4)} {payload.route.tokenOut.symbol}</strong>)</>
+                  : null}. The pools disagree on price rather than the route being better, so the
+                minimum below is not reliable.
               </div>
             )}
 
@@ -581,19 +578,16 @@ export default function SwarmWarRoom({ mode = 'user' }) {
                     an empty page and makes a successful swap look like it failed. */}
                 {activeTxHash && (
                   <div style={{ fontWeight: 500, fontSize: '0.7rem', color: 'var(--text-muted, #94a3b8)' }}>
-                    Settlement is an EVM transaction - the GenLayer explorer only indexes GenVM
-                    consensus transactions, so it will show this hash as empty. Verify with{' '}
-                    <code style={{ fontSize: '0.66rem' }}>eth_getTransactionReceipt</code> on {' '}
-                    <code style={{ fontSize: '0.66rem' }}>rpc-bradbury.genlayer.com</code>.
+                    The GenLayer explorer indexes only GenVM transactions, so this hash reads as empty
+                    there. Check it with <code style={{ fontSize: '0.66rem' }}>eth_getTransactionReceipt</code>.
                   </div>
                 )}
                 {/* ERC-20 output is invisible in most wallets until the token is
                     imported - say so, or a successful swap looks like lost funds. */}
                 {!payload.route.tokenOut.isNative && (
                   <div style={{ fontWeight: 500, fontSize: '0.72rem', color: 'var(--text-muted, #94a3b8)' }}>
-                    {payload.route.tokenOut.symbol} is an ERC-20 - add token{' '}
-                    <code style={{ fontSize: '0.68rem' }}>{payload.route.tokenOut.address}</code>{' '}
-                    in your wallet to see the balance.
+                    Add <code style={{ fontSize: '0.68rem' }}>{payload.route.tokenOut.address}</code> in
+                    your wallet to see the {payload.route.tokenOut.symbol} balance.
                   </div>
                 )}
               </div>
@@ -613,7 +607,7 @@ export default function SwarmWarRoom({ mode = 'user' }) {
           </div>
         ) : (
           <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: 'var(--text-muted, #94a3b8)', fontSize: '0.85rem' }}>
-            No active trade proposal. Run a query on the left to see the settlement details here.
+            Run a trade to see it here.
           </div>
         )}
       </div>
