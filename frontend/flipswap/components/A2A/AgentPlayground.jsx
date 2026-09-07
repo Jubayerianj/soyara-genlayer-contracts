@@ -15,6 +15,7 @@ import { useAccount } from 'wagmi';
 import {
   Play, Square, ChevronDown, ChevronRight, Coins, Check,
   MessageSquare, Cpu, ShieldCheck, Wrench, Loader2, AlertTriangle, Sliders,
+  BarChart3, Gauge, Search,
 } from 'lucide-react';
 import { orchestrateSwarm, AGENT_REGISTRY, IntentAgent, RouterMathAgent } from '../../services/a2a/agents';
 import styles from '../../styles/A2A.module.css';
@@ -33,10 +34,17 @@ const STRATEGIES = {
   aggressive: { label: 'Aggressive', hint: 'Will accept thin pools and impact', slippageBps: 300, maxImpactPct: 15 },
 };
 
+// Every agent that can speak needs a lane here, in the order the swarm runs
+// them. A missing lane is not cosmetic: the timeline maps each frame onto a key
+// and falls back to 'intent', so an agent without a lane has its findings filed
+// under someone else's name.
 const STEPS = [
   { key: 'intent', reg: AGENT_REGISTRY.intent, Icon: MessageSquare, short: 'Intent', does: 'Reads the order' },
   { key: 'router', reg: AGENT_REGISTRY.router, Icon: Cpu, short: 'Route', does: 'Quotes live pools' },
+  { key: 'market', reg: AGENT_REGISTRY.market, Icon: BarChart3, short: 'Depth', does: 'Reads reserves' },
   { key: 'risk', reg: AGENT_REGISTRY.risk, Icon: ShieldCheck, short: 'Consensus', does: 'GenVM validates' },
+  { key: 'settlement', reg: AGENT_REGISTRY.settlement, Icon: Gauge, short: 'Rail', does: 'Picks settlement' },
+  { key: 'auditor', reg: AGENT_REGISTRY.auditor, Icon: Search, short: 'Bindings', does: 'Verifies on chain' },
   { key: 'dev', reg: AGENT_REGISTRY.dev, Icon: Wrench, short: 'Inspect', does: 'Checks calldata' },
 ];
 

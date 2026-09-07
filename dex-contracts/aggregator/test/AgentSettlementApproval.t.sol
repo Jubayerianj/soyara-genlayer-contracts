@@ -13,6 +13,22 @@ import {
     IV3PositionManager
 } from "../src/interfaces/IAgentExecutorDEX.sol";
 import { TradeHashLib } from "../src/libraries/TradeHashLib.sol";
+import { SwapOrder } from "../src/types/SettlementTypes.sol";
+
+// ============================================================================
+//  What this suite is actually asserting
+//  -------------------------------------
+//  The old suite proved that a trade could not be tampered with AFTER the agent
+//  had approved it. That left the important question untested: who gets to
+//  approve in the first place? It was the agent, so every guarantee reduced to
+//  "the agent's key is honest".
+//
+//  These tests assert the stronger property. Section 1 shows no operator key can
+//  create an approval. Section 2 shows the identifier consensus signs off on now
+//  spans the route, the fee, the fee collector and the validated quote, so an
+//  agent holding a real verdict still cannot redirect the money. Section 3
+//  covers the attestor rail's separation of duties.
+// ============================================================================
 
 // ── Mock ERC-20 Token ────────────────────────────────────────────────────────
 
@@ -27,12 +43,22 @@ contract MockERC20 is ERC20 {
 // ── Mock AGGFlow Entrypoint ──────────────────────────────────────────────────
 
 contract MockAGGFlowEntrypoint is IAGGFlowEntrypoint {
+    /// Records what the executor actually asked the aggregator to do, so tests
+    /// can assert the fee and route reaching the router are the approved ones.
+    bytes   public lastProgram;
+    uint256 public lastFeeBps;
+    address public lastFeeCollector;
+
     function executeSwapWithReceiver(
         SwapIntent calldata swapIntent,
-        FeeCollection calldata,
-        bytes calldata,
+        FeeCollection calldata feeCollection,
+        bytes calldata program,
         address receiver
     ) external payable override returns (uint256 amountOut) {
+        lastProgram      = program;
+        lastFeeBps       = feeCollection.feeBps;
+        lastFeeCollector = feeCollection.feeCollectorAddress;
+
         if (swapIntent.tokenUserSells != address(0)) {
             IERC20(swapIntent.tokenUserSells).transferFrom(msg.sender, address(this), swapIntent.amountUserSells);
         }
@@ -124,11 +150,22 @@ contract AgentSettlementApprovalTest is Test {
     address public user = address(0x3333);
     address public feeCollector = address(0x4444);
 
+    /// Stands in for the AgentValidator Intelligent Contract. On GenLayer the
+    /// IC's external messages arrive from its ghost contract, which shares the
+    /// IC's address, so `vm.prank(validator)` is a faithful model of that call.
+    address public validator = address(0x5555);
+
     uint256 public constant MAX_SLIPPAGE_BPS = 300; // 3%
     uint256 public constant AMOUNT_IN = 100 * 10 ** 18;
     uint256 public constant MIN_AMOUNT_OUT = 195 * 10 ** 18;
+    /// The live pool quote the validators checked. minAmountOut sits exactly one
+    /// slippage band below it, which is the relationship the executor enforces.
+    uint256 public constant QUOTED_AMOUNT_OUT = 1955 * 10 ** 17; // 195.5e18
     uint256 public constant SLIPPAGE_BPS = 30; // 0.30%
+    uint256 public constant FEE_BPS = 5;       // 0.05% platform fee
     uint256 public deadline;
+
+    bytes public constant ROUTE = hex"c0ffee01";
 
     function setUp() public {
         deadline = block.timestamp + 3600;
@@ -156,6 +193,9 @@ contract AgentSettlementApprovalTest is Test {
             initialTokens
         );
 
+        vm.prank(owner);
+        executor.setGenLayerValidator(validator);
+
         // Fund user and mockEntrypoint
         tokenIn.mint(user, 10_000 * 10 ** 18);
         tokenOut.mint(address(mockEntrypoint), 10_000 * 10 ** 18);
@@ -166,935 +206,816 @@ contract AgentSettlementApprovalTest is Test {
         tokenIn.approve(address(executor), type(uint256).max);
     }
 
-    // ── 1. Success Path with One-Time Approval ────────────────────────────────
+    // ── Helpers ──────────────────────────────────────────────────────────────
 
-    // ── Multi-agent authorisation ─────────────────────────────────────────
-    // A single authorisedAgent meant only one operator could settle, so
-    // third-party agents had to route through it. These cover the new mapping.
+    function _order() internal view returns (SwapOrder memory) {
+        return SwapOrder({
+            user:            user,
+            tokenIn:         address(tokenIn),
+            tokenOut:        address(tokenOut),
+            amountIn:        AMOUNT_IN,
+            minAmountOut:    MIN_AMOUNT_OUT,
+            quotedAmountOut: QUOTED_AMOUNT_OUT,
+            slippageBps:     SLIPPAGE_BPS,
+            deadline:        deadline,
+            router:          address(mockEntrypoint),
+            feeBps:          FEE_BPS,
+            feeCollector:    feeCollector,
+            routeHash:       keccak256(ROUTE),
+            nonce:           1
+        });
+    }
 
-    function test_SecondAgent_CanSettle_AfterAuthorisation() public {
-        address agent2 = address(0xA2A2);
+    /// Model of a completed GenLayer consensus round approving `order`.
+    function _recordVerdict(SwapOrder memory order) internal returns (bytes32 commitment) {
+        commitment = executor.getSwapCommitment(order);
+        vm.prank(validator);
+        executor.recordVerdict(uint256(commitment), uint64(deadline));
+    }
+
+    function _noAttestations() internal pure returns (bytes[] memory) {
+        return new bytes[](0);
+    }
+
+    function _settle(SwapOrder memory order) internal returns (uint256) {
+        vm.prank(agent);
+        return executor.executeSwap(order, ROUTE, _noAttestations());
+    }
+
+    // =========================================================================
+    //  1. THE VERDICT IS THE CONTRACT'S TO ENFORCE, NOT THE AGENT'S
+    // =========================================================================
+
+    /// The central regression: the settlement agent has no way to authorise
+    /// anything. Previously it called approveTradeWithParams and the trade went
+    /// through; that function no longer exists, and the registry behind it is
+    /// closed to every key the operator holds.
+    function test_Agent_CannotRecordVerdict() public {
+        bytes32 commitment = executor.getSwapCommitment(_order());
+
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.NotValidator.selector, agent));
+        executor.recordVerdict(uint256(commitment), uint64(deadline));
+    }
+
+    function test_Owner_CannotRecordVerdict() public {
+        bytes32 commitment = executor.getSwapCommitment(_order());
 
         vm.prank(owner);
-        executor.setAgentAuthorisation(agent2, true);
-        assertTrue(executor.isAgent(agent2), "agent2 should be authorised");
-        assertTrue(executor.isAgent(agent), "primary agent still authorised");
-
-        bytes32 tradeHash = executor.getTradeHash(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
-
-        vm.prank(agent2);
-        executor.approveTrade(tradeHash);
-
-        vm.prank(agent2);
-        uint256 amountOut = executor.executeSwap(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline, "", 0, feeCollector
-        );
-
-        assertGt(amountOut, MIN_AMOUNT_OUT);
-        // The one-time approval is still consumed exactly once.
-        assertFalse(executor.isTradeApproved(tradeHash));
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.NotValidator.selector, owner));
+        executor.recordVerdict(uint256(commitment), uint64(deadline));
     }
 
-    function test_RevertIf_RevokedAgent_CannotSettle() public {
-        address agent2 = address(0xA2A2);
-
-        vm.prank(owner);
-        executor.setAgentAuthorisation(agent2, true);
-
-        bytes32 tradeHash = executor.getTradeHash(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
-        vm.prank(agent2);
-        executor.approveTrade(tradeHash);
-
-        // Revocation must bite immediately, even with an approval already bound.
-        vm.prank(owner);
-        executor.setAgentAuthorisation(agent2, false);
-        assertFalse(executor.isAgent(agent2));
-
-        vm.prank(agent2);
-        vm.expectRevert();
-        executor.executeSwap(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline, "", 0, feeCollector
-        );
-    }
-
-    function test_RevertIf_NonOwner_AuthorisesAgent() public {
-        vm.prank(agent);
-        vm.expectRevert();
-        executor.setAgentAuthorisation(address(0xBEEF), true);
-    }
-
-    function test_ExecuteSwap_Success() public {
-        bytes32 tradeHash = executor.getTradeHash(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        // 1. Agent registers one-time approval for the exact trade parameters
-        vm.prank(agent);
-        executor.approveTrade(tradeHash);
-        assertTrue(executor.isTradeApproved(tradeHash));
-
-        uint256 userBalBefore = tokenOut.balanceOf(user);
-
-        // 2. Agent executes the swap
-        vm.prank(agent);
-        uint256 amountOut = executor.executeSwap(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline,
-            "",
-            0,
-            feeCollector
-        );
-
-        // 3. User received the output tokens
-        assertGt(amountOut, MIN_AMOUNT_OUT);
-        assertEq(tokenOut.balanceOf(user) - userBalBefore, amountOut);
-
-        // 4. Approval has been consumed (cannot be used again)
-        assertFalse(executor.isTradeApproved(tradeHash));
-    }
-
-    // ── 2. Unapproved Trade Rejection ────────────────────────────────────────
-
-    function test_RevertIf_TradeNotApproved() public {
-        bytes32 tradeHash = executor.getTradeHash(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        // Trade is NOT approved in executor
-        assertFalse(executor.isTradeApproved(tradeHash));
-
-        // Execution MUST revert with TradeNotApproved
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tradeHash));
-        executor.executeSwap(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline,
-            "",
-            0,
-            feeCollector
-        );
-    }
-
-    // ── 3. Parameter Tampering Rejections ────────────────────────────────────
-
-    function test_RevertIf_ModifiedTrade_AmountIn() public {
-        // Approve trade for AMOUNT_IN = 100 tokens
-        vm.prank(agent);
-        executor.approveTradeWithParams(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        // Attacker attempts to settle with tampered amountIn = 150 tokens
-        uint256 tamperedAmountIn = 150 * 10 ** 18;
-        bytes32 tamperedHash = executor.getTradeHash(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            tamperedAmountIn,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tamperedHash));
-        executor.executeSwap(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            tamperedAmountIn,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline,
-            "",
-            0,
-            feeCollector
-        );
-    }
-
-    function test_RevertIf_ModifiedTrade_MinAmountOut() public {
-        // Approve trade for MIN_AMOUNT_OUT = 195 tokens
-        vm.prank(agent);
-        executor.approveTradeWithParams(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        // Attacker attempts to lower minAmountOut to 50 tokens (abnormal slippage / sandwich exploit)
-        uint256 tamperedMinOut = 50 * 10 ** 18;
-        bytes32 tamperedHash = executor.getTradeHash(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            tamperedMinOut,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tamperedHash));
-        executor.executeSwap(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            tamperedMinOut,
-            SLIPPAGE_BPS,
-            deadline,
-            "",
-            0,
-            feeCollector
-        );
-    }
-
-    function test_RevertIf_ModifiedTrade_User() public {
-        // Approve trade for user
-        vm.prank(agent);
-        executor.approveTradeWithParams(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        // Attacker attempts to divert proceeds to attacker address
-        bytes32 tamperedHash = executor.getTradeHash(
-            attacker,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tamperedHash));
-        executor.executeSwap(
-            attacker,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline,
-            "",
-            0,
-            feeCollector
-        );
-    }
-
-    function test_RevertIf_ModifiedTrade_TokenIn() public {
-        vm.prank(agent);
-        executor.approveTradeWithParams(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        // Attacker attempts to substitute tokenIn with tokenC
-        bytes32 tamperedHash = executor.getTradeHash(
-            user,
-            address(tokenC),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tamperedHash));
-        executor.executeSwap(
-            user,
-            address(tokenC),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline,
-            "",
-            0,
-            feeCollector
-        );
-    }
-
-    function test_RevertIf_ModifiedTrade_TokenOut() public {
-        vm.prank(agent);
-        executor.approveTradeWithParams(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        // Attacker attempts to substitute tokenOut with tokenC
-        bytes32 tamperedHash = executor.getTradeHash(
-            user,
-            address(tokenIn),
-            address(tokenC),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tamperedHash));
-        executor.executeSwap(
-            user,
-            address(tokenIn),
-            address(tokenC),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline,
-            "",
-            0,
-            feeCollector
-        );
-    }
-
-    function test_RevertIf_ModifiedTrade_Deadline() public {
-        vm.prank(agent);
-        executor.approveTradeWithParams(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        // Modify deadline
-        uint256 modifiedDeadline = deadline + 600;
-        bytes32 tamperedHash = executor.getTradeHash(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            modifiedDeadline
-        );
-
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tamperedHash));
-        executor.executeSwap(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            modifiedDeadline,
-            "",
-            0,
-            feeCollector
-        );
-    }
-
-    function test_RevertIf_ModifiedTrade_SlippageBps() public {
-        vm.prank(agent);
-        executor.approveTradeWithParams(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        // Modify slippage bps
-        uint256 modifiedSlippage = 100;
-        bytes32 tamperedHash = executor.getTradeHash(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            modifiedSlippage,
-            deadline
-        );
-
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tamperedHash));
-        executor.executeSwap(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            modifiedSlippage,
-            deadline,
-            "",
-            0,
-            feeCollector
-        );
-    }
-
-    // ── 4. Replay Attack Prevention (One-Time Approval) ──────────────────────
-
-    function test_RevertIf_ReplayExecution_OneTimeApproval() public {
-        bytes32 tradeHash = executor.getTradeHash(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        // 1. Approve trade
-        vm.prank(agent);
-        executor.approveTrade(tradeHash);
-
-        // 2. First execution succeeds
-        vm.prank(agent);
-        executor.executeSwap(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline,
-            "",
-            0,
-            feeCollector
-        );
-
-        // 3. Second execution (replay) MUST revert with TradeNotApproved
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tradeHash));
-        executor.executeSwap(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline,
-            "",
-            0,
-            feeCollector
-        );
-    }
-
-    // ── 5. Revocation Rejection ──────────────────────────────────────────────
-
-    function test_RevertIf_RevokedApproval() public {
-        bytes32 tradeHash = executor.getTradeHash(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
-
-        vm.prank(agent);
-        executor.approveTrade(tradeHash);
-        assertTrue(executor.isTradeApproved(tradeHash));
-
-        // Agent revokes the approval
-        vm.prank(agent);
-        executor.revokeTradeApproval(tradeHash);
-        assertFalse(executor.isTradeApproved(tradeHash));
-
-        // Execution reverts
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tradeHash));
-        executor.executeSwap(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline,
-            "",
-            0,
-            feeCollector
-        );
-    }
-
-    // ── 6. Unauthorized Caller Rejections ────────────────────────────────────
-
-    function test_RevertIf_UnauthorizedCallerApproves() public {
-        bytes32 tradeHash = executor.getTradeHash(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
+    function test_Attacker_CannotRecordVerdict() public {
+        bytes32 commitment = executor.getSwapCommitment(_order());
 
         vm.prank(attacker);
-        vm.expectRevert(AgentExecutorBase.Unauthorized.selector);
-        executor.approveTrade(tradeHash);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.NotValidator.selector, attacker));
+        executor.recordVerdict(uint256(commitment), uint64(deadline));
     }
 
-    function test_RevertIf_UnauthorizedCallerExecutes() public {
-        bytes32 tradeHash = executor.getTradeHash(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline
-        );
+    /// With no verdict on record the agent cannot settle, even with perfectly
+    /// well-formed parameters and full token allowance.
+    function test_RevertIf_NoVerdict() public {
+        SwapOrder memory order = _order();
+        bytes32 commitment = executor.getSwapCommitment(order);
 
         vm.prank(agent);
-        executor.approveTrade(tradeHash);
-
-        vm.prank(attacker);
-        vm.expectRevert(AgentExecutorBase.Unauthorized.selector);
-        executor.executeSwap(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            AMOUNT_IN,
-            MIN_AMOUNT_OUT,
-            SLIPPAGE_BPS,
-            deadline,
-            "",
-            0,
-            feeCollector
-        );
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.NoConsensusVerdict.selector, commitment));
+        executor.executeSwap(order, ROUTE, _noAttestations());
     }
 
-    // ── 7. Liquidity Operations One-Time Approval ────────────────────────────
+    function test_ValidatorRecords_AgentRelays_Success() public {
+        SwapOrder memory order = _order();
+        bytes32 commitment = _recordVerdict(order);
+        assertTrue(executor.isVerdictLive(commitment), "verdict should be live");
 
-    function test_LiquidityV2_OneTimeApprovalAndTamperRejection() public {
-        uint256 amtA = 10 * 10 ** 18;
-        uint256 amtB = 20 * 10 ** 18;
-        uint256 minA = 9 * 10 ** 18;
-        uint256 minB = 19 * 10 ** 18;
+        uint256 balanceBefore = tokenOut.balanceOf(user);
+        uint256 amountOut = _settle(order);
 
-        tokenOut.mint(user, 100 * 10 ** 18);
-        vm.prank(user);
-        tokenOut.approve(address(executor), type(uint256).max);
+        assertGt(amountOut, MIN_AMOUNT_OUT);
+        assertEq(tokenOut.balanceOf(user) - balanceBefore, amountOut, "user receives the output");
+        assertFalse(executor.isVerdictLive(commitment), "verdict consumed");
+        assertTrue(executor.commitmentUsed(commitment), "commitment permanently burned");
 
-        bytes32 opHash = executor.getLiquidityV2AddHash(
-            user,
-            address(tokenIn),
-            address(tokenOut),
-            amtA,
-            amtB,
-            minA,
-            minB,
-            deadline
-        );
-
-        // Unapproved reverts
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, opHash));
-        executor.executeAddLiquidityV2(user, address(tokenIn), address(tokenOut), amtA, amtB, minA, minB, deadline);
-
-        // Approve
-        vm.prank(agent);
-        executor.approveTrade(opHash);
-        assertTrue(executor.isTradeApproved(opHash));
-
-        // Execution consumes approval
-        vm.prank(agent);
-        executor.executeAddLiquidityV2(user, address(tokenIn), address(tokenOut), amtA, amtB, minA, minB, deadline);
-        assertFalse(executor.isTradeApproved(opHash));
-
-        // Replay reverts
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, opHash));
-        executor.executeAddLiquidityV2(user, address(tokenIn), address(tokenOut), amtA, amtB, minA, minB, deadline);
+        // The route and fee that reached the aggregator are the approved ones.
+        assertEq(mockEntrypoint.lastProgram(), ROUTE);
+        assertEq(mockEntrypoint.lastFeeBps(), FEE_BPS);
+        assertEq(mockEntrypoint.lastFeeCollector(), feeCollector);
     }
-}
 
-// =============================================================================
-//  End-to-End: Enforced GenLayer-to-Settlement Flow
-// =============================================================================
-//
-//  Proves the team requirement:
-//    "Bind a one-time approval for the exact trade parameters to the settlement
-//    contract, route execution through that check, and prove an unapproved or
-//    modified trade cannot settle."
-//
-//  Tests in this contract simulate the complete flow:
-//    GenLayer AgentValidator (consensus) → agent calls approveTradeWithParams →
-//    agent calls executeSwap → AGGFlowEntrypoint
-//
-//  Any trade that was NOT approved by the GenLayer IC, or whose parameters
-//  were modified after approval, MUST revert with TradeNotApproved.
-// =============================================================================
-
-contract EndToEnd_EnforcedGenLayerSettlementFlow is Test {
-    // ── Actors ────────────────────────────────────────────────────────────────
-    address constant owner        = address(0x01);
-    address constant agent        = address(0x02); // Simulates server-side agent wallet
-    address constant user         = address(0x03); // End user
-    address constant attacker     = address(0x04); // Malicious actor
-    address constant feeCollector = address(0x05);
-
-    // ── Contracts ─────────────────────────────────────────────────────────────
-    AgentExecutor          executor;
-    MockAGGFlowEntrypoint  mockEntrypoint;
-    MockV2Router           mockV2Router;
-    MockV3PositionManager  mockV3PositionManager;
-    MockERC20              tokenIn;
-    MockERC20              tokenOut;
-
-    // ── Trade constants (represent the GenLayer IC-validated parameters) ──────
-    uint256 constant AMOUNT_IN     = 100e18;
-    uint256 constant MIN_AMOUNT_OUT = 95e18;
-    uint256 constant SLIPPAGE_BPS   = 30;   // 0.30%
-    uint256 constant MAX_SLIPPAGE   = 300;  // 3.00% cap
-    uint256 deadline;
-
-    function setUp() public {
-        deadline = block.timestamp + 3600;
-
-        mockEntrypoint    = new MockAGGFlowEntrypoint();
-        mockV2Router      = new MockV2Router();
-        mockV3PositionManager = new MockV3PositionManager();
-        tokenIn  = new MockERC20("USD Coin", "USDC");
-        tokenOut = new MockERC20("Wrapped GEN", "WGEN");
-
+    /// Settlement fails closed before the validator is bootstrapped.
+    function test_RevertIf_ValidatorNotSet() public {
         address[] memory tokens = new address[](2);
         tokens[0] = address(tokenIn);
         tokens[1] = address(tokenOut);
 
-        // Deploy AgentExecutor — agent is the authorisedAgent (simulates server wallet)
-        executor = new AgentExecutor(
-            owner, agent, address(mockEntrypoint),
-            address(mockV2Router), address(mockV3PositionManager),
-            MAX_SLIPPAGE, tokens
+        AgentExecutor fresh = new AgentExecutor(
+            owner, agent, address(mockEntrypoint), address(mockV2Router),
+            address(mockV3PositionManager), MAX_SLIPPAGE_BPS, tokens
         );
 
-        // Fund user + mockEntrypoint
-        tokenIn.mint(user, 10_000e18);
-        tokenOut.mint(address(mockEntrypoint), 10_000e18);
+        vm.prank(validator);
+        vm.expectRevert(AgentExecutorBase.ValidatorNotSet.selector);
+        fresh.recordVerdict(uint256(keccak256("anything")), uint64(deadline));
+    }
 
-        // User approves AgentExecutor to pull their tokenIn
-        vm.prank(user);
+    function test_ExpiredVerdict_CannotSettle() public {
+        SwapOrder memory order = _order();
+        bytes32 commitment = executor.getSwapCommitment(order);
+
+        vm.prank(validator);
+        executor.recordVerdict(uint256(commitment), uint64(block.timestamp + 60));
+
+        vm.warp(block.timestamp + 61);
+
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.VerdictExpired.selector, commitment));
+        executor.executeSwap(order, ROUTE, _noAttestations());
+    }
+
+    function test_Replay_CannotSettleTwice() public {
+        SwapOrder memory order = _order();
+        bytes32 commitment = _recordVerdict(order);
+        _settle(order);
+
+        // Even a validator re-recording the same commitment cannot resurrect it.
+        vm.prank(validator);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.CommitmentAlreadyUsed.selector, commitment));
+        executor.recordVerdict(uint256(commitment), uint64(deadline));
+
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.CommitmentAlreadyUsed.selector, commitment));
+        executor.executeSwap(order, ROUTE, _noAttestations());
+    }
+
+    function test_ValidatorCanRevokeBeforeSettlement() public {
+        SwapOrder memory order = _order();
+        bytes32 commitment = _recordVerdict(order);
+
+        vm.prank(validator);
+        executor.revokeVerdict(commitment);
+
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.NoConsensusVerdict.selector, commitment));
+        executor.executeSwap(order, ROUTE, _noAttestations());
+    }
+
+    /// Revocation only ever subtracts authority, so the owner holding that lever
+    /// adds no way to approve anything.
+    function test_OwnerCanRevokeButNotApprove() public {
+        SwapOrder memory order = _order();
+        bytes32 commitment = _recordVerdict(order);
+
+        vm.prank(owner);
+        executor.revokeVerdict(commitment);
+        assertFalse(executor.isVerdictLive(commitment));
+
+        vm.prank(attacker);
+        vm.expectRevert(AgentExecutorBase.Unauthorized.selector);
+        executor.revokeVerdict(commitment);
+    }
+
+    // ── The IC-to-EVM boundary, at the ABI level ─────────────────────────────
+    //
+    //  The authentication rests on a call that originates inside GenVM: the
+    //  validator IC declares a stub, py-genlayer turns it into calldata, and the
+    //  IC's ghost contract delivers it. None of that can run here - GenVM is not
+    //  in this test harness, and `@gl.evm.contract_interface` is not implemented
+    //  in Studio either, so the usual local sanity check is unavailable.
+    //
+    //  What CAN be checked locally is the part most likely to be silently wrong:
+    //  the selector. py-genlayer builds it from the Python method name VERBATIM
+    //  (there is no snake_case-to-camelCase conversion, despite what the docs'
+    //  own ERC-20 example implies) joined to the ABI type names. So the stub
+    //  `def recordVerdict(self, commitment: bytes32, expiry: u64, /)` produces
+    //  keccak256("recordVerdict(uint256,uint64)")[:4]. If that disagreed with the
+    //  executor by one character, every verdict would land on a non-existent
+    //  function and settlement would fail with nothing to point at.
+    //
+    //  The matching Python assertion is in test_commitment_conformance.py.
+
+    function test_ICSelector_MatchesExecutorFunction() public pure {
+        assertEq(
+            bytes4(keccak256("recordVerdict(uint256,uint64)")),
+            AgentExecutorBase.recordVerdict.selector,
+            "the selector py-genlayer generates must hit recordVerdict"
+        );
+    }
+
+    /// Raw calldata shaped exactly as the IC's ghost would deliver it, sent from
+    /// the IC's address, must be accepted - and the same bytes from anyone else
+    /// must not be.
+    function test_ICCalldata_AcceptedOnlyFromValidator() public {
+        SwapOrder memory order = _order();
+        bytes32 commitment = executor.getSwapCommitment(order);
+
+        bytes memory icCalldata = abi.encodeWithSelector(
+            bytes4(keccak256("recordVerdict(uint256,uint64)")),
+            uint256(commitment),
+            uint64(deadline)
+        );
+
+        // 4-byte selector + two 32-byte static words is the whole message.
+        assertEq(icCalldata.length, 4 + 64, "IC calldata must be selector + two words");
+
+        vm.prank(attacker);
+        (bool spoofed, ) = address(executor).call(icCalldata);
+        assertFalse(spoofed, "only the validator IC may record a verdict");
+
+        vm.prank(validator);
+        (bool ok, ) = address(executor).call(icCalldata);
+        assertTrue(ok, "ghost-delivered calldata must be accepted");
+        assertTrue(executor.isVerdictLive(commitment), "verdict must be live after the IC call");
+
+        // And it settles, which is the property the whole boundary exists for.
+        assertGt(_settle(order), MIN_AMOUNT_OUT);
+    }
+
+    // =========================================================================
+    //  2. EVERY PARAMETER THAT MOVES VALUE IS INSIDE THE COMMITMENT
+    // =========================================================================
+    //
+    //  Each test below records a verdict for an honest order, then has the agent
+    //  attempt to settle a modified one. The modified order hashes to a different
+    //  commitment, which no verdict backs.
+
+    function _expectTamperRejected(SwapOrder memory tampered) internal {
+        bytes32 tamperedCommitment = executor.getSwapCommitment(tampered);
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.NoConsensusVerdict.selector, tamperedCommitment));
+        executor.executeSwap(tampered, ROUTE, _noAttestations());
+    }
+
+    /// THE headline gap. aggProgram was not hashed at all, so an agent holding a
+    /// verdict for an honest trade could walk any route it liked.
+    function test_RouteTamper_CannotSettle() public {
+        _recordVerdict(_order());
+
+        bytes memory hostileRoute = hex"deadbeef";
+        SwapOrder memory tampered = _order();
+        tampered.routeHash = keccak256(hostileRoute);
+
+        bytes32 tamperedCommitment = executor.getSwapCommitment(tampered);
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.NoConsensusVerdict.selector, tamperedCommitment));
+        executor.executeSwap(tampered, hostileRoute, _noAttestations());
+    }
+
+    /// Swapping the program while keeping the approved routeHash is caught even
+    /// earlier, by the hash-of-calldata check.
+    function test_RouteSubstitution_CaughtByRouteHash() public {
+        SwapOrder memory order = _order();
+        _recordVerdict(order);
+
+        bytes memory hostileRoute = hex"deadbeef";
+        vm.prank(agent);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AgentExecutorBase.RouteMismatch.selector,
+                keccak256(ROUTE),
+                keccak256(hostileRoute)
+            )
+        );
+        executor.executeSwap(order, hostileRoute, _noAttestations());
+    }
+
+    /// The drain that the old design permitted: raise the fee, point it at an
+    /// address you control, keep everything else identical.
+    function test_FeeTamper_CannotSettle() public {
+        _recordVerdict(_order());
+        SwapOrder memory tampered = _order();
+        tampered.feeBps = 90;
+        _expectTamperRejected(tampered);
+    }
+
+    function test_FeeCollectorTamper_CannotSettle() public {
+        _recordVerdict(_order());
+        SwapOrder memory tampered = _order();
+        tampered.feeCollector = attacker;
+        _expectTamperRejected(tampered);
+    }
+
+    /// Belt and braces: a fee above the cap is refused before the verdict is even
+    /// looked up, so a mis-issued verdict cannot authorise a drain either.
+    function test_FeeAboveCap_Rejected() public {
+        SwapOrder memory order = _order();
+        order.feeBps = 9000;
+        _recordVerdict(order); // even WITH a verdict
+
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.FeeTooHigh.selector, uint256(9000), uint256(100)));
+        executor.executeSwap(order, ROUTE, _noAttestations());
+    }
+
+    function test_OwnerCannotRaiseFeeCapPastAbsoluteMax() public {
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.FeeTooHigh.selector, uint256(1000), uint256(500)));
+        executor.setMaxFeeBps(1000);
+    }
+
+    /// The post-validation re-quote, and the subtlest case in the suite.
+    ///
+    /// The agent used to re-quote AFTER consensus and rewrite minAmountOut on its
+    /// own authority. Here it shaves the floor by only 0.05 WGEN - a change small
+    /// enough to pass every standalone check, including the quote-band rule. It
+    /// is caught solely because the value consensus approved is inside the
+    /// commitment, which is exactly the binding that was missing.
+    function test_LoweredMinOutAfterVerdict_CannotSettle() public {
+        _recordVerdict(_order());
+        SwapOrder memory tampered = _order();
+        tampered.minAmountOut = 19495 * 10 ** 16; // 194.95e18, still inside the band
+        _expectTamperRejected(tampered);
+    }
+
+    /// And an internally inconsistent order is refused outright: the floor must
+    /// be the declared slippage below the validated quote.
+    function test_MinOutBelowQuoteBand_Rejected() public {
+        SwapOrder memory order = _order();
+        order.minAmountOut = 100 * 10 ** 18; // far below quote - slippage
+        _recordVerdict(order);
+
+        vm.prank(agent);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AgentExecutorBase.QuoteInconsistent.selector,
+                order.minAmountOut,
+                QUOTED_AMOUNT_OUT
+            )
+        );
+        executor.executeSwap(order, ROUTE, _noAttestations());
+    }
+
+    function test_MinOutAboveQuote_Rejected() public {
+        SwapOrder memory order = _order();
+        order.minAmountOut = QUOTED_AMOUNT_OUT + 1;
+        _recordVerdict(order);
+
+        vm.prank(agent);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AgentExecutorBase.QuoteInconsistent.selector,
+                order.minAmountOut,
+                QUOTED_AMOUNT_OUT
+            )
+        );
+        executor.executeSwap(order, ROUTE, _noAttestations());
+    }
+
+    function test_QuoteTamper_CannotSettle() public {
+        _recordVerdict(_order());
+        SwapOrder memory tampered = _order();
+        tampered.quotedAmountOut = QUOTED_AMOUNT_OUT + 1;
+        _expectTamperRejected(tampered);
+    }
+
+    function test_UserTamper_CannotSettle() public {
+        _recordVerdict(_order());
+        SwapOrder memory tampered = _order();
+        tampered.user = attacker;
+        _expectTamperRejected(tampered);
+    }
+
+    function test_AmountInTamper_CannotSettle() public {
+        _recordVerdict(_order());
+        SwapOrder memory tampered = _order();
+        tampered.amountIn = AMOUNT_IN * 2;
+        _expectTamperRejected(tampered);
+    }
+
+    function test_TokenInTamper_CannotSettle() public {
+        _recordVerdict(_order());
+        SwapOrder memory tampered = _order();
+        tampered.tokenIn = address(tokenC);
+        _expectTamperRejected(tampered);
+    }
+
+    function test_TokenOutTamper_CannotSettle() public {
+        _recordVerdict(_order());
+        SwapOrder memory tampered = _order();
+        tampered.tokenOut = address(tokenC);
+        _expectTamperRejected(tampered);
+    }
+
+    function test_DeadlineTamper_CannotSettle() public {
+        _recordVerdict(_order());
+        SwapOrder memory tampered = _order();
+        tampered.deadline = deadline + 1;
+        _expectTamperRejected(tampered);
+    }
+
+    function test_SlippageTamper_CannotSettle() public {
+        _recordVerdict(_order());
+        SwapOrder memory tampered = _order();
+        tampered.slippageBps = 100;
+        _expectTamperRejected(tampered);
+    }
+
+    function test_NonceTamper_CannotSettle() public {
+        _recordVerdict(_order());
+        SwapOrder memory tampered = _order();
+        tampered.nonce = 2;
+        _expectTamperRejected(tampered);
+    }
+
+    /// A router substituted after approval is refused, so a verdict issued
+    /// against the audited aggregator cannot be spent through another one.
+    function test_RouterTamper_Rejected() public {
+        MockAGGFlowEntrypoint other = new MockAGGFlowEntrypoint();
+        SwapOrder memory order = _order();
+        order.router = address(other);
+        _recordVerdict(order);
+
+        vm.prank(agent);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AgentExecutorBase.RouterMismatch.selector,
+                address(mockEntrypoint),
+                address(other)
+            )
+        );
+        executor.executeSwap(order, ROUTE, _noAttestations());
+    }
+
+    /// The commitment binds this contract, so a verdict recorded on one executor
+    /// is meaningless on another deployment of the same code.
+    function test_CommitmentIsBoundToThisExecutor() public {
+        address[] memory tokens = new address[](2);
+        tokens[0] = address(tokenIn);
+        tokens[1] = address(tokenOut);
+
+        AgentExecutor other = new AgentExecutor(
+            owner, agent, address(mockEntrypoint), address(mockV2Router),
+            address(mockV3PositionManager), MAX_SLIPPAGE_BPS, tokens
+        );
+
+        SwapOrder memory order = _order();
+        assertTrue(
+            executor.getSwapCommitment(order) != other.getSwapCommitment(order),
+            "same order must commit differently per executor"
+        );
+    }
+
+    function test_UnauthorisedRelayer_CannotSettle() public {
+        SwapOrder memory order = _order();
+        _recordVerdict(order);
+
+        vm.prank(attacker);
+        vm.expectRevert(AgentExecutorBase.Unauthorized.selector);
+        executor.executeSwap(order, ROUTE, _noAttestations());
+    }
+
+    function test_SecondAgent_CanRelay_AfterAuthorisation() public {
+        address agent2 = address(0xA2A2);
+
+        vm.prank(owner);
+        executor.setAgentAuthorisation(agent2, true);
+        assertTrue(executor.isAgent(agent2));
+
+        SwapOrder memory order = _order();
+        _recordVerdict(order);
+
+        vm.prank(agent2);
+        uint256 amountOut = executor.executeSwap(order, ROUTE, _noAttestations());
+        assertGt(amountOut, MIN_AMOUNT_OUT);
+    }
+
+    // =========================================================================
+    //  3. THE ATTESTATION RAIL AND ITS SEPARATION OF DUTIES
+    // =========================================================================
+
+    function _sign(uint256 key, bytes32 commitment) internal view returns (bytes memory) {
+        bytes32 digest = executor.verdictDigest(commitment);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
+        return abi.encodePacked(r, s, v);
+    }
+
+    /// Sorted ascending, as _verifyAttestorQuorum requires.
+    function _twoAttestors()
+        internal
+        returns (address a1, uint256 k1, address a2, uint256 k2)
+    {
+        (a1, k1) = makeAddrAndKey("attestorA");
+        (a2, k2) = makeAddrAndKey("attestorB");
+        if (a1 > a2) {
+            (a1, a2) = (a2, a1);
+            (k1, k2) = (k2, k1);
+        }
+        vm.startPrank(owner);
+        executor.setVerdictAttestor(a1, true);
+        executor.setVerdictAttestor(a2, true);
+        executor.setAttestorThreshold(2);
+        vm.stopPrank();
+    }
+
+    /// Off unless deliberately switched on: GenLayer consensus is the default
+    /// and only source of authority.
+    function test_AttestationRail_DisabledByDefault() public {
+        (address a1, uint256 k1) = makeAddrAndKey("attestorA");
+        vm.prank(owner);
+        executor.setVerdictAttestor(a1, true);
+        // threshold deliberately left at 0
+
+        SwapOrder memory order = _order();
+        bytes32 commitment = executor.getSwapCommitment(order);
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sign(k1, commitment);
+
+        vm.prank(agent);
+        vm.expectRevert(AgentExecutorBase.AttestationRailDisabled.selector);
+        executor.executeSwap(order, ROUTE, sigs);
+    }
+
+    function test_AttestorQuorum_CanSettle() public {
+        (, uint256 k1, , uint256 k2) = _twoAttestors();
+
+        SwapOrder memory order = _order();
+        bytes32 commitment = executor.getSwapCommitment(order);
+
+        bytes[] memory sigs = new bytes[](2);
+        sigs[0] = _sign(k1, commitment);
+        sigs[1] = _sign(k2, commitment);
+
+        vm.prank(agent);
+        uint256 amountOut = executor.executeSwap(order, ROUTE, sigs);
+        assertGt(amountOut, MIN_AMOUNT_OUT);
+        assertTrue(executor.commitmentUsed(commitment), "attested settlement is one-time too");
+    }
+
+    function test_AttestorQuorum_BelowThreshold_Rejected() public {
+        (, uint256 k1, , ) = _twoAttestors();
+
+        SwapOrder memory order = _order();
+        bytes32 commitment = executor.getSwapCommitment(order);
+
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sign(k1, commitment);
+
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.InsufficientAttestations.selector, uint256(1), uint256(2)));
+        executor.executeSwap(order, ROUTE, sigs);
+    }
+
+    /// One attestor cannot sign twice to fake a quorum.
+    function test_AttestorQuorum_DuplicateSigner_Rejected() public {
+        (, uint256 k1, , ) = _twoAttestors();
+
+        SwapOrder memory order = _order();
+        bytes32 commitment = executor.getSwapCommitment(order);
+
+        bytes[] memory sigs = new bytes[](2);
+        sigs[0] = _sign(k1, commitment);
+        sigs[1] = _sign(k1, commitment);
+
+        vm.prank(agent);
+        vm.expectRevert(AgentExecutorBase.UnsortedOrDuplicateSigner.selector);
+        executor.executeSwap(order, ROUTE, sigs);
+    }
+
+    function test_AttestorQuorum_UnregisteredSigner_Rejected() public {
+        (address a1, uint256 k1, , ) = _twoAttestors();
+        (address outsider, uint256 kOut) = makeAddrAndKey("outsider");
+        vm.assume(outsider != a1);
+
+        SwapOrder memory order = _order();
+        bytes32 commitment = executor.getSwapCommitment(order);
+
+        bytes[] memory sigs = new bytes[](2);
+        address lo = a1 < outsider ? a1 : outsider;
+        uint256 kLo = a1 < outsider ? k1 : kOut;
+        uint256 kHi = a1 < outsider ? kOut : k1;
+        address hi = a1 < outsider ? outsider : a1;
+
+        sigs[0] = _sign(kLo, commitment);
+        sigs[1] = _sign(kHi, commitment);
+
+        address expectedBad = executor.verdictAttestors(lo) ? hi : lo;
+
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.NotAnAttestor.selector, expectedBad));
+        executor.executeSwap(order, ROUTE, sigs);
+    }
+
+    /// An attestor signature is over the commitment, so it authorises exactly one
+    /// order and nothing adjacent to it.
+    function test_AttestorSignature_DoesNotCoverTamperedOrder() public {
+        (, uint256 k1, , uint256 k2) = _twoAttestors();
+
+        SwapOrder memory order = _order();
+        bytes32 commitment = executor.getSwapCommitment(order);
+
+        bytes[] memory sigs = new bytes[](2);
+        sigs[0] = _sign(k1, commitment);
+        sigs[1] = _sign(k2, commitment);
+
+        SwapOrder memory tampered = _order();
+        tampered.feeCollector = attacker;
+
+        // Recovery against the tampered commitment yields addresses that are not
+        // attestors. Which of the two guards fires first depends on where those
+        // recovered addresses happen to sort, so assert the property that
+        // matters - the tampered order does not settle - rather than a selector
+        // that is incidental to this fixture.
+        vm.prank(agent);
+        (bool ok, ) = address(executor).call(
+            abi.encodeCall(AgentExecutor.executeSwap, (tampered, ROUTE, sigs))
+        );
+        assertFalse(ok, "signatures over one commitment must not settle another");
+        assertFalse(executor.commitmentUsed(executor.getSwapCommitment(tampered)));
+    }
+
+    /// No key may both authorise and execute.
+    function test_AgentCannotBecomeAttestor() public {
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.RoleConflict.selector, agent));
+        executor.setVerdictAttestor(agent, true);
+    }
+
+    function test_AttestorCannotBecomeAgent() public {
+        (address a1, ) = makeAddrAndKey("attestorA");
+        vm.startPrank(owner);
+        executor.setVerdictAttestor(a1, true);
+
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.RoleConflict.selector, a1));
+        executor.setAgentAuthorisation(a1, true);
+
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.RoleConflict.selector, a1));
+        executor.setAuthorisedAgent(a1);
+        vm.stopPrank();
+    }
+
+    function test_RevertIf_NonOwner_AuthorisesAgent() public {
+        vm.prank(attacker);
+        vm.expectRevert();
+        executor.setAgentAuthorisation(attacker, true);
+    }
+
+    // =========================================================================
+    //  4. LIQUIDITY OPERATIONS USE THE SAME REGISTRY
+    // =========================================================================
+
+    function test_LiquidityV2_RequiresConsensusVerdict() public {
+        uint256 amountA = 100 * 10 ** 18;
+        uint256 amountB = 200 * 10 ** 18;
+
+        vm.startPrank(user);
         tokenIn.approve(address(executor), type(uint256).max);
+        tokenC.approve(address(executor), type(uint256).max);
+        vm.stopPrank();
+
+        bytes32 commitment = executor.getLiquidityV2AddHash(
+            user, address(tokenIn), address(tokenC), amountA, amountB, 0, 0, deadline
+        );
+
+        // No verdict yet.
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.NoConsensusVerdict.selector, commitment));
+        executor.executeAddLiquidityV2(
+            user, address(tokenIn), address(tokenC), amountA, amountB, 0, 0, deadline, _noAttestations()
+        );
+
+        vm.prank(validator);
+        executor.recordVerdict(uint256(commitment), uint64(deadline));
+
+        vm.prank(agent);
+        (uint256 outA, uint256 outB, uint256 liquidity) = executor.executeAddLiquidityV2(
+            user, address(tokenIn), address(tokenC), amountA, amountB, 0, 0, deadline, _noAttestations()
+        );
+
+        assertEq(outA, amountA);
+        assertEq(outB, amountB);
+        assertGt(liquidity, 0);
+        assertTrue(executor.commitmentUsed(commitment));
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Test 1: FULL ENFORCED FLOW — Validate → ApproveWithParams → Execute
-    //         Proves the happy path works end-to-end with exact parameters.
-    // ─────────────────────────────────────────────────────────────────────────
-    function test_E2E_FullEnforcedFlow_ExactParams_Succeeds() public {
-        // ── Step 1: GenLayer AgentValidator IC reached consensus (simulated) ──
-        // In production this is: writeContract(validate_proposal) + waitForReceipt
-        // Here we simulate consensus having approved these exact parameters.
-
-        // ── Step 2: Agent binds one-time approval for EXACT validated parameters ─
-        vm.prank(agent); // Only agent wallet can call approveTradeWithParams
-        executor.approveTradeWithParams(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
-
-        bytes32 expectedHash = executor.getTradeHash(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
-        assertTrue(executor.isTradeApproved(expectedHash), "Approval must be registered");
-
-        uint256 balBefore = tokenOut.balanceOf(user);
-
-        // ── Step 3: Agent calls executeSwap — checks and consumes the hash ───
-        vm.prank(agent); // Only agent wallet can call executeSwap
-        uint256 amountOut = executor.executeSwap(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
-            "", 0, feeCollector
-        );
-
-        // ── Assertions ────────────────────────────────────────────────────────
-        assertGt(amountOut, MIN_AMOUNT_OUT, "Must receive at least min amount");
-        assertEq(tokenOut.balanceOf(user) - balBefore, amountOut, "Tokens must land with user");
-        assertFalse(executor.isTradeApproved(expectedHash), "Approval consumed - single-use only");
+    function _mintParams() internal view returns (IV3PositionManager.MintParams memory) {
+        return IV3PositionManager.MintParams({
+            token0:         address(tokenIn),
+            token1:         address(tokenC),
+            fee:            3000,
+            tickLower:      -887220,
+            tickUpper:      887220,
+            amount0Desired: 100 * 10 ** 18,
+            amount1Desired: 200 * 10 ** 18,
+            amount0Min:     0,
+            amount1Min:     0,
+            recipient:      address(0xdead), // overridden to `user` on execution
+            deadline:       deadline
+        });
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Test 2: UNAPPROVED TRADE CANNOT SETTLE
-    //         No approval registered → TradeNotApproved revert.
-    //         Proves: a trade that was never validated by GenLayer IC cannot execute.
-    // ─────────────────────────────────────────────────────────────────────────
-    function test_E2E_UnapprovedTrade_CannotSettle() public {
-        bytes32 tradeHash = executor.getTradeHash(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
+    function test_LiquidityV3_RequiresConsensusVerdict() public {
+        vm.startPrank(user);
+        tokenIn.approve(address(executor), type(uint256).max);
+        tokenC.approve(address(executor), type(uint256).max);
+        vm.stopPrank();
 
-        // No approval has been registered (GenLayer IC was never called)
-        assertFalse(executor.isTradeApproved(tradeHash), "Must start unapproved");
+        IV3PositionManager.MintParams memory params = _mintParams();
+        bytes32 commitment = executor.getLiquidityV3AddHash(user, params);
 
-        // MUST revert — trade was never validated by GenLayer consensus
         vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tradeHash));
-        executor.executeSwap(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
-            "", 0, feeCollector
-        );
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.NoConsensusVerdict.selector, commitment));
+        executor.executeAddLiquidityV3(user, params, _noAttestations());
+
+        vm.prank(validator);
+        executor.recordVerdict(uint256(commitment), uint64(deadline));
+
+        vm.prank(agent);
+        (uint256 tokenId, , uint256 amount0, uint256 amount1) =
+            executor.executeAddLiquidityV3(user, params, _noAttestations());
+
+        assertEq(tokenId, 1);
+        assertEq(amount0, params.amount0Desired);
+        assertEq(amount1, params.amount1Desired);
+        assertTrue(executor.commitmentUsed(commitment));
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Test 3: MODIFIED amountIn CANNOT SETTLE
-    //         GenLayer approved 100 tokens, attacker tries to execute with 150.
-    //         Hash mismatch → TradeNotApproved.
-    // ─────────────────────────────────────────────────────────────────────────
-    function test_E2E_ModifiedAmountIn_CannotSettle() public {
-        // Agent approves the exact GenLayer-validated parameters (100 tokens)
+    /// A negative lower tick is the ordinary case for a range below spot, and it
+    /// must be inside the commitment like everything else.
+    function test_LiquidityV3_TickTamper_CannotSettle() public {
+        vm.startPrank(user);
+        tokenIn.approve(address(executor), type(uint256).max);
+        tokenC.approve(address(executor), type(uint256).max);
+        vm.stopPrank();
+
+        IV3PositionManager.MintParams memory params = _mintParams();
+        // Read the hash BEFORE the prank: vm.prank applies to the next call, and
+        // a view call made inside the same statement would consume it.
+        bytes32 honest = executor.getLiquidityV3AddHash(user, params);
+        vm.prank(validator);
+        executor.recordVerdict(uint256(honest), uint64(deadline));
+
+        IV3PositionManager.MintParams memory tampered = params;
+        tampered.tickLower = -887200; // 20 ticks tighter
+        bytes32 tamperedCommitment = executor.getLiquidityV3AddHash(user, tampered);
+
         vm.prank(agent);
-        executor.approveTradeWithParams(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
-
-        uint256 tamperedAmountIn = 150e18; // Attacker inflates the amount
-
-        bytes32 tamperedHash = executor.getTradeHash(
-            user, address(tokenIn), address(tokenOut),
-            tamperedAmountIn, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
-
-        // MUST revert — tamperedAmountIn produces a different hash
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tamperedHash));
-        executor.executeSwap(
-            user, address(tokenIn), address(tokenOut),
-            tamperedAmountIn, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
-            "", 0, feeCollector
-        );
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.NoConsensusVerdict.selector, tamperedCommitment));
+        executor.executeAddLiquidityV3(user, tampered, _noAttestations());
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Test 4: MODIFIED minAmountOut (sandwich attack vector) CANNOT SETTLE
-    //         Attacker lowers minAmountOut to extract value. Hash mismatch → revert.
-    // ─────────────────────────────────────────────────────────────────────────
-    function test_E2E_ModifiedMinAmountOut_CannotSettle() public {
+    /// token0/token1 are what the executor whitelist-checks on a V3 withdrawal,
+    /// so they are inputs to whether the call is permitted and must be bound.
+    /// They were NOT in the commitment until this change.
+    function test_LiquidityV3Remove_TokenTamper_CannotSettle() public {
+        IV3PositionManager.DecreaseLiquidityParams memory params =
+            IV3PositionManager.DecreaseLiquidityParams({
+                tokenId:    4242,
+                liquidity:  123456789,
+                amount0Min: 0,
+                amount1Min: 0,
+                deadline:   deadline
+            });
+
+        bytes32 commitment = executor.getLiquidityV3RemoveHash(
+            user, params, 4242, address(tokenIn), address(tokenC)
+        );
+        vm.prank(validator);
+        executor.recordVerdict(uint256(commitment), uint64(deadline));
+
+        // Same position, a different (still whitelisted) pair declared.
+        bytes32 tampered = executor.getLiquidityV3RemoveHash(
+            user, params, 4242, address(tokenIn), address(tokenOut)
+        );
+        assertTrue(tampered != commitment, "the declared tokens must change the commitment");
+
         vm.prank(agent);
-        executor.approveTradeWithParams(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.NoConsensusVerdict.selector, tampered));
+        executor.executeRemoveLiquidityV3(
+            user, params, 4242, address(tokenIn), address(tokenOut), _noAttestations()
         );
 
-        uint256 tamperedMinOut = 1; // Attacker zeroes out the minimum
-
-        bytes32 tamperedHash = executor.getTradeHash(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, tamperedMinOut, SLIPPAGE_BPS, deadline
-        );
-
+        // The declared pair consensus actually approved settles.
         vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tamperedHash));
-        executor.executeSwap(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, tamperedMinOut, SLIPPAGE_BPS, deadline,
-            "", 0, feeCollector
+        executor.executeRemoveLiquidityV3(
+            user, params, 4242, address(tokenIn), address(tokenC), _noAttestations()
         );
+        assertTrue(executor.commitmentUsed(commitment));
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Test 5: MODIFIED recipient (user address) CANNOT SETTLE
-    //         Attacker redirects output to themselves. Hash mismatch → revert.
-    // ─────────────────────────────────────────────────────────────────────────
-    function test_E2E_ModifiedRecipient_CannotSettle() public {
+    function test_LiquidityV2_TamperedAmount_CannotSettle() public {
+        uint256 amountA = 100 * 10 ** 18;
+        uint256 amountB = 200 * 10 ** 18;
+
+        vm.startPrank(user);
+        tokenIn.approve(address(executor), type(uint256).max);
+        tokenC.approve(address(executor), type(uint256).max);
+        vm.stopPrank();
+
+        bytes32 commitment = executor.getLiquidityV2AddHash(
+            user, address(tokenIn), address(tokenC), amountA, amountB, 0, 0, deadline
+        );
+        vm.prank(validator);
+        executor.recordVerdict(uint256(commitment), uint64(deadline));
+
+        bytes32 tampered = executor.getLiquidityV2AddHash(
+            user, address(tokenIn), address(tokenC), amountA * 2, amountB, 0, 0, deadline
+        );
+
         vm.prank(agent);
-        executor.approveTradeWithParams(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
+        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.NoConsensusVerdict.selector, tampered));
+        executor.executeAddLiquidityV2(
+            user, address(tokenIn), address(tokenC), amountA * 2, amountB, 0, 0, deadline, _noAttestations()
         );
-
-        bytes32 tamperedHash = executor.getTradeHash(
-            attacker, address(tokenIn), address(tokenOut), // attacker substitutes their address
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
-
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tamperedHash));
-        executor.executeSwap(
-            attacker, address(tokenIn), address(tokenOut), // redirect to attacker
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
-            "", 0, feeCollector
-        );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Test 6: REPLAY ATTACK CANNOT SETTLE
-    //         First execution succeeds and consumes the approval.
-    //         Second execution with identical params MUST revert.
-    // ─────────────────────────────────────────────────────────────────────────
-    function test_E2E_ReplayAttack_CannotSettle() public {
-        bytes32 tradeHash = executor.getTradeHash(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
-
-        // Approve once
-        vm.prank(agent);
-        executor.approveTrade(tradeHash);
-
-        // First execution — succeeds, consumes approval
-        vm.prank(agent);
-        executor.executeSwap(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
-            "", 0, feeCollector
-        );
-        assertFalse(executor.isTradeApproved(tradeHash), "Approval must be consumed after first use");
-
-        // Second execution — MUST revert (approval already consumed)
-        vm.prank(agent);
-        vm.expectRevert(abi.encodeWithSelector(AgentExecutorBase.TradeNotApproved.selector, tradeHash));
-        executor.executeSwap(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
-            "", 0, feeCollector
-        );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Test 7: UNAUTHORIZED CALLER CANNOT APPROVE OR EXECUTE
-    //         Non-agent wallet cannot call onlyAgent functions.
-    //         Proves that the user wallet cannot bypass the approval gate.
-    // ─────────────────────────────────────────────────────────────────────────
-    function test_E2E_UnauthorizedCaller_CannotApproveOrExecute() public {
-        bytes32 tradeHash = executor.getTradeHash(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
-
-        // User wallet cannot call approveTradeWithParams
-        vm.prank(user);
-        vm.expectRevert(AgentExecutorBase.Unauthorized.selector);
-        executor.approveTradeWithParams(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
-
-        // Attacker wallet cannot call approveTradeWithParams
-        vm.prank(attacker);
-        vm.expectRevert(AgentExecutorBase.Unauthorized.selector);
-        executor.approveTrade(tradeHash);
-
-        // Even with an existing approval, attacker cannot call executeSwap
-        vm.prank(agent);
-        executor.approveTrade(tradeHash);
-
-        vm.prank(attacker);
-        vm.expectRevert(AgentExecutorBase.Unauthorized.selector);
-        executor.executeSwap(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
-            "", 0, feeCollector
-        );
-
-        // User wallet cannot call executeSwap either (even though approval exists)
-        vm.prank(user);
-        vm.expectRevert(AgentExecutorBase.Unauthorized.selector);
-        executor.executeSwap(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
-            "", 0, feeCollector
-        );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Test 8: APPROVED PARAMS HASH MUST MATCH TRADEHASHLIB ON-CHAIN
-    //         Verifies that approveTradeWithParams + getTradeHash produce the same
-    //         hash as TradeHashLib.swapHash, matching the frontend's computeTradeHash.
-    // ─────────────────────────────────────────────────────────────────────────
-    function test_E2E_TradeHashConsistency_ApproveAndExecute() public {
-        // Compute hash two ways — must be identical
-        bytes32 hashViaLib = TradeHashLib.swapHash(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
-        bytes32 hashViaExecutor = executor.getTradeHash(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
-
-        assertEq(hashViaLib, hashViaExecutor, "Hash from TradeHashLib must equal hash from executor.getTradeHash");
-
-        // approveTradeWithParams must register this exact hash
-        vm.prank(agent);
-        executor.approveTradeWithParams(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline
-        );
-        assertTrue(executor.isTradeApproved(hashViaLib), "approveTradeWithParams must register the correct hash");
-
-        // Execution with the same params must succeed (hash matches and is consumed)
-        vm.prank(agent);
-        executor.executeSwap(
-            user, address(tokenIn), address(tokenOut),
-            AMOUNT_IN, MIN_AMOUNT_OUT, SLIPPAGE_BPS, deadline,
-            "", 0, feeCollector
-        );
-        assertFalse(executor.isTradeApproved(hashViaLib), "Hash must be consumed after execution");
     }
 }
-

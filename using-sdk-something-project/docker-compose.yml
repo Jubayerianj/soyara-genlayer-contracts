@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  soyara-keeper:
+    build: .
+    restart: always
+    environment:
+      - NEXT_PUBLIC_RPC_URL=https://rpc-bradbury.genlayer.com
+      - KEEPER_POLL_INTERVAL_MS=4000
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

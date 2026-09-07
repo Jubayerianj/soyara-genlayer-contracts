@@ -24,6 +24,11 @@ import {
 
 import ChatMessage from '../components/AIAgent/ChatMessage';
 import ProposalPanel from '../components/AIAgent/ProposalPanel';
+import SwarmInsight from '../components/AIAgent/SwarmInsight';
+import { PoolsHandoffPanel } from '../components/A2A/SwarmPanels';
+import SettlementQueue from '../components/SettlementQueue';
+import { useSettlementQueue } from '../hooks/useSettlementQueue';
+import { mergeVerdictResponse } from '../lib/settlement';
 import { INTELLIGENT_CONTRACTS } from '../constants/addresses';
 import { useAgentSwapExecution } from '../hooks/useAgentSwapExecution';
 import ActivityPanel from '../components/ActivityPanel';
@@ -37,7 +42,7 @@ const STARTER_PROMPTS = [
   '🛡️ How do GenLayer Intelligent Contracts protect my trades?',
   '📊 Compare V2 vs V3 for 50 WGEN to USDT',
   '🪙 What tokens are supported on GenLayer?',
-  '💧 Add liquidity 10 GEN and 200 USDC',
+  '🔎 How is the verdict bound to my route and fee?',
   '🔒 What is the slippage protection policy?',
 ];
 
@@ -45,7 +50,7 @@ const TOPIC_CHIPS = [
   { label: '⚡ Trade & Quotes', prompt: 'Swap 100 USDC to GEN on V3 optimal route' },
   { label: '🛡️ GenVM Validation', prompt: 'How does GenLayer Optimistic Democracy and AgentValidator IC work?' },
   { label: '📊 V2 vs V3 Fees', prompt: 'What is the fee difference between V2 classic and V3 concentrated pools?' },
-  { label: '🪙 Token Prices', prompt: 'List all supported tokens and their prices on GenLayer Testnet' },
+  { label: '🪙 Supported Tokens', prompt: 'List all supported tokens on GenLayer Testnet' },
   { label: '🔒 Slippage Policy', prompt: 'Explain the 3% slippage cap and MEV safety rules' },
 ];
 
@@ -79,6 +84,27 @@ export default function AIPage() {
 
   const messagesEndRef = useRef(null);
   const handleValidateRef = useRef(null);
+  // The order the binding consensus round was opened against, handed over by
+  // /api/genlayer-validate. It has to live outside `validationResult` because
+  // that state is overwritten by every status poll, and the poll response has no
+  // reason to carry the order. Losing it would send settlement back to quoting
+  // and open a SECOND consensus round for the same trade - the exact cost this
+  // handoff exists to remove.
+  const settlementHandoffRef = useRef(null);
+  // Bounded auto-retry while a verdict finishes finalising. Bounded because the
+  // appeal window is finite: if it has not landed after this many tries,
+  // something other than the window is wrong and the user should be told.
+  const settlementRetryRef = useRef(0);
+
+  // Trades waiting on their consensus verdict.
+  //
+  // A validated trade goes in here rather than holding the page in a loading
+  // state: the appeal window runs to roughly 40 minutes, the queue survives
+  // navigation and reloads, and settlement happens on its own when the verdict
+  // reaches the executor. The user is free as soon as the round is submitted.
+  const settlementQueue = useSettlementQueue();
+  // Lets the delayed finalisation retry call the current handler.
+  const handleExecuteRef = useRef(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -158,9 +184,21 @@ export default function AIPage() {
 
       const data = await res.json();
 
+      // A liquidity request is handed to the pools app. Clear any proposal still
+      // on screen from the previous turn: leaving a stale swap card next to
+      // "liquidity happens elsewhere" is how a deposit request ended up with an
+      // Execute button for a trade beside it.
+      if (data.redirect) {
+        setCurrentProposal(null);
+        setValidationResult(null);
+        settlementHandoffRef.current = null;
+        resetExecution();
+      }
+
       if (data.proposal) {
         setCurrentProposal(data.proposal);
         setValidationResult(null);
+    settlementHandoffRef.current = null;
         resetExecution();
         setMobileTab('proposal');
 
@@ -179,6 +217,7 @@ export default function AIPage() {
           role: 'assistant',
           content: data.reply || 'I have analyzed your request.',
           toolsUsed: data.toolsUsed || [],
+          redirect: data.redirect || null,
         }
       ]);
     } catch (err) {
@@ -199,7 +238,14 @@ export default function AIPage() {
   // until it resolves or we give up. GenVM consensus rounds on Bradbury testnet can
   // occasionally take several minutes under load; treating a slow round as an
   // immediate hard rejection is misleading, so this keeps checking in the background.
-  const pollValidationStatus = useCallback(async (txHash, attempt = 0, retryRound = 0, proposal = null, proposalId = null) => {
+  // `submitted` is the response from the round's SUBMISSION, and it is not
+  // optional bookkeeping. A status check is given only a transaction hash, so it
+  // cannot return the bound order, its aggregator program, or the commitment -
+  // those were computed once at submission. Replacing the response with the poll
+  // result therefore erased them, and the enqueue below is guarded on
+  // `pendingOrder && pendingProgram`, so any round slow enough to need one poll
+  // ended approved and unsettled with nothing on screen saying why.
+  const pollValidationStatus = useCallback(async (txHash, attempt = 0, retryRound = 0, proposal = null, proposalId = null, submitted = null) => {
     const MAX_ATTEMPTS = 40; // fast common case, still degrades gracefully under load
     const MAX_RETRY_ROUNDS = 1; // one automatic fresh round if the first ends undecided
     try {
@@ -211,15 +257,25 @@ export default function AIPage() {
         // start making new submissions revert at ConsensusMain.
         body: JSON.stringify({ checkTxHash: txHash, proposalId, finalizeIfStuck: attempt >= MAX_ATTEMPTS }),
       });
-      const data = await res.json();
+      const data = mergeVerdictResponse(submitted, await res.json());
 
-      if (data.pending && attempt < MAX_ATTEMPTS) {
+      // Never leave `pending` as a terminal state.
+      //
+      // The poll used to stop at MAX_ATTEMPTS and then render the last pending
+      // response, which froze the UI on "Consensus Pending" with nothing left
+      // running. A verdict that has not appeared yet WILL appear: the round is
+      // decided and `get_validation` is a plain read. So past the fast budget
+      // this keeps checking on a slow cadence rather than giving up, and only a
+      // real verdict or a real error ends it.
+      if (data.pending) {
         // Fast-poll the first few attempts (common case resolves quickly), then back off.
         // A verdict is usually readable within ~30-45s, so a flat 10s tail added
         // up to 10s of dead time after consensus had already finished. Poll
         // tighter for longer, then ease off.
-        const nextDelay = attempt < 6 ? 2000 : 5000;
-        setTimeout(() => pollValidationStatus(txHash, attempt + 1, retryRound, proposal, proposalId), nextDelay);
+        // A round decides in roughly 20 seconds and moves through five phases,
+        // so poll tightly while that is happening, then ease off and keep going.
+        const nextDelay = attempt < 12 ? 1200 : attempt < MAX_ATTEMPTS ? 4000 : 15000;
+        setTimeout(() => pollValidationStatus(txHash, attempt + 1, retryRound, proposal, proposalId, submitted), nextDelay);
         return;
       }
 
@@ -308,13 +364,22 @@ export default function AIPage() {
       const res = await fetch('/api/genlayer-validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // `user` is required for the mandate fast path (check_mandate is bound to
-        // a specific user). Without it every validation fell through to a full
-        // GenVM consensus round - minutes instead of seconds.
+        // `user` is required because it is part of the settlement commitment -
+        // a verdict is bound to the address that will actually receive the
+        // output. (It used to be sent for the mandate fast path, which admitted
+        // trades through a view and has been removed.)
         body: JSON.stringify({ ...proposal, user: userAddress }),
       });
 
       const data = await res.json();
+
+      if (data.pendingOrder && data.pendingProgram) {
+        settlementHandoffRef.current = {
+          pendingOrder:        data.pendingOrder,
+          pendingProgram:      data.pendingProgram,
+          validationSubmitted: Boolean(data.validationSubmitted),
+        };
+      }
 
       // Consensus round still in flight - poll status instead of reporting rejection.
       if (data.pending && data.tx_hash) {
@@ -341,7 +406,7 @@ export default function AIPage() {
             toolsUsed: ['AgentValidator IC', 'GenVM Consensus'],
           }
         ]);
-        pollValidationStatus(data.tx_hash, 0, retryRound, proposal, data.proposal_id || null);
+        pollValidationStatus(data.tx_hash, 0, retryRound, proposal, data.proposal_id || null, data);
         return;
       }
 
@@ -361,6 +426,27 @@ export default function AIPage() {
 
       setValidationResult(data);
       setIsValidating(false);
+
+      // Hand an approved trade to the queue immediately.
+      //
+      // And ask for the token approval NOW, while the appeal window is still
+      // running, instead of at the end. The signature is the only thing that
+      // needs the user, so it belongs at the point where they are still
+      // watching, not 40 minutes later when they have moved on.
+      if (data.approved && data.pendingOrder && data.pendingProgram) {
+        settlementQueue.enqueue({
+          commitment: data.commitment,
+          order: data.pendingOrder,
+          program: data.pendingProgram,
+          validationTxHash: data.tx_hash,
+          validatedAt: Date.now(),
+          stage: 'finalising',
+          label: `${proposal.amountIn} ${proposal.tokenIn} to ${proposal.tokenOut}`,
+        });
+        if (needsApproval) {
+          handleApprove().catch(() => { /* surfaced on the queue entry */ });
+        }
+      }
 
       if (data.approved) {
         setMessages((prev) => [
@@ -397,6 +483,8 @@ export default function AIPage() {
   handleValidateRef.current = handleValidate;
 
   // Approve token - approves the correct settlement spender (AgentExecutor or AGGFlowEntrypoint)
+  useEffect(() => { handleExecuteRef.current = handleExecute; });
+
   const handleApprove = async () => {
     try {
       const result = await approve();
@@ -420,7 +508,8 @@ export default function AIPage() {
   const handleExecute = async () => {
     try {
       setBalanceSnapshot(liveBalances);
-      const result = await execute(validationResult);
+      const result = await execute(validationResult, settlementHandoffRef.current);
+      settlementRetryRef.current = 0;
       setBalanceRefreshKey((k) => k + 1);
       if (!result) return;
 
@@ -491,6 +580,46 @@ export default function AIPage() {
     } catch (err) {
       console.error('Execution failed:', err);
 
+      // Not a failure at all: consensus has approved the trade and the verdict
+      // is still crossing to the executor.
+      //
+      // An Intelligent Contract delivers its verdict as an external message,
+      // and those are delivered only once the round can no longer be appealed.
+      // So there is a real window where the trade is approved and the executor
+      // still will not honour it. Reporting that as an error would tell the
+      // user their trade failed when it is simply still settling.
+      //
+      // The retry MUST carry the order back, or it would re-quote, rebuild the
+      // route, and end up waiting on a different identifier from the one
+      // consensus is finalising.
+      if (err?.pending) {
+        if (err.pendingOrder && err.pendingProgram) {
+          settlementHandoffRef.current = {
+            pendingOrder: err.pendingOrder,
+            pendingProgram: err.pendingProgram,
+            validationSubmitted: true,
+          };
+        }
+        settlementRetryRef.current += 1;
+        const attempt = settlementRetryRef.current;
+        if (attempt <= 8) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: 'assistant',
+              content: `⏳ **Consensus approved this trade. The verdict is being delivered to the executor.**\n\nGenLayer hands a verdict to the settlement contract only once the appeal window has closed, so there is a short wait between approval and the trade becoming executable. Checking again automatically (attempt ${attempt} of 8).`,
+              toolsUsed: ['AgentValidator IC', 'Appeal window'],
+            },
+          ]);
+          setTimeout(() => { handleExecuteRef.current?.(); }, 30000);
+          return;
+        }
+        setExecutionError(
+          'The consensus verdict has not reached the settlement contract yet. It is approved and will become executable once finalised - try again shortly.'
+        );
+        return;
+      }
+
       // A stale quote is not a failure the user should have to fix by retyping
       // their request. These pools are small enough that a real trade moves the
       // price between quote and settlement, and enforced per-trade consensus
@@ -519,6 +648,7 @@ export default function AIPage() {
           if (data?.proposal) {
             setCurrentProposal(data.proposal);
             setValidationResult(null);
+    settlementHandoffRef.current = null;
             resetExecution();
             setMessages((prev) => [
               ...prev,
@@ -546,6 +676,7 @@ export default function AIPage() {
     ]);
     setCurrentProposal(null);
     setValidationResult(null);
+    settlementHandoffRef.current = null;
     resetExecution();
   };
 
@@ -649,12 +780,20 @@ export default function AIPage() {
             {/* Messages Scroll Area */}
             <div className={aiStyles.messagesContainer}>
               {messages.map((msg, idx) => (
-                <ChatMessage
-                  key={idx}
-                  role={msg.role}
-                  content={msg.content}
-                  toolsUsed={msg.toolsUsed}
-                />
+                <React.Fragment key={idx}>
+                  <ChatMessage
+                    role={msg.role}
+                    content={msg.content}
+                    toolsUsed={msg.toolsUsed}
+                  />
+                  {/* A real link, not just a URL inside prose. The whole point of
+                      the handoff is that the user can act on it in one click. */}
+                  {msg.redirect?.url && (
+                    <div style={{ margin: '0 0 0.9rem' }}>
+                      <PoolsHandoffPanel url={msg.redirect.url} />
+                    </div>
+                  )}
+                </React.Fragment>
               ))}
 
               {isLoading && (
@@ -727,6 +866,12 @@ export default function AIPage() {
             </div>
 
             <div className={aiStyles.proposalBody}>
+              {settlementQueue.entries.length > 0 && (
+                <div style={{ marginBottom: '14px' }}>
+                  <SettlementQueue queue={settlementQueue} onApprove={() => handleApprove()} />
+                </div>
+              )}
+
               <ProposalPanel
                 proposal={currentProposal}
                 validationResult={validationResult}
@@ -744,6 +889,15 @@ export default function AIPage() {
                 isExecuting={isExecuting || isTxWaiting}
                 txHash={activeTxHash}
                 executionError={executionError}
+              />
+
+              {/* The same evidence /a2a shows: what the pools behind this quote
+                  hold, which rail can carry the verdict, and the on-chain proof
+                  that the commitment binds this exact route, fee and recipient. */}
+              <SwarmInsight
+                proposal={currentProposal}
+                validationResult={validationResult}
+                userAddress={userAddress}
               />
 
               {currentProposal && (

@@ -228,7 +228,7 @@ export const COMPREHENSIVE_TESTS = [
             minAmountOut: '49',
             slippageBps: 500, // 5.00% > 3.00% cap
             deadline: Math.floor(Date.now() / 1000) + 1800,
-            router: '0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3'
+            router: '0x95feE6Cb918Ed9C621E36082EE8D998873031EaA'
           })
         });
         const data = await res.json();

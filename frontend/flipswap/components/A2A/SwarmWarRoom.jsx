@@ -2,7 +2,12 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Send, Zap, ShieldCheck, Play, RotateCcw, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import { useAccount } from 'wagmi';
-import { orchestrateSwarm, AGENT_REGISTRY } from '../../services/a2a/agents';
+import { orchestrateSwarm, AGENT_REGISTRY, POOLS_URL } from '../../services/a2a/agents';
+import { PostTradeAuditorAgent } from '../../services/a2a/analysts';
+import { MarketReadPanel, SettlementRailPanel, BindingsPanel, OutcomePanel, PoolsHandoffPanel } from './SwarmPanels';
+import SettlementQueue from '../SettlementQueue';
+import { useSettlementQueue } from '../../hooks/useSettlementQueue';
+import { normaliseAction } from '../../lib/actions';
 import { useAgentSwapExecution } from '../../hooks/useAgentSwapExecution';
 import ConsensusProgress from '../ConsensusProgress';
 import ActivityPanel from '../ActivityPanel';
@@ -13,7 +18,7 @@ import styles from '../../styles/A2A.module.css';
 const PRESET_CHIPS = [
   { label: '⚡ 100 USDC ➔ WGEN', query: 'Swap 100 USDC to WGEN with 0.3% slippage' },
   { label: '🧮 V2 vs V3 500 USDT', query: 'Compare V2 vs V3 route for 500 USDT to GEN' },
-  { label: '💧 Add 10 WGEN LP', query: 'Add liquidity 10 WGEN and 200 USDC' },
+  { label: '📊 Depth check 2 WGEN', query: 'Swap 2 WGEN to USDC' },
   { label: '🛡️ Test 4% Slippage', query: 'Test 4% slippage to verify fail-closed cap' }
 ];
 
@@ -35,8 +40,21 @@ export default function SwarmWarRoom({ mode = 'user' }) {
   // Consensus rounds dominate the wait here, so the timeline gets a live panel
   // showing the real phase and elapsed time rather than sitting silent.
   const [consensus, setConsensus] = useState(null); // {startedAt, statusName, txHash, retry}
+  // A liquidity request is handed to the pools app rather than quoted here.
+  const [poolsHandoff, setPoolsHandoff] = useState(false);
+  // What the settled transaction actually delivered, read back from its
+  // receipt. The quoted figure is an expectation; this is the fact.
+  const [outcome, setOutcome] = useState(null);
   // Before/after balances around settlement - the agent wallet settles with no
   // wallet prompt, so this delta is the user's direct confirmation of movement.
+  // Approved trades wait here rather than pinning the war room open.
+  //
+  // The swarm finishes in seconds; the appeal window that has to close before
+  // the verdict reaches the executor runs to roughly 40 minutes. Holding the
+  // room in a loading state for the second of those would strand the user on a
+  // page for something that does not need them.
+  const settlementQueue = useSettlementQueue();
+
   const [balanceSnapshot, setBalanceSnapshot] = useState(null);
   const [liveBalances, setLiveBalances] = useState(null);
   const [balanceRefreshKey, setBalanceRefreshKey] = useState(0);
@@ -55,15 +73,36 @@ export default function SwarmWarRoom({ mode = 'user' }) {
     if (!payload) return null;
     const { route, intent } = payload;
     return {
-      action: intent?.action === 'ADD_LIQUIDITY' ? 'ADD_LIQUIDITY' : 'SWAP',
+      // Normalise, and never silently fall back to SWAP.
+      //
+      // This was `intent?.action === 'ADD_LIQUIDITY' ? 'ADD_LIQUIDITY' : 'SWAP'`.
+      // Any value that was not exactly that string - a different case, stray
+      // whitespace, REMOVE_LIQUIDITY, undefined - collapsed to SWAP, and
+      // execute() then moved the user's funds through a trade they had not
+      // asked for. A deposit request settled as a 10 USDC to USDT swap on chain
+      // because of that one ternary. A defaulting rule must never resolve to the
+      // branch that spends money.
+      action: normaliseAction(intent?.action),
       tokenIn: route.tokenIn.symbol,
       tokenOut: route.tokenOut.symbol,
       tokenInAddress: route.tokenIn.isNative ? undefined : route.tokenIn.address,
       tokenOutAddress: route.tokenOut.isNative ? undefined : route.tokenOut.address,
+      tokenA: route.tokenIn.symbol,
+      tokenB: route.tokenOut.symbol,
+      tokenAAddress: route.tokenIn.address,
+      tokenBAddress: route.tokenOut.address,
       amountIn: route.amountInNum,
       amountInRaw: route.amountInWei,
       minAmountOut: route.minAmountOutNum,
       minAmountOutRaw: route.minAmountOutWei,
+      amountA: route.amountInNum,
+      amountB: route.expectedOutNum,
+      amountARaw: route.amountInWei,
+      amountBRaw: route.minAmountOutWei,
+      amount0Desired: route.amountInWei,
+      amount1Desired: route.minAmountOutWei,
+      amount0Min: route.minAmountInWei || route.amountInWei,
+      amount1Min: route.minAmountOutWei,
       slippageBps: intent?.slippageBps || 100,
       dex: route.chosenRoute?.includes('V3') ? 'v3' : 'v2',
       // The aggregator's chosen path, so settlement rebuilds exactly what was quoted.
@@ -128,6 +167,8 @@ export default function SwarmWarRoom({ mode = 'user' }) {
     setExecErrorMsg(null);
     resetExecution();
     setConsensus(null);
+    setPoolsHandoff(false);
+    setOutcome(null);
     setIsRunning(true);
 
     setTimeline(prev => [
@@ -160,10 +201,31 @@ export default function SwarmWarRoom({ mode = 'user' }) {
         { onProgress }
       );
       for await (const step of generator) {
+        if (step.type === 'REDIRECTED') {
+          setPoolsHandoff(true);
+        }
+
         if (step.type === 'SWARM_COMPLETE') {
           setPayload(step.payload);
           const r = step.payload?.risk;
           const rt = step.payload?.route;
+          // Queue the approved trade and get the one signature it needs out of
+          // the way now, while the user is still watching.
+          if (r?.isApproved && r?.pendingOrder && r?.pendingProgram) {
+            settlementQueue.enqueue({
+              commitment: r.commitment,
+              order: r.pendingOrder,
+              program: r.pendingProgram,
+              validationTxHash: r.txHash || null,
+              validatedAt: Date.now(),
+              stage: 'finalising',
+              label: `${rt?.amountInNum ?? ''} ${rt?.tokenIn?.symbol} to ${rt?.tokenOut?.symbol}`,
+            });
+            if (needsApproval) {
+              approve().catch(() => { /* surfaced on the queue entry */ });
+            }
+          }
+
           if (r) {
             recordActivity({
               id: r.proposalId || `swarm-${Date.now()}`,
@@ -239,10 +301,6 @@ export default function SwarmWarRoom({ mode = 'user' }) {
         text = `🚀 **Wrap Submitted!** Tx: [${result.hash.slice(0, 10)}...${result.hash.slice(-8)}](https://explorer-bradbury.genlayer.com/tx/${result.hash})`;
       } else if (result.kind === 'unwrap') {
         text = `🚀 **Unwrap Submitted!** Tx: [${result.hash.slice(0, 10)}...${result.hash.slice(-8)}](https://explorer-bradbury.genlayer.com/tx/${result.hash})`;
-      } else if (result.kind === 'remove_liquidity') {
-        text = `💸 **Liquidity Withdrawn via AgentExecutor!** One-time approval bound and consumed.\n\nLP burned: \`${result.lpBurned}\`\n\nExecution Tx: [${result.hash?.slice(0, 10)}...${result.hash?.slice(-8)}](${result.explorerUrl})`;
-      } else if (result.kind === 'add_liquidity') {
-        text = `💧 **Liquidity Added via AgentExecutor!** One-time approval bound and consumed.\n\nOp Hash: \`${result.opHash?.slice(0, 14)}...\`\n\nExecution Tx: [${result.hash?.slice(0, 10)}...${result.hash?.slice(-8)}](${result.explorerUrl})`;
       } else if (result.kind === 'swap') {
         recordActivity({
           id: result.hash, kind: 'swap', user: userAddress,
@@ -250,6 +308,29 @@ export default function SwarmWarRoom({ mode = 'user' }) {
           label: `Settled ${proposalForExecution?.amountIn} ${proposalForExecution?.tokenIn} → ${proposalForExecution?.tokenOut}`,
           settleTxHash: result.hash, status: 'settled',
         });
+
+        // The Post-Trade Auditor closes the loop: the panel above showed what
+        // was quoted, and this reads the receipt for what was delivered.
+        PostTradeAuditorAgent.audit({
+          txHash: result.hash,
+          tokenOut: payload.route.tokenOut.isNative ? null : payload.route.tokenOut.address,
+          user: userAddress,
+          quotedOut: payload.risk?.pendingOrder?.quotedAmountOut || null,
+          minOut: payload.route.minAmountOutWei || null,
+          decimals: payload.route.tokenOut.decimals,
+        }).then((o) => {
+          setOutcome(o);
+          if (!o?.ok) return;
+          setTimeline((prev) => [...prev, {
+            agent: AGENT_REGISTRY.auditor,
+            text: `🔎 **Post-trade audit.** Receipt confirms **${o.delivered.toLocaleString(undefined, { maximumFractionDigits: 6 })} `
+              + `${payload.route.tokenOut.symbol}** delivered to your wallet`
+              + (o.quoted != null ? `, against a quote of ${o.quoted.toLocaleString(undefined, { maximumFractionDigits: 6 })}` : '')
+              + (o.slipPct != null && Math.abs(o.slipPct) >= 0.01 ? ` (${o.slipPct > 0 ? '+' : ''}${o.slipPct.toFixed(3)}%)` : '')
+              + `. ${o.honouredMinimum === false ? 'This is BELOW the committed minimum and should have reverted.' : 'The committed minimum was honoured.'}`,
+            time: 'Audit',
+          }]);
+        }).catch(() => { /* the receipt panel simply stays empty */ });
         text = `🚀 **Trade Executed via AgentExecutor!** One-time approval bound and consumed.\n\nTrade Hash: \`${result.tradeHash?.slice(0, 14)}...\`\n\nExecution Tx: [${result.hash?.slice(0, 10)}...${result.hash?.slice(-8)}](${result.explorerUrl})`;
       } else {
         text = `🚀 **Trade Submitted!** Tx: [${result.hash.slice(0, 10)}...${result.hash.slice(-8)}](https://explorer-bradbury.genlayer.com/tx/${result.hash})`;
@@ -306,6 +387,12 @@ export default function SwarmWarRoom({ mode = 'user' }) {
         </form>
 
         {/* Timeline */}
+        {settlementQueue.entries.length > 0 && (
+          <div style={{ margin: '0 0 12px' }}>
+            <SettlementQueue queue={settlementQueue} onApprove={() => approve()} />
+          </div>
+        )}
+
         <div className={styles.timelineFeed}>
           {timeline.map((item, idx) => (
             <div key={idx} className={styles.timelineItem}>
@@ -380,24 +467,57 @@ export default function SwarmWarRoom({ mode = 'user' }) {
 
         {payload ? (
           <div className={styles.summaryBox}>
-            <div style={{ padding: '0.6rem 0.75rem', background: 'var(--blue-glow, rgba(2, 132, 199, 0.08))', borderRadius: '0.5rem', border: '1px solid var(--border-subtle, rgba(255, 255, 255, 0.1))' }}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted, #94a3b8)' }}>OPTIMAL ROUTE</div>
+            {/* "Optimal" is a claim, and it is only true when the pools on the
+                path agree about the price. When they do not, the highest-paying
+                route is a reading off a mispriced pool, and labelling it optimal
+                is how a 20x-wrong number reached the user looking authoritative. */}
+            <div style={{
+              padding: '0.6rem 0.75rem',
+              background: payload.route.priceWarning
+                ? 'rgba(239, 68, 68, 0.10)'
+                : 'var(--blue-glow, rgba(2, 132, 199, 0.08))',
+              borderRadius: '0.5rem',
+              border: payload.route.priceWarning
+                ? '1px solid rgba(239, 68, 68, 0.45)'
+                : '1px solid var(--border-subtle, rgba(255, 255, 255, 0.1))',
+            }}>
+              <div style={{ fontSize: '0.7rem', color: payload.route.priceWarning ? '#ef4444' : 'var(--text-muted, #94a3b8)', fontWeight: 700 }}>
+                {payload.route.priceWarning ? 'UNRELIABLE PRICE' : 'BEST FILL'}
+              </div>
               <div style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-main, #ffffff)' }}>
                 {payload.route.chosenRoute}
               </div>
             </div>
 
+            {payload.route.priceWarning && (
+              <div style={{
+                padding: '0.6rem 0.75rem', borderRadius: '0.5rem',
+                background: 'rgba(239, 68, 68, 0.07)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                fontSize: '0.72rem', lineHeight: 1.55, color: 'var(--text-sub, #cbd5e1)',
+              }}>
+                This route pays about <strong>{payload.route.dislocationFactor.toFixed(1)}x</strong> what the
+                direct pool pays
+                {payload.route.directOutNum != null
+                  ? <> (direct: <strong>{payload.route.directOutNum.toFixed(4)} {payload.route.tokenOut.symbol}</strong>)</>
+                  : null}.
+                That gap means the pools on this path disagree about the price, not that the route is
+                better. Expect it to be arbitraged before it settles, and treat the minimum below as
+                unreliable.
+              </div>
+            )}
+
             <div className={styles.statRow}>
               <span>In / Out:</span>
               <span className={styles.statVal}>
-                {payload.route.amountInNum} {payload.route.tokenIn.symbol} ➔ ~{payload.route.expectedOutNum.toFixed(4)} {payload.route.tokenOut.symbol}
+                {`${payload.route.amountInNum} ${payload.route.tokenIn.symbol} ➔ ~${payload.route.expectedOutNum.toFixed(4)} ${payload.route.tokenOut.symbol}`}
               </span>
             </div>
 
             <div className={styles.statRow}>
-              <span>Min Guaranteed:</span>
+              <span>{payload.route.priceWarning ? 'Min (unreliable):' : 'Min Guaranteed:'}</span>
               <span className={styles.statVal}>
-                {payload.route.minAmountOutNum.toFixed(4)} {payload.route.tokenOut.symbol} ({(payload.intent.slippageBps / 100).toFixed(2)}%)
+                {`${payload.route.minAmountOutNum.toFixed(4)} ${payload.route.tokenOut.symbol} (${(payload.intent.slippageBps / 100).toFixed(2)}%)`}
               </span>
             </div>
 
@@ -412,9 +532,16 @@ export default function SwarmWarRoom({ mode = 'user' }) {
             </div>
 
             <div>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted, #94a3b8)', marginBottom: '3px' }}>ONE-TIME HASH BINDING:</div>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted, #94a3b8)', marginBottom: '3px' }}>CONSENSUS COMMITMENT (single use):</div>
               <div className={styles.hashBoxMini}>{payload.risk.tradeHash}</div>
             </div>
+
+            {/* The three working agents' findings, in the order a trader reads
+                them: is the price real, does the verdict bind, how fast can it
+                settle. */}
+            <MarketReadPanel analysis={payload.analysis} route={payload.route} />
+            <BindingsPanel audit={payload.audit} />
+            <SettlementRailPanel strategy={payload.strategy} />
 
             <button
               onClick={handleExecute}
@@ -472,11 +599,17 @@ export default function SwarmWarRoom({ mode = 'user' }) {
               </div>
             )}
 
+            {outcome && <OutcomePanel outcome={outcome} route={payload.route} />}
+
             {execState === 'error' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0.5rem 0.75rem', background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.3)', borderRadius: '0.5rem', color: '#f43f5e', fontSize: '0.8rem', fontWeight: 600 }}>
                 <XCircle size={16} /> {execErrorMsg || 'Execution failed'}
               </div>
             )}
+          </div>
+        ) : poolsHandoff ? (
+          <div style={{ padding: '0.5rem' }}>
+            <PoolsHandoffPanel url={POOLS_URL} />
           </div>
         ) : (
           <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: 'var(--text-muted, #94a3b8)', fontSize: '0.85rem' }}>

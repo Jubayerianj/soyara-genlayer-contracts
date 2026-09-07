@@ -4,12 +4,16 @@
 //  100% Native Web3 & Client-Side Intelligence - Zero Third-Party API Keys
 // ============================================================================
 
-import { parseEther, parseUnits, formatEther, formatUnits, keccak256, encodeAbiParameters, parseAbiParameters, createPublicClient, http } from 'viem';
+import { parseUnits, formatUnits, keccak256, encodeAbiParameters, parseAbiParameters } from 'viem';
 import { CONTRACT_ADDRESSES, INTELLIGENT_CONTRACTS } from '../../constants/addresses.js';
-import { TOKEN_LIST, findTokenByAddress } from '../../constants/tokens.js';
-import { buildProgram } from '../../utils/programBuilder.js';
-import { quoteBestRoute, quoteBestRouteMultiHop, getQuoteClient } from '../../lib/dexQuote.js';
+import { TOKEN_LIST } from '../../constants/tokens.js';
+import { quoteBestRouteMultiHop } from '../../lib/dexQuote.js';
 import { parseIntent } from '../../lib/parseIntent.js';
+import { describeRoundPhase, mergeVerdictResponse } from '../../lib/settlement.js';
+import { MarketAnalystAgent, SettlementStrategistAgent, PostTradeAuditorAgent, buildDebate } from './analysts.js';
+// One definition of the liquidity handoff, shared with the /ai API route.
+import { POOLS_URL, isLiquidityIntent, liquidityRedirectMessage } from '../../lib/pools.js';
+export { POOLS_URL, isLiquidityIntent, liquidityRedirectMessage };
 
 // ── Live on-chain quoting ───────────────────────────────────────────────────
 // Shared with /ai via lib/dexQuote.js: V3 only through the real Quoter, V2 via
@@ -51,6 +55,30 @@ export const AGENT_REGISTRY = {
     icon: '🛠️',
     color: '#f472b6',
     badge: 'Bytecode & Revert Simulator'
+  },
+  market: {
+    id: 'agent_market',
+    name: 'Market Analyst',
+    role: 'Pool Depth & Price Integrity',
+    icon: '📊',
+    color: '#fbbf24',
+    badge: 'Live Reserve Reader'
+  },
+  settlement: {
+    id: 'agent_settlement',
+    name: 'Settlement Strategist',
+    role: 'Verdict Rail & Timing',
+    icon: '🚦',
+    color: '#a78bfa',
+    badge: 'Consensus / Attestor Rails'
+  },
+  auditor: {
+    id: 'agent_auditor',
+    name: 'Post-Trade Auditor',
+    role: 'On-Chain Outcome Verification',
+    icon: '🔎',
+    color: '#22d3ee',
+    badge: 'Receipt & Event Reader'
   }
 };
 
@@ -72,7 +100,7 @@ export function resolveToken(symbolOrAddress) {
     name: clean,
     address: symbolOrAddress.startsWith('0x') ? symbolOrAddress : '0x58B6CD7891cd0A682226E25607b958a6479195A6',
     decimals: 18,
-    isNative: clean === 'GEN' || clean === 'ETH'
+    isNative: clean === 'GEN'
   };
 }
 
@@ -155,16 +183,16 @@ export class RouterMathAgent {
     // Venue preference is a real routing constraint from the playground, not a
     // label - 'v2'/'v3' restricts which pool may fill the order.
     const venue = intent.venuePreference || 'best';
-    // Swaps aggregate across direct and multi-hop paths; a deposit targets one
-    // specific pool, so it keeps the direct quote.
-    const routed = intent.action === 'SWAP'
-      ? await quoteBestRouteMultiHop(tokenInAddr, tokenOutAddr, amountInWei, venue).catch(() => null)
-      : await quoteBestRoute(tokenInAddr, tokenOutAddr, amountInWei, venue).catch(() => null);
+
+    // Swaps aggregate across direct and multi-hop paths
+    const routed = await quoteBestRouteMultiHop(tokenInAddr, tokenOutAddr, amountInWei, venue)
+      .catch(() => null);
     const v3 = routed?.v3 || null;
     const v2 = routed?.v2 || null;
     const chosen = routed;
 
     let expectedOutNum, priceImpact, chosenRoute, v3Quote, v2Quote, isLiveQuote, hops = null, isMultiHop = false;
+    let priceWarning = null, dislocationFactor = 1, directOutNum = null;
 
     if (chosen) {
       expectedOutNum = parseFloat(formatUnits(chosen.amountOutRaw, tokenOut.decimals));
@@ -179,6 +207,11 @@ export class RouterMathAgent {
       isLiveQuote = true;
       hops = chosen.hops || null;
       isMultiHop = Boolean(chosen.isMultiHop);
+      priceWarning = chosen.priceWarning || null;
+      dislocationFactor = chosen.dislocationFactor ?? 1;
+      directOutNum = chosen.directAmountOutRaw
+        ? parseFloat(formatUnits(chosen.directAmountOutRaw, tokenOut.decimals))
+        : null;
     } else {
       // No live pool for this pair yet - clearly-labeled rough estimate only.
       const baseRate = 1.0;
@@ -207,6 +240,9 @@ export class RouterMathAgent {
       minAmountOutWei,
       priceImpact: priceImpact.toFixed(3) + '%',
       chosenRoute,
+      priceWarning,
+      dislocationFactor,
+      directOutNum,
       v3Quote: parseFloat(v3Quote).toFixed(4),
       v2Quote: parseFloat(v2Quote).toFixed(4),
       savingsVsV2: v2 && parseFloat(v2Quote) > 0 ? (((parseFloat(v3Quote) - parseFloat(v2Quote)) / parseFloat(v2Quote)) * 100).toFixed(2) + '%' : 'N/A',
@@ -231,10 +267,19 @@ export class RiskValidatorAgent {
     // proposal_id and can reuse an existing on-chain verdict instead of paying
     // for another consensus round. See pages/api/agent-v2.js for the detail.
     const DEADLINE_BUCKET = 600;
-    const deadline = Math.ceil((Math.floor(Date.now() / 1000) + 1800) / DEADLINE_BUCKET) * DEADLINE_BUCKET;
+    // Must clear the appeal window: the verdict is not delivered to the
+    // executor until the round finalizes, which on Bradbury has been observed
+    // at roughly 40 minutes. A 30-minute deadline expired before settlement was
+    // possible at all.
+    const deadline = Math.ceil((Math.floor(Date.now() / 1000) + 7200) / DEADLINE_BUCKET) * DEADLINE_BUCKET;
 
     const proposal = {
-      action: intent.action === 'ADD_LIQUIDITY' ? 'ADD_LIQUIDITY' : 'SWAP',
+      // The swarm only settles swaps; liquidity is redirected to the pools app
+      // before anything reaches here, so this is a statement of fact rather than
+      // a default. The ternary this replaces is the one that turned a deposit
+      // into a swap by resolving every unrecognised action to the branch that
+      // spends money.
+      action: 'SWAP',
       tokenIn: route.tokenIn.address,
       tokenOut: route.tokenOut.address,
       amountIn: route.amountInWei,
@@ -261,13 +306,6 @@ export class RiskValidatorAgent {
     );
 
     // One payload for both the initial submission and any retry.
-    //
-    // Liquidity actions are validated by a different IC method that expects
-    // tokenA/tokenB and amountA/amountB. Sending only the swap-shaped
-    // tokenIn/tokenOut left those undefined, which resolved to the zero address
-    // for BOTH sides and got every LP proposal rejected as
-    // "tokenA and tokenB cannot be the same".
-    const isLiquidity = proposal.action === 'ADD_LIQUIDITY' || proposal.action === 'REMOVE_LIQUIDITY';
     const validatePayload = {
       action: proposal.action,
       user: userAddress,
@@ -282,15 +320,6 @@ export class RiskValidatorAgent {
       router: proposal.router,
       deadline: proposal.deadline,
       extraData: proposal.extraData,
-      ...(isLiquidity ? {
-        tokenA: route.tokenIn.address,
-        tokenB: route.tokenOut.address,
-        // Deposit the quoted pair amounts, so the two sides are balanced at the
-        // pool's current price.
-        amountARaw: route.amountInWei,
-        amountBRaw: route.minAmountOutWei,
-        model: route.chosenRoute?.includes('V3') ? 'v3' : 'v2',
-      } : {}),
     };
 
     // Call live GenLayer Intelligent Contract via API
@@ -307,9 +336,23 @@ export class RiskValidatorAgent {
       if (res.ok) {
         genlayerResult = await res.json();
       } else {
+        // Surface what the route actually said.
+        //
+        // This branch used to replace every non-2xx with "GenLayer Consensus
+        // unavailable or rejected (Fail-Closed)", which is the same sentence
+        // whether the wallet is disconnected, the pair has no liquidity, or the
+        // quote went stale. The one piece of information that would tell a user
+        // what to do was the piece being discarded.
+        let detail = null;
+        try {
+          const body = await res.json();
+          detail = body?.reason || body?.error || null;
+        } catch {
+          /* non-JSON error body; fall back to the status line */
+        }
         genlayerResult = {
           approved: false,
-          reason: 'GenLayer Consensus unavailable or rejected (Fail-Closed)',
+          reason: detail || `GenLayer validation could not run (HTTP ${res.status}). Fail-closed.`,
           consensus_mode: 'Optimistic Democracy (GenVM)'
         };
       }
@@ -326,13 +369,19 @@ export class RiskValidatorAgent {
     // Bradbury testnet can occasionally take a while under load.
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let pollAttempts = 0;
-    while (genlayerResult?.pending && genlayerResult?.tx_hash && pollAttempts < 12) {
+    // Keep going past the fast budget rather than reporting an unresolved
+    // round as the final answer. A decided round's verdict is a plain read; it
+    // arrives. Stopping early is what left the swarm sitting on "Consensus
+    // Pending" with nothing still running.
+    while (genlayerResult?.pending && genlayerResult?.tx_hash && pollAttempts < 40) {
       // Fast-poll the first few attempts (common case resolves quickly), then back off.
-      await sleep(pollAttempts < 6 ? 2000 : 5000);
+      await sleep(pollAttempts < 12 ? 1200 : pollAttempts < 20 ? 4000 : 12000);
       pollAttempts++;
       if (onProgress) {
+        // Name the phase the round is actually in. "Pending" for 25 seconds
+        // reads as broken; "Leader executing (3/5)" reads as working.
         onProgress(
-          `⏳ GenVM round in flight - check ${pollAttempts}/12. Validators have not returned a verdict yet; this is not a rejection.`,
+          `⏳ ${describeRoundPhase(genlayerResult?.statusName)} - GenVM consensus in progress, usually 20 to 30 seconds (check ${pollAttempts}).`,
           { statusName: genlayerResult?.statusName || null, txHash: genlayerResult?.tx_hash || null, retry: false }
         );
       }
@@ -344,7 +393,8 @@ export class RiskValidatorAgent {
           // idle txs don't pile up on the agent account.
           body: JSON.stringify({ checkTxHash: genlayerResult.tx_hash, proposalId: genlayerResult.proposal_id || null, finalizeIfStuck: pollAttempts >= 12 }),
         });
-        if (pollRes.ok) genlayerResult = await pollRes.json();
+        // Merge, never replace: a status check cannot return the bound order.
+        if (pollRes.ok) genlayerResult = mergeVerdictResponse(genlayerResult, await pollRes.json());
       } catch {
         // keep the last known genlayerResult and retry on the next loop iteration
       }
@@ -368,6 +418,7 @@ export class RiskValidatorAgent {
             ...validatePayload,
           }),
         });
+        // A fresh round DOES build a new order, so this one replaces by design.
         if (retryRes.ok) genlayerResult = await retryRes.json();
 
         let retryPolls = 0;
@@ -386,7 +437,8 @@ export class RiskValidatorAgent {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ checkTxHash: genlayerResult.tx_hash, proposalId: genlayerResult.proposal_id || null, finalizeIfStuck: retryPolls >= 12 }),
             });
-            if (pollRes.ok) genlayerResult = await pollRes.json();
+            // Merge, never replace: a status check cannot return the bound order.
+        if (pollRes.ok) genlayerResult = mergeVerdictResponse(genlayerResult, await pollRes.json());
           } catch {
             // keep last known result
           }
@@ -401,15 +453,40 @@ export class RiskValidatorAgent {
     const isWhitelisted = Boolean(route.tokenIn.address && route.tokenOut.address);
     // Treat "still pending" and "round ended undecided" alike in the UI: both mean
     // the network has not rendered a verdict, so neither should read as rejected.
-    const isPending = Boolean(genlayerResult?.pending || genlayerResult?.retryable);
+    //
+    // `needsVerdictLookup` belongs here too. It means the round decided but the
+    // verdict has not been read back yet, and a GenLayer write's return value is
+    // not recoverable from its receipt - so `approved` is false purely because
+    // nothing has resolved it. Letting that reach the rejection branch is what
+    // reported approved trades as "GenLayer Validation Rejected".
+    const isPending = Boolean(
+      genlayerResult?.pending || genlayerResult?.retryable || genlayerResult?.needs_verdict_lookup
+    );
+
+    // Show the identifier consensus actually approved, not one computed here.
+    //
+    // `tradeHash` above is the old seven-field hash. It is no longer what
+    // authorises anything: the executor checks a commitment that also covers the
+    // route, the fee, the fee collector and the validated quote, and only the
+    // validator contract can approve it. Displaying the local hash would name
+    // something no verdict exists for.
+    const commitment = genlayerResult?.commitment || null;
 
     return {
       proposal,
-      tradeHash,
+      tradeHash: commitment || tradeHash,
+      commitment,
+      // The queue needs this to drive finalization: a decided round sits in
+      // Accepted until somebody calls finalize, and the verdict rides an
+      // external message that is only emitted at that point.
+      txHash: genlayerResult?.tx_hash || null,
+      pendingOrder: genlayerResult?.pendingOrder || null,
+      pendingProgram: genlayerResult?.pendingProgram || null,
+      validationSubmitted: Boolean(genlayerResult?.validationSubmitted),
       isApproved: Boolean(genlayerResult?.approved && isSlippageSafe),
       isPending,
       reason: genlayerResult?.reason || (isSlippageSafe ? 'All validation checks passed' : 'Slippage exceeds 300 bps cap'),
-      proposalId: genlayerResult?.proposal_id || ('prop_' + tradeHash.slice(2, 10)),
+      proposalId: genlayerResult?.proposal_id || commitment || ('prop_' + tradeHash.slice(2, 10)),
       consensusMode: 'Optimistic Democracy (GenVM Quorum)',
       genlayerContract: INTELLIGENT_CONTRACTS.agentValidator,
       checks: [
@@ -433,7 +510,7 @@ export class RiskValidatorAgent {
 
 export class DevInspectorAgent {
   static inspect(intent, route, risk) {
-    const entrypoint = CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3';
+    const entrypoint = CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0x95feE6Cb918Ed9C621E36082EE8D998873031EaA';
     
     // Build dummy AGGFlow aggregator program bytecode for inspection
     const isV3 = route.chosenRoute.includes('V3');
@@ -481,42 +558,29 @@ export class DevInspectorAgent {
 
 // ── Swarm Orchestrator (A2A Message Dialogue Generator) ──────────────────────
 
-
 /**
- * Which tokens actually have a V2 pool with `symbol`.
+ * Seven agents, run in the order in which their findings can still change the
+ * outcome.
  *
- * Naming one side of a deposit is not ambiguous enough to refuse - there is a
- * finite set of pools, so look them up. If exactly one exists we can just use
- * it; otherwise we can name the real choices instead of repeating a generic
- * "both tokens for the pool", which sent users round in circles.
+ *   Intent      parses the request, and refuses to guess a missing side.
+ *   Router      quotes every venue and picks the best fill.
+ *   Market      reads the pools behind that quote and raises objections.
+ *   (debate)    the agents answer each other in front of the user.
+ *   Risk        opens the GenLayer consensus round.
+ *   Settlement  reads the executor and picks the rail that can carry the verdict.
+ *   Auditor     proves, against the chain, that the approved commitment binds
+ *               this exact route, fee, recipient and quote.
+ *   Dev         dissects the calldata and the tamper surface.
+ *
+ * Market runs BEFORE consensus deliberately. A round costs real time and a real
+ * transaction, and an order that is 40% of a pool's reserve is worth objecting
+ * to before paying for one, not after.
  */
-async function poolPartnersFor(symbol) {
-  const wgen = CONTRACT_ADDRESSES[4221]?.wgen;
-  const factory = CONTRACT_ADDRESSES[4221]?.factory;
-  const self = resolveToken(symbol);
-  const selfAddr = self.isNative ? wgen : self.address;
-  if (!factory || !selfAddr) return [];
-
-  const client = getQuoteClient();
-  const abi = [{ inputs: [{ type: 'address' }, { type: 'address' }], name: 'getPair', outputs: [{ type: 'address' }], stateMutability: 'view', type: 'function' }];
-  const candidates = ['USDC', 'USDT', 'WGEN', 'WBTC', 'ETH', 'FSWP'].filter((c) => c !== self.symbol);
-
-  const found = await Promise.all(candidates.map(async (c) => {
-    const t = resolveToken(c);
-    const addr = t.isNative ? wgen : t.address;
-    if (!addr || addr.toLowerCase() === selfAddr.toLowerCase()) return null;
-    try {
-      const pair = await client.readContract({ address: factory, abi, functionName: 'getPair', args: [selfAddr, addr] });
-      return pair && pair !== '0x0000000000000000000000000000000000000000' ? c : null;
-    } catch { return null; }
-  }));
-  return found.filter(Boolean);
-}
-
 export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
-  // Step 1: Intent Agent Wakes Up
+  const A = AGENT_REGISTRY;
+
   yield {
-    agent: AGENT_REGISTRY.intent,
+    agent: A.intent,
     type: 'MESSAGE',
     text: `Analyzing user intent: "${userPrompt}"...`,
     status: 'working'
@@ -527,85 +591,56 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
   const yieldFrame = () => new Promise((r) => setTimeout(r, 0));
   const intent = IntentAgent.parse(userPrompt, config);
 
-  // Stop before quoting if the request is under-specified. Guessing the other
-  // side of a trade is how "swap 34 udc to usdt" became a USDT -> GEN proposal.
-  // One named token for a deposit is resolvable: look up the real pools.
-  if (intent.needs?.length === 1 && intent.needs[0] === 'pair-token') {
-    const known = intent.tokenInSymbol && intent.tokenInSymbol !== 'USDC' ? intent.tokenInSymbol
-      : (intent.tokenOutSymbol || intent.tokenInSymbol);
-    const partners = await poolPartnersFor(known).catch(() => []);
-
-    if (partners.length === 1) {
-      intent.tokenInSymbol = known;
-      intent.tokenOutSymbol = partners[0];
-      intent.needs = [];
-      intent.confident = true;
-      yield {
-        agent: AGENT_REGISTRY.intent,
-        type: 'PAIR_RESOLVED',
-        text: `Only one pool exists for **${known}** - pairing it with **${partners[0]}**.`,
-        status: 'working',
-      };
-    } else if (partners.length > 1) {
-      yield {
-        agent: AGENT_REGISTRY.intent,
-        type: 'INTENT_UNCLEAR',
-        data: intent,
-        text: `I understood **${intent.amountIn} ${known}** for a liquidity deposit. Which token should I pair it with?\n\n${known} has pools with: **${partners.join('**, **')}**.\n\nFor example: *"add ${intent.amountIn} ${known} and ${partners[0]} liquidity"*.`,
-        status: 'error',
-      };
-      return;
-    } else {
-      yield {
-        agent: AGENT_REGISTRY.intent,
-        type: 'INTENT_UNCLEAR',
-        data: intent,
-        text: `**${known}** has no liquidity pool on Soyara DEX yet, so there is nothing to deposit into. Pools exist for **USDC**, **USDT** and **WGEN**.`,
-        status: 'error',
-      };
-      return;
-    }
+  // Liquidity is the pools app's job, and the handoff belongs here, before any
+  // quoting or consensus work is done on a request this swarm will not settle.
+  if (isLiquidityIntent(intent.action)) {
+    yield {
+      agent: A.intent,
+      type: 'REDIRECTED',
+      data: { url: POOLS_URL, action: intent.action },
+      text: liquidityRedirectMessage(intent.action, intent.tokenInSymbol, intent.tokenOutSymbol),
+      status: 'complete',
+    };
+    return;
   }
 
+  // Stop before quoting if the request is under-specified. Guessing the other
+  // side of a trade is how "swap 34 udc to usdt" became a USDT -> GEN proposal.
   if (!intent.confident && intent.needs?.length) {
+    const missing = intent.needs.includes('pair-token')
+      ? 'which token you want on the other side of the trade'
+      : intent.needs.join(', ');
     yield {
-      agent: AGENT_REGISTRY.intent,
+      agent: A.intent,
       type: 'INTENT_UNCLEAR',
       data: intent,
-      text: `❓ **I need one more detail before I can quote this.** I could not determine: ${intent.needs.join(', ')}.\n\nSupported tokens: **USDC, USDT, GEN, WGEN, WBTC, ETH, FSWP**. Try e.g. *"swap 50 USDC to USDT"* or *"add liquidity 10 WGEN and 200 USDC"*.\n\nNo proposal was prepared - guessing a token would risk trading something you did not ask for.`,
+      text: `❓ **I need one more detail before I can quote this.** I could not determine: ${missing}.\n\n`
+        + `Supported tokens: **USDC, USDT, GEN, WGEN, WBTC, ETH, FSWP**. Try e.g. *"swap 50 USDC to USDT"* `
+        + `or *"what is the best route for 2 WGEN into USDC"*.\n\n`
+        + `No proposal was prepared - guessing a token would risk trading something you did not ask for.`,
       status: 'error',
     };
     return;
   }
 
-  // A named venue is a real choice for liquidity, but only V2 deposits are
-  // implemented today. Say so rather than silently using V2.
-  if (intent.action === 'ADD_LIQUIDITY' && intent.venueRequested === 'v3') {
-    yield {
-      agent: AGENT_REGISTRY.intent,
-      type: 'VENUE_UNSUPPORTED',
-      text: `ℹ️ You asked for a **V3** position. V3 deposits need a tick range through the PositionManager and are not wired up yet, so this will be routed to the **V2** pool instead. Say the word if you want V3 support built.`,
-      status: 'working',
-    };
-  }
-
   yield {
-    agent: AGENT_REGISTRY.intent,
+    agent: A.intent,
     type: 'INTENT_PARSED',
     data: intent,
-    text: `Parsed intent: Action **${intent.action}** | **${intent.amountIn} ${intent.tokenInSymbol}** ➔ **${intent.tokenOutSymbol}** (Max Slippage: ${(intent.slippageBps / 100).toFixed(2)}%). Requesting multi-pool simulation from **${AGENT_REGISTRY.router.name}**...`,
+    text: `Parsed intent: **${intent.amountIn} ${intent.tokenInSymbol}** ➔ **${intent.tokenOutSymbol}** `
+      + `(max slippage ${(intent.slippageBps / 100).toFixed(2)}%). Requesting a multi-venue simulation from **${A.router.name}**...`,
     status: 'complete'
   };
 
-  // Step 2: Routing Agent Simulates Graph
+  // ── Router ────────────────────────────────────────────────────────────────
   yield {
-    agent: AGENT_REGISTRY.router,
+    agent: A.router,
     type: 'MESSAGE',
-    text: intent.action === 'SWAP'
-      // Say plainly that venue is not a user choice for swaps - the aggregator
-      // compares every pool and takes the best fill.
-      ? `Scanning every venue through the **AGGFlow aggregator** - V2 constant-product and V3 concentrated liquidity - and taking whichever fills best. Venue is never something you pick for a swap; the aggregator decides.`
-      : `Locating the **${(intent.venuePreference || 'v2').toUpperCase()}** pool for this position...`,
+    // Venue is not a user choice for a swap: the aggregator compares every pool
+    // and takes the best fill.
+    text: `Scanning every venue through the **AGGFlow aggregator** - V2 constant-product and V3 concentrated `
+      + `liquidity, direct and multi-hop - and taking whichever fills best. Venue is never something you pin for a `
+      + `swap; the aggregator decides.`,
     status: 'working'
   };
 
@@ -618,49 +653,129 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
   const routedImpact = typeof route.priceImpact === 'number' ? route.priceImpact : parseFloat(route.priceImpact);
   if (maxImpact != null && Number.isFinite(routedImpact) && routedImpact > maxImpact) {
     yield {
-      agent: AGENT_REGISTRY.router,
+      agent: A.router,
       type: 'ROUTE_REJECTED',
       data: { route, maxImpact, routedImpact },
-      text: `⛔ **Halted by your policy.** Routed price impact **${routedImpact.toFixed(2)}%** exceeds the **${maxImpact}%** ceiling set on the Routing agent. No consensus round was requested and no funds were touched.`,
+      text: `⛔ **Halted by your policy.** Routed price impact **${routedImpact.toFixed(2)}%** exceeds the `
+        + `**${maxImpact}%** ceiling set on the Routing agent. No consensus round was requested and no funds were touched.`,
       status: 'error'
     };
     return;
   }
 
   yield {
-    agent: AGENT_REGISTRY.router,
+    agent: A.router,
     type: 'ROUTE_SIMULATED',
     data: route,
-    text: intent.action === 'ADD_LIQUIDITY'
-      // A deposit is not a trade: describing it with a swap "output" made an
-      // add-liquidity request read as though the swarm were selling one side.
-      ? `Pool located: **${route.tokenIn.symbol}/${route.tokenOut.symbol}** on ${route.chosenRoute}. Deposit will be paired at the pool's live ratio - the second amount is derived from reserves, and any excess is refunded by the router. Handing off to **${AGENT_REGISTRY.risk.name}**...`
-      : `Simulation complete! **${route.chosenRoute}** selected. Estimated Output: **${route.expectedOutNum.toFixed(4)} ${route.tokenOut.symbol}** ${route.savingsVsV2 && !String(route.savingsVsV2).startsWith('-100') ? `(${route.savingsVsV2} better output vs alternative)` : '(only one venue could fill this size)'}. Price impact: ${route.priceImpact}. Handing off proposal to **${AGENT_REGISTRY.risk.name}**...`,
+    text: route.priceWarning
+      // Do not call this optimal. It pays more only because the pools on the
+      // path disagree about the price, and a number built on that is not a rate
+      // anyone has committed to honour.
+      ? `⚠️ **This quote is not trustworthy.** The best-paying route is **${route.chosenRoute}**, returning `
+        + `**${route.expectedOutNum.toFixed(4)} ${route.tokenOut.symbol}** for ${route.amountInNum} ${route.tokenIn.symbol}`
+        + `${route.directOutNum != null ? `, while the direct pool returns **${route.directOutNum.toFixed(4)}**` : ''}. `
+        + `That is about **${route.dislocationFactor.toFixed(1)}x** apart. Handing to **${A.market.name}** for a read on the pools themselves...`
+      : `Simulation complete. **${route.chosenRoute}** wins with **${route.expectedOutNum.toFixed(4)} ${route.tokenOut.symbol}**`
+        + `${route.savingsVsV2 && !String(route.savingsVsV2).startsWith('-100') && route.savingsVsV2 !== 'N/A' ? ` (${route.savingsVsV2} vs the alternative venue)` : ' (only one venue could fill this size)'}. `
+        + `Price impact ${route.priceImpact}. Handing to **${A.market.name}** for a depth check...`,
     status: 'complete'
   };
 
-  // Step 3: Risk & GenLayer Consensus Agent
+  // ── Market Analyst ────────────────────────────────────────────────────────
+  // Reads the reserves behind the quote. A quote can be arithmetically perfect
+  // and still come off a pool holding almost nothing.
   yield {
-    agent: AGENT_REGISTRY.risk,
+    agent: A.market,
     type: 'MESSAGE',
-text: `Broadcasting to the AgentValidator Intelligent Contract (\`${INTELLIGENT_CONTRACTS.agentValidator.slice(0, 8)}...\`) for GenVM consensus. Every ${intent.action === 'SWAP' ? 'trade' : 'deposit'} is validated by a real consensus round before anything settles - that round is the wait, and it is the network, not the app. Repeating the same request inside 10 minutes reuses the recorded verdict and is near-instant.`,
+    text: `Reading live reserves for every pool on this path, and checking whether the venues agree on price.`,
+    status: 'working'
+  };
+
+  await yieldFrame();
+  const analysis = await MarketAnalystAgent.analyse(intent, route).catch((err) => ({
+    pools: [], poolCount: 0, depthLabel: 'unknown', sizeVsDepthPct: null, venueSpreadPct: null,
+    concerns: [{ severity: 'medium', topic: 'depth', text: `Pool state could not be read (${err.message}), so depth is unverified.` }],
+    verdict: 'cautioned',
+  }));
+
+  yield {
+    agent: A.market,
+    type: 'MARKET_READ',
+    data: analysis,
+    text: analysis.entryReserveHuman
+      // Named with the entry pool's own two tokens: on a multi-hop route that
+      // pool holds the intermediate token, not the token being bought.
+      ? `Pool read (**${analysis.entryPairLabel}**): `
+        + `**${Number(analysis.entryReserveHuman).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${analysis.entrySymbol}** `
+        + `/ **${Number(analysis.exitReserveHuman).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${analysis.exitSymbol}**`
+        + `${analysis.poolCount > 1 ? `, first of ${analysis.poolCount} pools on this path` : ''}. This order is `
+        + `**${analysis.sizeVsDepthPct != null ? analysis.sizeVsDepthPct.toFixed(2) + '%' : 'an unknown share'}** of the `
+        + `${analysis.entrySymbol} side - depth reads **${analysis.depthLabel}**.`
+        + (analysis.venueSpreadPct != null ? ` Venue spread: ${analysis.venueSpreadPct.toFixed(1)}%.` : '')
+      : `No V2 pool could be read for this path, so depth is unverified. Reporting that rather than assuming it is fine.`,
+    status: analysis.verdict === 'contested' ? 'warning' : 'complete',
+  };
+
+  // ── Debate ────────────────────────────────────────────────────────────────
+  // A finding nobody answers is just a banner. Here the agent that raised it
+  // gets a reply from the agent that owns the number, in front of the user.
+  const openingDebate = buildDebate({ analysis, route, intent, strategy: null, phase: 'market' });
+  for (const turn of openingDebate) {
+    await yieldFrame();
+    yield {
+      agent: A[turn.from] || A.market,
+      type: 'DEBATE',
+      data: { to: turn.to },
+      text: `**→ ${A[turn.to]?.name || turn.to}:** ${turn.text}`,
+      status: 'working',
+    };
+  }
+
+  // A verdict is bound to the address that will receive the output, so there is
+  // nothing to validate until a wallet is connected. Stopping here is not a
+  // limitation to apologise for: it is the property that makes the verdict worth
+  // anything. Consensus approves a trade TO SOMEONE, and an approval that did
+  // not name the recipient could be redirected by whoever relayed it.
+  if (!userAddress) {
+    yield {
+      agent: A.risk,
+      type: 'CONSENSUS_REACHED',
+      data: { isApproved: false, isPending: false, checks: [] },
+      text: '🔌 **Connect a wallet to continue.** The consensus verdict is bound to the address that receives the '
+        + 'output, so validation cannot run without one. This is deliberate: an approval that did not name the '
+        + 'recipient could be pointed somewhere else by whoever relayed it.',
+      status: 'error'
+    };
+    return;
+  }
+
+  // ── Risk & GenLayer consensus ─────────────────────────────────────────────
+  yield {
+    agent: A.risk,
+    type: 'MESSAGE',
+    text: `Broadcasting to the AgentValidator Intelligent Contract (\`${INTELLIGENT_CONTRACTS.agentValidator.slice(0, 8)}...\`) `
+      + `for GenVM consensus. Validators do not take my word for the route: they decode the aggregator program, verify `
+      + `each pool against the factory, and re-derive the quote from live reserves before approving. Repeating the same `
+      + `request inside 10 minutes reuses the recorded verdict and is near-instant.`,
     status: 'working'
   };
 
   const risk = await RiskValidatorAgent.validate(intent, route, userAddress, config.onProgress || null);
 
   yield {
-    agent: AGENT_REGISTRY.risk,
+    agent: A.risk,
     type: 'CONSENSUS_REACHED',
     data: risk,
     text: risk.isApproved
-      ? `✅ **GenLayer Consensus Reached!** All ${risk.checks.length} guardrails passed. One-time cryptographic trade hash bound: \`${risk.tradeHash.slice(0, 14)}...\`. Requesting calldata dissection from **${AGENT_REGISTRY.dev.name}**...`
+      ? `✅ **GenLayer consensus reached.** All ${risk.checks.length} guardrails passed. The verdict is bound to `
+        + `\`${String(risk.tradeHash).slice(0, 14)}...\` - a commitment covering the route, the fee and its recipient, `
+        + `you, and the quote it was checked against. Handing to **${A.settlement.name}** to pick a rail...`
       : risk.isPending
         // The round has not returned a verdict yet (still in flight, or it ended
         // without a validator majority). That is a network condition - calling it
         // "Rejected" here misreports a trade the validator never actually refused.
-        ? `⏳ **Awaiting GenVM Consensus** - the validator round has not returned a verdict yet. This is not a rejection. ${risk.reason}`
-        : `❌ **GenLayer Validation Rejected**: ${risk.reason}. Fail-closed security activated.`,
+        ? `⏳ **Awaiting GenVM consensus** - the validator round has not returned a verdict yet. This is not a rejection. ${risk.reason}`
+        : `❌ **GenLayer validation rejected**: ${risk.reason}. Fail-closed security activated.`,
     status: risk.isApproved ? 'complete' : risk.isPending ? 'working' : 'error'
   };
 
@@ -673,50 +788,152 @@ text: `Broadcasting to the AgentValidator Intelligent Contract (\`${INTELLIGENT_
   // page could do.
   if (!risk.isApproved && !risk.isPending) {
     yield {
-      agent: AGENT_REGISTRY.intent,
+      agent: A.intent,
       type: 'SWARM_HALTED',
-      payload: { intent, route, risk },
-      text: `⛔ **Swarm halted - nothing will be executed.** GenLayer consensus did not approve this proposal, so no settlement is possible and no funds have moved. ${risk.reason || ''}`,
+      payload: { intent, route, risk, analysis },
+      text: `⛔ **Swarm halted - nothing will be executed.** GenLayer consensus did not approve this proposal, so no `
+        + `settlement is possible and no funds have moved. ${risk.reason || ''}`,
       status: 'error',
     };
     return;
   }
 
-  // Step 4: Dev Inspector Agent Dissects Calldata & Security
+  // ── Settlement Strategist ─────────────────────────────────────────────────
+  // Reads the deployed executor and reports which rail can actually carry this
+  // verdict. The three differ by nearly three orders of magnitude in latency.
   yield {
-    agent: AGENT_REGISTRY.dev,
+    agent: A.settlement,
     type: 'MESSAGE',
-    text: `Performing byte-level calldata inspection and revert simulation against settlement contract...`,
+    text: `Reading executor state to choose a settlement rail - verdict reuse, attestor quorum, or the full appeal window.`,
+    status: 'working'
+  };
+
+  await yieldFrame();
+  const strategy = await SettlementStrategistAgent.plan({
+    commitment: risk.commitment,
+    order: risk.pendingOrder,
+    deadline: risk.proposal?.deadline,
+  }).catch((err) => ({ rail: 'unknown', eta: null, rationale: `Executor state unavailable: ${err.message}`, blockers: [] }));
+
+  const RAIL_LABEL = { reuse: '♻️ Verdict reuse', attestor: '⚡ Attestor quorum', consensus: '🐢 Full appeal window', blocked: '⛔ Blocked', unknown: '❔ Unknown' };
+  yield {
+    agent: A.settlement,
+    type: 'SETTLEMENT_PLAN',
+    data: strategy,
+    text: `${RAIL_LABEL[strategy.rail] || strategy.rail}${strategy.eta ? ` - **${strategy.eta}**` : ''}. ${strategy.rationale}`
+      + (strategy.secondsToDeadline > 0 ? `\n\nThe order itself is valid for another ${Math.round(strategy.secondsToDeadline / 60)} minutes.` : ''),
+    status: strategy.rail === 'blocked' ? 'error' : 'complete',
+  };
+
+  // Only the rail is up for discussion here; the market findings were already
+  // debated above and replaying them would just repeat the same exchange.
+  const railDebate = buildDebate({ analysis: { concerns: [] }, route, intent, strategy, phase: 'settlement' });
+  for (const turn of railDebate) {
+    await yieldFrame();
+    yield {
+      agent: A[turn.from] || A.settlement,
+      type: 'DEBATE',
+      data: { to: turn.to },
+      text: `**→ ${A[turn.to]?.name || turn.to}:** ${turn.text}`,
+      status: 'working',
+    };
+  }
+
+  // ── Post-Trade Auditor: pre-flight ────────────────────────────────────────
+  // The team's requirement, checked live against the deployed executor rather
+  // than asserted. The contract re-derives the commitment from the order; if any
+  // field differs from what consensus saw, the hashes diverge and this fails.
+  yield {
+    agent: A.auditor,
+    type: 'MESSAGE',
+    text: `Re-deriving the commitment from the executor and checking every binding: route bytes, fee, fee collector, `
+      + `recipient, quote, deadline.`,
+    status: 'working'
+  };
+
+  await yieldFrame();
+  const audit = await PostTradeAuditorAgent.preflight({
+    order: risk.pendingOrder,
+    program: risk.pendingProgram,
+    commitment: risk.commitment,
+    user: userAddress,
+  }).catch((err) => ({ checks: [{ name: 'Pre-flight', passed: false, detail: err.message }], passed: false, allBound: false }));
+
+  const failed = audit.checks.filter((c) => !c.passed);
+  yield {
+    agent: A.auditor,
+    type: 'AUDIT_PREFLIGHT',
+    data: audit,
+    text: audit.passed
+      ? `✅ **${audit.checks.length}/${audit.checks.length} bindings verified on-chain.** The executor derives the same `
+        + `commitment from this order that consensus approved, and the aggregator program hashes to the committed `
+        + `routeHash. Nothing between here and settlement can change the route, the fee, the recipient or the quote `
+        + `without the commitment failing to match.`
+      : audit.allBound
+        ? `🔎 **Bindings verified, ${failed.length} pre-condition${failed.length === 1 ? '' : 's'} outstanding:** `
+          + failed.map((c) => `${c.name} - ${c.detail}`).join(' ')
+        : `⚠️ **Binding check failed:** ${failed.map((c) => `${c.name} - ${c.detail}`).join(' ')}`,
+    status: audit.passed ? 'complete' : audit.allBound ? 'working' : 'error',
+  };
+
+  // ── Dev Inspector ─────────────────────────────────────────────────────────
+  yield {
+    agent: A.dev,
+    type: 'MESSAGE',
+    text: `Performing byte-level calldata inspection and revert simulation against the settlement contract...`,
     status: 'working'
   };
 
   const devInspection = DevInspectorAgent.inspect(intent, route, risk);
 
   yield {
-    agent: AGENT_REGISTRY.dev,
+    agent: A.dev,
     type: 'DEV_INSPECTED',
     data: devInspection,
-    text: `Inspection complete. Aggregator bytecode: ${devInspection.calldataSize} | Est. Gas: ${devInspection.gasEstimate}. 4/4 parameter tamper vectors verified immune to replay and redirection.`,
+    text: `Inspection complete. Aggregator bytecode: ${devInspection.calldataSize} | est. gas: ${devInspection.gasEstimate}. `
+      + `4/4 parameter tamper vectors verified immune to replay and redirection.`,
     status: 'complete'
   };
 
-  // Final Consolidated Swarm State
+  // ── Consolidated swarm state ──────────────────────────────────────────────
+  //
+  // The closing line must describe what actually happened. An earlier version
+  // said "verified every binding on-chain" from a fixed string, and printed it
+  // directly under an auditor frame reporting that it had verified nothing -
+  // the same contradiction as the "Settled / executeSwap reverted" pair. Every
+  // claim below is now read from the result it refers to.
+  const objections = analysis.concerns.filter((c) => c.severity === 'high');
+  const bindingsHeld = audit.allBound === true;
+  const auditorLine = bindingsHeld
+    ? `${A.auditor.name} verified the bindings on-chain`
+    : `${A.auditor.name} could not verify the bindings`;
+
   yield {
-    agent: AGENT_REGISTRY.intent,
+    agent: A.intent,
     type: 'SWARM_COMPLETE',
-    payload: {
-      intent,
-      route,
-      risk,
-      devInspection
-    },
+    payload: { intent, route, risk, devInspection, analysis, strategy, audit },
     text: risk.isPending
       // Still undecided: the swarm has done its part, but there is no verdict to
       // execute against yet. Saying "ready" here would be untrue.
-      ? `⏳ **Swarm finished, consensus still pending.** The validator round has not returned a verdict, so Execute stays disabled until it does. Your trade was not rejected.`
-      : intent.action === 'ADD_LIQUIDITY'
-        ? `🎉 **Swarm agreement ready.** Execute to deposit into the **${route.tokenIn.symbol}/${route.tokenOut.symbol}** pool through the GenLayer-gated one-time approval.`
-        : `🎉 **Multi-Agent Swarm Consensual Agreement Ready!** You can now execute this trade with one-click non-custodial settlement.`,
+      ? `⏳ **Swarm finished, consensus still pending.** The validator round has not returned a verdict, so Execute `
+        + `stays disabled until it does. Your trade was not rejected.`
+      : !bindingsHeld
+        // Consensus approved, but nothing here could prove the approval binds
+        // this order. Do not present that as a finished agreement.
+        ? `⚠️ **Approved, but unverified.** Consensus authorised this trade and ${A.settlement.name} has a `
+          + `${strategy.eta || 'settlement'} rail, but ${A.auditor.name} could not confirm the commitment binds this `
+          + `exact order: ${failed.map((c) => c.detail).join(' ')} The executor performs the same check itself at `
+          + `settlement and refuses anything that does not match, so nothing unsafe can settle - but this run cannot `
+          + `show you the proof.`
+        : objections.length
+          // Approved is not the same as advisable, and the swarm should say
+          // which one it means.
+          ? `⚠️ **Approved, with ${objections.length} unresolved objection${objections.length === 1 ? '' : 's'} from `
+            + `${A.market.name}.** Consensus authorised this trade and ${auditorLine}, but the market read says the `
+            + `price behind it is not sound. Execute is enabled because the trade is authorised - the judgement call is yours.`
+          : `🎉 **Swarm agreement reached.** ${A.market.name} found no objection, consensus approved, `
+            + `${auditorLine}, and ${A.settlement.name} has a `
+            + `${strategy.eta || 'settlement'} rail ready. Execute for one-click non-custodial settlement.`,
     status: 'ready'
   };
 }

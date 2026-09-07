@@ -18,7 +18,9 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 
 | Contract | Address | Transaction Hash |
 |---|---|---|
-| **AgentValidator** (current — passes `genvm-lint`) | `0x7ABa94668afC24463Be323f9bB65BD4b4F480d89` | `0x527fa134b17d499efc967807cdb153a9fcc2e37fbba4e446911220f0f7cdaf86` |
+| **AgentValidator** (current — verdict authenticated at settlement) | `0x8627CfDC1df6DcD813113FA2F400B35a99a781D4` | `0x37980bd6bd1d3c854fb06ef07af1fd207cfb67089e62666c9cd05c5877eea0d3` |
+| AgentValidator (retired — agent enforced the verdict) | `0x7ABa94668afC24463Be323f9bB65BD4b4F480d89` | `0x527fa134b17d499efc967807cdb153a9fcc2e37fbba4e446911220f0f7cdaf86` |
+| AgentValidator (failed deploy — explicit `genlayer.types` import, see below) | `0xf06FC7dA4d0dd806971d0Dd01A29bfE514BAa92B` | `0xaef0acef22ee6e7990599c14b55da695a1f9c160bd63f2592ec2e6d1fc7f471c` |
 | AgentValidator (retired — failed genvm-lint, 12 errors) | `0x78FA2A758bdB65a66F4B9C08D8DC54066d0e0395` | `0x3f70ffa33317575dbb9e3a482e2901f5b3e82bed5e67e4a75ac8949b291ec85b` |
 | AgentValidator (retired — swap-shaped rules broke liquidity consensus) | `0x69c33B036a982e7C7107b1634451A0C227cB2BBA` | `0x56cd8a4628f0234a47a668e03a12dd8019fbc7041b9314de1a5f1395102357e4` |
 | AgentValidator (retired — queue exhausted, see PendingQueueFull below) | `0x683cBF11F807aB184ed2B4a5dDDC9E49dbBa0f51` | `0x874ff1cb09c15abb3b5e0817911879e00f2b92ba4807e6614a46197c1606661f` |
@@ -28,6 +30,187 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 | AgentValidator (retired — mandate build, queue blocked) | `0xDBFB9DDAc98084a792d2a8884B4FEbDD4F52F506` | `0xef1090da0b8b9197bd810dfc370abdbb03cf6c4b9746859b6d2cc33b025bd32b` |
 | AgentValidator (retired — no mandate support) | `0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e` | `0x0e445f38830e3445af9f8781b302eceb2efd0cd21277c3eb1ef5ee6cd7108e79` |
 | AgentValidator (retired — stale router whitelist + non-deterministic `time.time()`) | `0xFc77C6A20B1102979f5887A5efe9611a2Ef6Afd5` | `0x80788d9ee015f11468f4e372ead51f0dd522fb70e62343e241bd23c7b3384dbf` |
+
+### 2026-09-07 — verdict enforcement moved into the executor
+
+`AgentExecutor` and `AgentValidator` were redeployed **as a pair** and are bound
+to each other: the IC holds the executor's address, the executor holds the IC's.
+Replacing one without the other leaves settlement dead.
+
+| Contract | Address |
+|---|---|
+| **AgentExecutor** (EVM) | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
+| **AgentValidator** (IC) | `0x8627CfDC1df6DcD813113FA2F400B35a99a781D4` |
+
+Deployment order is forced by a circular dependency: the IC takes the executor's
+address as a constructor argument, so the executor must exist first, which is
+why `genLayerValidator` is set by a transaction rather than in the constructor.
+
+```
+1. forge script script/DeployExecutorOnly.s.sol --broadcast
+2. python3 build_deployable.py && genlayer deploy --contract build/AgentValidator.min.py \
+     --args <owner> <executor>
+3. finalize the deploy round (see below), wait until `genlayer call <ic> get_config` answers
+4. AGENT_EXECUTOR=<executor> GENLAYER_VALIDATOR=<ic> \
+     forge script script/BootstrapValidator.s.sol --broadcast
+```
+
+Between 1 and 4 the executor is live but inert: `recordVerdict` reverts with
+`ValidatorNotSet` (`0x6bb49bc4`) and nothing settles. That is deliberate. The
+executor never falls back to trusting the agent key.
+
+### ⚠️ A deploy can "succeed" and leave no contract behind
+
+Three things have to go right, and only the third is obvious:
+
+1. **The EVM transaction is mined.** Creates the ghost contract at the address.
+2. **The GenVM execution succeeds.** Check `txExecutionResultName` in the deploy
+   output. `FINISHED_WITH_ERROR` means the module did not import, and you get
+   **no traceback and no message** — the receipt carries `txExecutionResult: 2`
+   and nothing else. From the outside it is indistinguishable from success until
+   the first call returns `contract not found`.
+3. **The round is finalized.** Until then the ghost exists and the IC does not.
+
+The first deploy of this contract failed at step 2 because of a single line:
+
+```python
+from genlayer.types import u24, u64, u160   # ← fails on the pinned runner
+```
+
+Those names arrive through `from genlayer import *`. Isolated with two throwaway
+contracts, one per hypothesis: the one importing from `genlayer.types` failed,
+an otherwise identical one using the star import succeeded, and
+`@gl.evm.contract_interface` was fine in both. The py-genlayer source on `main`
+exports those names; the pinned runner does not. **Prefer the star import.**
+
+### ⚠️ `@gl.evm.contract_interface` is broken on the pinned Bradbury runner
+
+Calling an EVM contract through the documented accessor fails before it reaches
+the chain:
+
+```
+AttributeError: '_V2Pair.ViewProxy' object has no attribute 'parent'
+```
+
+The generated proxy stores the target at `_proxy_parent` (confirmed with
+`dir()`: `_proxy_args, _proxy_kwargs, _proxy_parent, getPair`) while the call
+implementation reads `self.parent`. It is an inconsistency inside the SDK, so no
+contract-side spelling avoids it. Both the eager accessor and its `.lazy`
+counterpart fail identically, and `gl.eth_contract` is absent on this runner.
+
+This matters more than a normal SDK bug because both halves of the settlement
+design run through it: the validators' live pool reads, and the external message
+that carries the verdict to `AgentExecutor.recordVerdict`.
+
+**Workaround, verified on the live network.** The SDK's encoder is fine; only
+the generated accessor is broken. Encode with `gl.evm.MethodEncoder` and call
+through `gl.vm.gl_call.gl_call_generic`:
+
+```python
+encoder = gl.evm.MethodEncoder("getPair", (Address, Address), Address)
+calldata = encoder.encode_call((Address(a), Address(b)))
+result = gl.vm.gl_call.gl_call_generic(
+    {"EthCall": {"address": Address(factory), "calldata": calldata}},
+    lambda raw: gl.evm.decode(Address, raw),
+)
+pair = result.get()          # -> 0x55A5ff46cFb55DcF05D236A0Fdde5a0c866B64Be
+```
+
+`EthSend` is the same shape with a `value` field, and is what emits the external
+message. `AgentValidator.py` wraps both as `_evm_view` / `_evm_send`.
+
+`gl.vm.gl_call.gl_call_generic` is **undocumented**, which is a real cost: the
+documented surface is what a pinned runner guarantees. It is paid here because
+the documented path does not work on this runner and the alternative is no
+on-chain verification of route or quote at all. Revisit when the SDK is fixed.
+
+**Reproducing it.** Deploy a contract whose only job is to call the V2 factory
+both ways and return the outcomes as strings. Deployment is cheap; the cost is
+the finalization wait before the contract can be called.
+
+### Other runner findings (probed, not read from source)
+
+| Question | Answer on the pinned runner |
+|---|---|
+| `from genlayer.types import u24, u64, u160` | **Fails.** Use the star import. |
+| `u24` / `u64` / `u160` / `u256` via `from genlayer import *` | Available |
+| `gl.Keccak256` | **Available** (`genlayer.types.keccak` is not) |
+| `gl.evm.bytes32` | Available, though the boundary uses `u256` |
+| `@gl.evm.contract_interface` at import time | Works; only the CALL is broken |
+| `gl.eth_contract` | Absent |
+| `genlayer._internal.on_chain` | Absent |
+| `datetime.now(timezone.utc)` | Works, deterministic |
+
+### Deployment source size and the pubdata limit
+
+An Intelligent Contract is deployed as SOURCE, so the whole file becomes
+transaction calldata, and GenLayer Chain enforces a per-block pubdata limit.
+The annotated `AgentValidator.py` is ~76 KB and was rejected with
+`BlockPubdataLimitReached`.
+
+`build_deployable.py` strips comments and docstrings (tokenizer + AST, so a `#`
+inside a string is safe) to produce `build/AgentValidator.min.py` at ~49 KB. The
+annotated file stays the source of truth in the repo; only the build goes on
+chain.
+
+The limit is per BLOCK, not per transaction: the same 49 KB build was rejected
+once and accepted on retry a few seconds later. If a deploy fails with
+`BlockPubdataLimitReached`, retry before assuming the contract is too big.
+
+### Fast settlement: the attestation rail
+
+A consensus round **decides in about 20 seconds**. Settlement waited ~40 minutes
+anyway, because the verdict travels to the executor as an external message and
+those are delivered only on finalization. The wait was never consensus being
+slow; it was the delivery road.
+
+The attestation rail is the other road. Attestors read the verdict the IC
+recorded (available as soon as the round is accepted) and sign the SAME
+commitment under EIP-712; `AgentExecutor` verifies the quorum on chain.
+
+**Measured end to end on Bradbury: 30 seconds**, settlement tx
+`0x3885d81b1bf93742c7f97fd8c4814e5478c26ab16b79f6a5abd44473a8f3811c`.
+
+| | |
+|---|---|
+| Attestor A | `0xF186d1414B7F399572F3945D1b84cc230caB9c55` |
+| Attestor B | `0xe0C59312a00dadF7F5A19D8A11e640F5a340C581` |
+| Threshold | 2 of 2 |
+
+Attestor keys **only sign**. They never send a transaction, hold no funds, and
+belong in a separate service or an HSM rather than beside the relayer key.
+
+**What is and is not given up.** The consensus round still decides: attestors
+sign only what the IC has already recorded as approved, and a commitment nobody
+validated has no verdict to find on either rail. What changes is the trust
+assumption at settlement, from "the validator IC wrote this" to "M of N
+attestors agree the validator IC approved this". That is weaker than the
+consensus rail and should be stated plainly. It is far stronger than what this
+system had before, where one key both authorised and executed and the approval
+covered seven fields while leaving the route and the fee for that key to choose:
+
+- the signature covers the **whole commitment**, route and fee included
+- it takes **M distinct signers**, not one
+- an attestor **may never be a settlement agent**, enforced on chain by
+  `RoleConflict`
+
+Turn it off with `setAttestorThreshold(0)`; GenLayer consensus then becomes the
+only source of authority, at the cost of the finalization wait. Enable with
+`script/EnableAttestors.s.sol`.
+
+### Finalization is a call, not a timer
+
+A decided transaction sits in `Accepted` until someone finalizes it. Nothing
+does this automatically. Until it happens:
+
+- a deployed IC is not callable, and
+- **an external message is never delivered** — which is exactly how the verdict
+  reaches `AgentExecutor.recordVerdict`.
+
+`client.finalizeIdlenessTxs({ account, txIds })` performs the call; it is a
+no-op until the appeal window has elapsed, so it is safe to retry on a loop.
+Observed window on Bradbury: roughly 15 to 25 minutes. Production needs a
+keeper doing this, or settlement waits on whoever happens to call.
 
 ### ⚠️ Critical: a write's RETURN VALUE is not recoverable from its receipt
 

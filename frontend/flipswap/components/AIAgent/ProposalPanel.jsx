@@ -1,9 +1,10 @@
 // components/AIAgent/ProposalPanel.jsx
 import React from 'react';
 import ConsensusProgress from '../ConsensusProgress';
+import SettlementBinding from './SettlementBinding';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ShieldCheck, ShieldAlert, Cpu, ExternalLink, ArrowRight, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
-import { INTELLIGENT_CONTRACTS } from '../../constants/addresses';
+import { INTELLIGENT_CONTRACTS, CONTRACT_ADDRESSES } from '../../constants/addresses';
 import { useTheme } from '../contexts/ThemeContext';
 
 const ProposalPanel = ({
@@ -65,7 +66,7 @@ const ProposalPanel = ({
           No Active Proposal
         </h3>
         <p style={{ margin: 0, fontSize: '0.85rem', color: textMuted, maxWidth: '280px', lineHeight: 1.5 }}>
-          Ask the AI agent to prepare a trade route, compare pools, or simulate liquidity on GenLayer.
+          Ask the agent for a trade. It quotes every venue, reads the pools behind the quote, and runs it through GenLayer consensus.
         </p>
       </div>
     );
@@ -73,7 +74,14 @@ const ProposalPanel = ({
 
   const action = (proposal.action || 'SWAP').toUpperCase();
   const isSwap = action === 'SWAP';
-  const icAddress = isSwap ? INTELLIGENT_CONTRACTS.agentValidator : INTELLIGENT_CONTRACTS.liquidityValidator;
+  // AgentValidator for everything that settles.
+  //
+  // This used to point at LiquidityValidator for deposits, which is the wrong
+  // contract to name: AgentExecutor accepts verdicts only from AgentValidator,
+  // so LiquidityValidator authorises nothing. Showing it beside "this proposal
+  // must reach consensus validation" told the user the wrong thing was securing
+  // their funds.
+  const icAddress = INTELLIGENT_CONTRACTS.agentValidator;
 
   const getActionColor = () => {
     switch (action) {
@@ -85,6 +93,24 @@ const ProposalPanel = ({
   };
 
   const actionColor = getActionColor();
+
+  // Where this trade is in the settlement lifecycle.
+  //
+  // `finalising` is deliberately distinct from `validating`. Consensus can have
+  // approved a trade while the executor still refuses it, because an
+  // Intelligent Contract delivers its verdict as an external message and those
+  // arrive only once the appeal window has closed. Showing one spinner for both
+  // would make a correct, expected wait read as a stall.
+  const settlementStage = txHash
+    ? 'settled'
+    : isExecuting
+    ? 'finalising'
+    : validationResult?.approved
+    ? 'enforceable'
+    : isValidating || validationResult?.pending
+    ? 'validating'
+    : 'quoted';
+
 
   return (
     <AnimatePresence mode="wait">
@@ -189,7 +215,16 @@ const ProposalPanel = ({
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: textMuted }}>Max Slippage</span>
-              <span style={{ color: textMain, fontWeight: 600 }}>{proposal.slippage || '0.30%'} (30 bps)</span>
+              <span style={{ color: textMain, fontWeight: 600 }}>
+                {(() => {
+                  // Derive both halves from one number. The bps used to be the
+                  // literal "(30 bps)" next to a variable percentage, so the
+                  // panel showed "0.50% (30 bps)" and neither half could be
+                  // trusted.
+                  const bps = Number(proposal.slippageBps ?? 30);
+                  return `${(bps / 100).toFixed(2)}% (${bps} bps)`;
+                })()}
+              </span>
             </div>
           </div>
         </div>
@@ -377,7 +412,7 @@ const ProposalPanel = ({
               <div style={{ fontSize: '0.82rem', color: textSub }}>
                 {validationResult.reason}
               </div>
-              {validationResult.proposal_id && (
+              {validationResult.proposal_id && !validationResult.commitment && (
                 <div style={{ fontSize: '0.72rem', color: textMuted, fontFamily: 'monospace', marginTop: '2px' }}>
                   ID: {validationResult.proposal_id}
                 </div>
@@ -385,6 +420,20 @@ const ProposalPanel = ({
             </div>
           )}
         </div>
+
+        {/* What consensus approved, and what the agent can no longer change.
+            Only rendered for swaps, which are the flow that carries a route and
+            a fee: the parameters that used to be free. */}
+        {isSwap && (validationResult?.commitment || validationResult?.pendingOrder) && (
+          <SettlementBinding
+            commitment={validationResult.commitment}
+            order={validationResult.pendingOrder}
+            stage={settlementStage}
+            validatorAddress={icAddress}
+            executorAddress={CONTRACT_ADDRESSES[4221]?.agentExecutor}
+            txHash={validationResult.tx_hash}
+          />
+        )}
 
         {/* Execution Section */}
         {validationResult && validationResult.approved && (
@@ -488,6 +537,31 @@ const ProposalPanel = ({
                 relative to the pool, so you receive materially less than the market rate - and the
                 quote can go stale before consensus finishes, which shows up as a
                 &ldquo;price moved&rdquo; refusal. Consider splitting it into smaller trades.
+              </div>
+            )}
+
+            {/* A route paying far more than the direct pool is not a better
+                route. It is a price disagreement between the pools it crosses,
+                and a minimum built from it is a floor nothing has promised. This
+                is a separate warning from high impact: impact can be small while
+                the price is still nonsense. */}
+            {proposal.priceWarning && (
+              <div style={{
+                fontSize: '0.78rem',
+                color: '#ef4444',
+                background: 'rgba(239, 68, 68, 0.10)',
+                border: '1px solid rgba(239, 68, 68, 0.45)',
+                borderRadius: '8px',
+                padding: '10px',
+                lineHeight: 1.5,
+              }}>
+                <strong>⚠️ This price is not trustworthy.</strong> The route pays about{' '}
+                <strong>{Number(proposal.dislocationFactor || 0).toFixed(1)}x</strong> what the direct
+                pool pays
+                {proposal.directAmountOut ? <> (direct: <strong>{proposal.directAmountOut} {proposal.tokenOut}</strong>)</> : null}.
+                That means the pools on this path disagree about what {proposal.tokenIn} is worth,
+                not that the route found you a better deal. Expect it to be arbitraged before it
+                settles, and treat the minimum received as unreliable.
               </div>
             )}
 

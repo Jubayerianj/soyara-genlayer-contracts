@@ -34,9 +34,31 @@ contract DeployExecutorOnly is Script {
             300,        // max slippage bps
             approvedTokens
         );
+        // Bootstrap the validator if its address is already known.
+        //
+        // Usually it is NOT: the AgentValidator Intelligent Contract takes this
+        // executor's address as a constructor argument, so the executor has to
+        // exist first. That ordering is why `genLayerValidator` cannot be a
+        // constructor parameter here, and why it needs a second transaction.
+        //
+        // Until it is set, `recordVerdict` reverts with ValidatorNotSet and
+        // nothing settles. That is the intended state: an executor with no
+        // validator fails closed rather than falling back to trusting the agent.
+        address validator = vm.envOr("GENLAYER_VALIDATOR", address(0));
+        if (validator != address(0)) {
+            exec.setGenLayerValidator(validator);
+        }
         vm.stopBroadcast();
 
         console.log("AgentExecutor:", address(exec));
         console.log("owner/agent  :", deployer);
+        if (validator != address(0)) {
+            console.log("validator IC :", validator);
+        } else {
+            console.log("");
+            console.log("!! genLayerValidator is UNSET - nothing can settle yet.");
+            console.log("!! Deploy AgentValidator with agent_executor =", address(exec));
+            console.log("!! then run BootstrapValidator.s.sol with GENLAYER_VALIDATOR set.");
+        }
     }
 }

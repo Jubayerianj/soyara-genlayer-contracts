@@ -27,20 +27,23 @@ export const CONTRACT_ADDRESSES = {
     v3TickLens: "0xCa4c7EdB398684cB4C5B3fD0cc6ced30b5a5f4d3",
     multicall: "0x6d1503E294b122Eb6B37ECe9c74d24D83f8B478b",
     // GenLayer Intelligent Contracts
-    // AgentValidator redeployed 2026-09-04: fixed stale router whitelist (was blocking
-    // every real proposal after AGGFlowEntrypoint/AGGFlowRouter were redeployed) and
-    // removed non-deterministic time.time() usage. See DEPLOYMENTS.md.
-    agentValidator: "0x7ABa94668afC24463Be323f9bB65BD4b4F480d89",
+    // AgentValidator redeployed 2026-09-07 alongside a new AgentExecutor. This pair
+    // moves enforcement of the GenLayer verdict INTO the executor: recordVerdict is
+    // callable only by this IC (over its ghost contract), and the commitment it
+    // signs covers the whole order - route, fee, fee collector, user and the
+    // validated quote. The two are bound to each other, so they must be replaced
+    // together: the IC holds the executor address, and the executor holds the IC's.
+    agentValidator: "0xf47492A969b2bC8f99B62Bdf8958541F2234C42b",
     liquidityValidator: "0xEFb9473B5269A79d72Df4b6E73E310791a185eeC",
     // AgentExecutor - deployed 2026-09-04 on GenLayer Bradbury Testnet (chain 4221)
     // Tx: broadcast/deployGenlayer.sol/4221/run-latest.json
     // Deployer/Agent: 0x23D542DCEFb00b1f4268E67a0EC1EF4de0A58fe2
-    agentExecutor: "0xa835c0a86dD64726eF23D83a8ca7D60b542EE2e4",
+    agentExecutor: "0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1",
   }
 };
 
 export const INTELLIGENT_CONTRACTS = {
-  agentValidator: "0x7ABa94668afC24463Be323f9bB65BD4b4F480d89",
+  agentValidator: "0xf47492A969b2bC8f99B62Bdf8958541F2234C42b",
   liquidityValidator: "0xEFb9473B5269A79d72Df4b6E73E310791a185eeC"
 };
 

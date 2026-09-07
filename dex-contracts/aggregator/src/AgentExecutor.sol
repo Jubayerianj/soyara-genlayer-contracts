@@ -3,39 +3,56 @@ pragma solidity ^0.8.24;
 
 // ============================================================================
 //  AgentExecutor.sol
-//  FlipSwap DEX · AI Agent Bridge Contract (Execution Layer)
+//  Soyara DEX · AI Agent Bridge Contract (Execution Layer)
 // ============================================================================
 //
 //  ARCHITECTURE
 //  ------------
-//  This file contains ONLY the five execute* functions.
-//  All state, events, errors, admin, and approval management live in:
+//  This file contains ONLY the five execute* functions. State, events, errors,
+//  admin and the verdict registry live in:
 //
-//    src/base/AgentExecutorBase.sol   ← inherit
-//    src/libraries/TradeHashLib.sol   ← pure hash functions
+//    src/base/AgentExecutorBase.sol       ← inherit
+//    src/libraries/TradeHashLib.sol       ← commitment hashing
+//    src/types/SettlementTypes.sol        ← the full settlement surface
 //    src/interfaces/IAgentExecutorDEX.sol ← external protocol interfaces
 //
 //  FLOW
 //  ----
-//  GenLayer AgentValidator (off-chain IC, consensus-gated)
-//       │  approves proposal → agent calls approveTradeWithParams(...)
+//  AgentValidator (GenLayer Intelligent Contract)
+//       │  a consensus round checks the order against LIVE pool state, then
+//       │  emits an external message on finalization
 //       ▼
-//  AgentExecutor.executeSwap / executeAddLiquidity / executeRemoveLiquidity
-//       │  1. Validate params (fail BEFORE consuming approval)
-//       │  2. Verify & delete one-time approval hash
-//       │  3. Pull tokens, delegate to router
+//  AgentExecutor.recordVerdict(commitment, expiry)   ← msg.sender is the IC
+//       │
+//       ▼
+//  Agent relays AgentExecutor.executeSwap(order, aggProgram, attestations)
+//       │  1. Validate params (fail BEFORE burning the verdict)
+//       │  2. Re-derive the commitment from the calldata being settled
+//       │  3. Consume the verdict for exactly that commitment
+//       │  4. Pull tokens, delegate to router
 //       ▼
 //  AGGFlowEntrypoint (aggregated swaps)
 //  V2 Router / V3 PositionManager (liquidity)
 //
+//  WHAT THE COMMITMENT NOW COVERS
+//  ------------------------------
+//  The old approval hash spanned seven fields and left aggProgram, feeBps and
+//  feeCollector free. An agent could hold a legitimate approval and still route
+//  the trade wherever it liked, or skim an arbitrary share to an address of its
+//  choosing, because none of those inputs entered the hash. They all enter it
+//  now, together with the router, the validated quote, a nonce, the chain id
+//  and this contract's address. There is no input to the movement of value that
+//  consensus has not seen.
+//
 //  SECURITY
 //  --------
-//  - Only onlyAgent can call execute* functions
-//  - Every execute function checks approvedTrades[hash] — fails if missing
-//  - Approval is consumed (deleted) immediately after check — single-use only
-//  - Parameter validation runs BEFORE consuming the approval so bad params
-//    do NOT permanently burn the one-time approval slot
-//  - Reentrancy protected via ReentrancyGuard in AgentExecutorBase
+//  - The verdict is authenticated by the contract, not asserted by the agent:
+//    only the AgentValidator IC can write one (see AgentExecutorBase).
+//  - Parameter validation runs BEFORE the verdict is consumed, so bad calldata
+//    does not burn a good approval.
+//  - Commitments are single-use and permanently marked, so a re-recorded verdict
+//    cannot replay a settled trade.
+//  - Reentrancy protected via ReentrancyGuard in AgentExecutorBase.
 //
 // ============================================================================
 
@@ -43,6 +60,7 @@ import { IERC20 }            from "@openzeppelin/contracts/token/ERC20/IERC20.so
 import { SafeERC20 }         from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { AgentExecutorBase } from "./base/AgentExecutorBase.sol";
 import { TradeHashLib }      from "./libraries/TradeHashLib.sol";
+import { SwapOrder }         from "./types/SettlementTypes.sol";
 import {
     IAGGFlowEntrypoint,
     IUniswapV2Router,
@@ -77,102 +95,143 @@ contract AgentExecutor is AgentExecutorBase {
     // ── Execution: Swap ───────────────────────────────────────────────────────
 
     /**
-     * @notice Execute an AI-validated swap through the AGGFlowEntrypoint.
+     * @notice Settle a swap that GenLayer consensus has approved.
      *
-     * @dev Security flow:
-     *   1. Validate parameters (ZeroAddress, SameToken, amounts, slippage, whitelist)
-     *   2. Verify and consume one-time approval hash — reverts if not approved
-     *   3. Pull tokenIn from user → approve entrypoint → execute swap → transfer out to user
-     *
-     * @param user         Recipient of the output tokens
-     * @param tokenIn      ERC-20 to sell (address(0) for native ETH)
-     * @param tokenOut     ERC-20 to buy
-     * @param amountIn     Exact amount to sell
-     * @param minAmountOut Minimum acceptable output (slippage bound)
-     * @param slippageBps  Declared slippage in basis points (must be <= maxSlippageBps)
-     * @param deadline     Unix timestamp — reverts after this time
-     * @param aggProgram   Aggregator routing calldata
-     * @param feeBps       Fee in basis points charged by feeCollector
-     * @param feeCollector Address that receives the fee
+     * @param order        The complete settlement surface. Every field is inside
+     *                     the commitment, so nothing here can differ from what
+     *                     the validators saw.
+     * @param aggProgram   Aggregator routing calldata. Must hash to
+     *                     `order.routeHash`, which is what consensus approved.
+     * @param attestations Optional EIP-712 attestor quorum, used only when no
+     *                     consensus verdict is on record and the attestation
+     *                     rail has been deliberately enabled. Pass an empty
+     *                     array for the standard consensus path.
      */
     function executeSwap(
-        address user,
-        address tokenIn,
-        address tokenOut,
-        uint256 amountIn,
-        uint256 minAmountOut,
-        uint256 slippageBps,
-        uint256 deadline,
-        bytes   calldata aggProgram,
-        uint256 feeBps,
-        address feeCollector
+        SwapOrder calldata order,
+        bytes     calldata aggProgram,
+        bytes[]   calldata attestations
     )
         external
         payable
         onlyAgent
         nonReentrant
         whenNotPaused
-        validDeadline(deadline)
+        validDeadline(order.deadline)
         returns (uint256 amountOut)
     {
-        // ── 1. Parameter Validations (BEFORE consuming approval) ──────────────
-        if (user     == address(0)) revert ZeroAddress();
-        if (tokenIn  == tokenOut)   revert SameToken();
-        if (amountIn == 0)          revert ZeroAmount();
-        if (slippageBps > maxSlippageBps) revert SlippageExceeded(slippageBps, maxSlippageBps);
+        // ── 1. Parameter Validations (BEFORE consuming the verdict) ───────────
+        _validateSwapOrder(order, aggProgram);
+
+        // ── 2. Verdict Check ──────────────────────────────────────────────────
+        // Re-derive the identifier from the calldata actually being settled. Any
+        // divergence from what consensus approved — a different route, a fatter
+        // fee, another recipient — lands on a commitment no verdict exists for.
+        bytes32 commitment = TradeHashLib.swapCommitment(order, block.chainid, address(this));
+        _consumeVerdict(commitment, order.user, attestations);
+
+        // ── 3. Execute ────────────────────────────────────────────────────────
+        amountOut = _performSwap(order, aggProgram);
+
+        emit SwapExecuted(order.user, order.tokenIn, order.tokenOut, order.amountIn, amountOut);
+    }
+
+    /**
+     * @dev All pre-conditions for a swap, split out so `executeSwap` stays within
+     *      stack limits and each rule is individually readable.
+     */
+    function _validateSwapOrder(SwapOrder calldata order, bytes calldata aggProgram) internal view {
+        if (order.user     == address(0))    revert ZeroAddress();
+        if (order.tokenIn  == order.tokenOut) revert SameToken();
+        if (order.amountIn == 0)             revert ZeroAmount();
+        if (order.slippageBps > maxSlippageBps) {
+            revert SlippageExceeded(order.slippageBps, maxSlippageBps);
+        }
 
         // address(0) denotes the NATIVE asset, which is not an ERC-20 and so is
         // never present in the ERC-20 whitelist. Both sides must exempt it, or
         // the swap is unexecutable: previously only tokenIn was exempted, so
         // every swap OUT to native reverted with TokenNotApproved(0x0) before
         // any other check could run.
-        if (tokenIn  != address(0) && !approvedTokens[tokenIn])  revert TokenNotApproved(tokenIn);
-        if (tokenOut != address(0) && !approvedTokens[tokenOut]) revert TokenNotApproved(tokenOut);
+        if (order.tokenIn  != address(0) && !approvedTokens[order.tokenIn]) {
+            revert TokenNotApproved(order.tokenIn);
+        }
+        if (order.tokenOut != address(0) && !approvedTokens[order.tokenOut]) {
+            revert TokenNotApproved(order.tokenOut);
+        }
 
-        // ── 2. One-Time Approval Check ────────────────────────────────────────
-        bytes32 tradeHash = TradeHashLib.swapHash(
-            user, tokenIn, tokenOut, amountIn, minAmountOut, slippageBps, deadline
-        );
-        if (!approvedTrades[tradeHash]) revert TradeNotApproved(tradeHash);
-        delete approvedTrades[tradeHash];
-        emit TradeApprovalConsumed(tradeHash, user);
+        // The route must execute through the entrypoint consensus approved, and
+        // that entrypoint must still be whitelisted at settlement time.
+        if (order.router != aggFlowEntrypoint) revert RouterMismatch(aggFlowEntrypoint, order.router);
+        if (!approvedRouters[order.router])    revert RouterNotApproved(order.router);
 
-        // ── 3. Execute ────────────────────────────────────────────────────────
-        if (tokenIn != address(0)) {
-            IERC20(tokenIn).safeTransferFrom(user, address(this), amountIn);
-            IERC20(tokenIn).forceApprove(aggFlowEntrypoint, amountIn);
+        // The route program itself, pinned by hash.
+        bytes32 actualRoute = keccak256(aggProgram);
+        if (actualRoute != order.routeHash) revert RouteMismatch(order.routeHash, actualRoute);
+
+        // Fee ceiling is defence in depth — the fee is already in the commitment.
+        if (order.feeBps > maxFeeBps) revert FeeTooHigh(order.feeBps, maxFeeBps);
+        if (order.feeBps > 0 && order.feeCollector == address(0)) revert ZeroAddress();
+
+        // The floor must be the declared slippage below the validated quote.
+        //
+        // This is what stops a settlement agent from lowering a user's
+        // protection after consensus has spoken: previously the agent re-quoted
+        // AFTER validation and rewrote minAmountOut on its own authority, so the
+        // value settled was not the value approved. The quote is now part of the
+        // approved order, and the relationship between the two is enforced here.
+        //
+        // Note the scope of this check: it proves minAmountOut is consistent with
+        // quotedAmountOut, not that quotedAmountOut is honest. The honesty of the
+        // quote is established off-chain by the validators, which read live pool
+        // reserves during the consensus round.
+        if (order.quotedAmountOut == 0) revert ZeroAmount();
+        if (order.minAmountOut > order.quotedAmountOut) {
+            revert QuoteInconsistent(order.minAmountOut, order.quotedAmountOut);
+        }
+        uint256 floor = (order.quotedAmountOut * (10_000 - order.slippageBps)) / 10_000;
+        if (order.minAmountOut < floor) {
+            revert QuoteInconsistent(order.minAmountOut, order.quotedAmountOut);
+        }
+    }
+
+    /// @dev Token movement and the router call, isolated from validation.
+    function _performSwap(SwapOrder calldata order, bytes calldata aggProgram)
+        internal
+        returns (uint256 amountOut)
+    {
+        if (order.tokenIn != address(0)) {
+            IERC20(order.tokenIn).safeTransferFrom(order.user, address(this), order.amountIn);
+            IERC20(order.tokenIn).forceApprove(order.router, order.amountIn);
         }
 
         IAGGFlowEntrypoint.SwapIntent memory swapIntent = IAGGFlowEntrypoint.SwapIntent({
-            tokenUserBuys:     tokenOut,
-            minAmountUserBuys: minAmountOut,
-            tokenUserSells:    tokenIn,
-            amountUserSells:   amountIn
+            tokenUserBuys:     order.tokenOut,
+            minAmountUserBuys: order.minAmountOut,
+            tokenUserSells:    order.tokenIn,
+            amountUserSells:   order.amountIn
         });
 
         IAGGFlowEntrypoint.FeeCollection memory feeData = IAGGFlowEntrypoint.FeeCollection({
-            feeCollectorAddress: feeCollector != address(0) ? feeCollector : address(this),
-            feeBps:              feeBps,
+            feeCollectorAddress: order.feeCollector,
+            feeBps:              order.feeBps,
             referrerAddress:     address(0),
             referrerFeeBps:      0,
             isInTokenFee:        true
         });
 
-        amountOut = IAGGFlowEntrypoint(aggFlowEntrypoint).executeSwapWithReceiver{
-            value: tokenIn == address(0) ? amountIn : 0
-        }(swapIntent, feeData, aggProgram, user);
+        amountOut = IAGGFlowEntrypoint(order.router).executeSwapWithReceiver{
+            value: order.tokenIn == address(0) ? order.amountIn : 0
+        }(swapIntent, feeData, aggProgram, order.user);
 
-        if (tokenIn != address(0)) IERC20(tokenIn).forceApprove(aggFlowEntrypoint, 0);
-
-        emit SwapExecuted(user, tokenIn, tokenOut, amountIn, amountOut);
+        if (order.tokenIn != address(0)) IERC20(order.tokenIn).forceApprove(order.router, 0);
     }
 
     // ── Execution: V2 Add Liquidity ───────────────────────────────────────────
 
     /**
-     * @notice Execute an AI-validated V2 add-liquidity operation.
-     *
-     * @dev Params validated before approval consumed. Unused tokens refunded.
+     * @notice Settle a consensus-approved V2 add-liquidity operation.
+     * @dev Params validated before the verdict is consumed. Unused tokens refunded.
      */
     function executeAddLiquidityV2(
         address user,
@@ -182,7 +241,8 @@ contract AgentExecutor is AgentExecutorBase {
         uint256 amountBDesired,
         uint256 amountAMin,
         uint256 amountBMin,
-        uint256 deadline
+        uint256 deadline,
+        bytes[] calldata attestations
     )
         external
         onlyAgent
@@ -198,16 +258,14 @@ contract AgentExecutor is AgentExecutorBase {
         if (!approvedTokens[tokenB]) revert TokenNotApproved(tokenB);
         if (amountADesired == 0 || amountBDesired == 0) revert ZeroAmount();
 
-        // ── 2. One-Time Approval Check ────────────────────────────────────────
-        bytes32 opHash = TradeHashLib.v2AddHash(
+        // ── 2. Verdict Check ──────────────────────────────────────────────────
+        bytes32 commitment = TradeHashLib.v2AddHash(
             user, tokenA, tokenB,
             amountADesired, amountBDesired,
             amountAMin, amountBMin,
-            deadline
+            deadline, block.chainid, address(this)
         );
-        if (!approvedTrades[opHash]) revert TradeNotApproved(opHash);
-        delete approvedTrades[opHash];
-        emit TradeApprovalConsumed(opHash, user);
+        _consumeVerdict(commitment, user, attestations);
 
         // ── 3. Execute ────────────────────────────────────────────────────────
         IERC20(tokenA).safeTransferFrom(user, address(this), amountADesired);
@@ -236,9 +294,7 @@ contract AgentExecutor is AgentExecutorBase {
 
     // ── Execution: V2 Remove Liquidity ────────────────────────────────────────
 
-    /**
-     * @notice Execute an AI-validated V2 remove-liquidity operation.
-     */
+    /// @notice Settle a consensus-approved V2 remove-liquidity operation.
     function executeRemoveLiquidityV2(
         address user,
         address tokenA,
@@ -247,7 +303,8 @@ contract AgentExecutor is AgentExecutorBase {
         uint256 lpAmount,
         uint256 amountAMin,
         uint256 amountBMin,
-        uint256 deadline
+        uint256 deadline,
+        bytes[] calldata attestations
     )
         external
         onlyAgent
@@ -263,16 +320,14 @@ contract AgentExecutor is AgentExecutorBase {
         if (!approvedTokens[tokenB]) revert TokenNotApproved(tokenB);
         if (lpAmount == 0)           revert ZeroAmount();
 
-        // ── 2. One-Time Approval Check ────────────────────────────────────────
-        bytes32 opHash = TradeHashLib.v2RemoveHash(
+        // ── 2. Verdict Check ──────────────────────────────────────────────────
+        bytes32 commitment = TradeHashLib.v2RemoveHash(
             user, tokenA, tokenB,
             lpToken, lpAmount,
             amountAMin, amountBMin,
-            deadline
+            deadline, block.chainid, address(this)
         );
-        if (!approvedTrades[opHash]) revert TradeNotApproved(opHash);
-        delete approvedTrades[opHash];
-        emit TradeApprovalConsumed(opHash, user);
+        _consumeVerdict(commitment, user, attestations);
 
         // ── 3. Execute ────────────────────────────────────────────────────────
         IERC20(lpToken).safeTransferFrom(user, address(this), lpAmount);
@@ -292,14 +347,14 @@ contract AgentExecutor is AgentExecutorBase {
     // ── Execution: V3 Add Liquidity (Mint Position) ───────────────────────────
 
     /**
-     * @notice Execute an AI-validated V3 mint-position operation.
-     *
+     * @notice Settle a consensus-approved V3 mint-position operation.
      * @dev mintParams.recipient is always overridden to `user` — the NFT goes
      *      directly to the user regardless of what the agent passed in params.
      */
     function executeAddLiquidityV3(
         address user,
-        IV3PositionManager.MintParams calldata params
+        IV3PositionManager.MintParams calldata params,
+        bytes[] calldata attestations
     )
         external
         onlyAgent
@@ -314,11 +369,9 @@ contract AgentExecutor is AgentExecutorBase {
         if (!approvedTokens[params.token1]) revert TokenNotApproved(params.token1);
         if (params.amount0Desired == 0 && params.amount1Desired == 0) revert ZeroAmount();
 
-        // ── 2. One-Time Approval Check ────────────────────────────────────────
-        bytes32 opHash = TradeHashLib.v3AddHash(user, params);
-        if (!approvedTrades[opHash]) revert TradeNotApproved(opHash);
-        delete approvedTrades[opHash];
-        emit TradeApprovalConsumed(opHash, user);
+        // ── 2. Verdict Check ──────────────────────────────────────────────────
+        bytes32 commitment = TradeHashLib.v3AddHash(user, params, block.chainid, address(this));
+        _consumeVerdict(commitment, user, attestations);
 
         // ── 3. Execute ────────────────────────────────────────────────────────
         if (params.amount0Desired > 0) {
@@ -350,7 +403,7 @@ contract AgentExecutor is AgentExecutorBase {
     // ── Execution: V3 Remove Liquidity ────────────────────────────────────────
 
     /**
-     * @notice Execute an AI-validated V3 decrease-liquidity + collect operation.
+     * @notice Settle a consensus-approved V3 decrease-liquidity + collect.
      *
      * @param token0  token0 of the position — required for whitelist enforcement
      * @param token1  token1 of the position — required for whitelist enforcement
@@ -360,7 +413,8 @@ contract AgentExecutor is AgentExecutorBase {
         IV3PositionManager.DecreaseLiquidityParams calldata decreaseParams,
         uint256 tokenId,
         address token0,
-        address token1
+        address token1,
+        bytes[] calldata attestations
     )
         external
         onlyAgent
@@ -375,11 +429,11 @@ contract AgentExecutor is AgentExecutorBase {
         if (!approvedTokens[token1]) revert TokenNotApproved(token1);
         if (decreaseParams.liquidity == 0) revert ZeroAmount();
 
-        // ── 2. One-Time Approval Check ────────────────────────────────────────
-        bytes32 opHash = TradeHashLib.v3RemoveHash(user, decreaseParams, tokenId);
-        if (!approvedTrades[opHash]) revert TradeNotApproved(opHash);
-        delete approvedTrades[opHash];
-        emit TradeApprovalConsumed(opHash, user);
+        // ── 2. Verdict Check ──────────────────────────────────────────────────
+        bytes32 commitment = TradeHashLib.v3RemoveHash(
+            user, decreaseParams, tokenId, token0, token1, block.chainid, address(this)
+        );
+        _consumeVerdict(commitment, user, attestations);
 
         // ── 3. Execute ────────────────────────────────────────────────────────
         (amount0, amount1) = IV3PositionManager(v3PositionManager).decreaseLiquidity(decreaseParams);

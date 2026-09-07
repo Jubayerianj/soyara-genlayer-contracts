@@ -1,34 +1,58 @@
 // pages/api/agent-execute.js
 //
-// SERVER-SIDE AGENT EXECUTION ROUTE
+// SERVER-SIDE AGENT SETTLEMENT ROUTE
 // ==================================
-// This API route is the critical bridge that enforces the GenLayer-to-settlement
-// flow. It CANNOT be replaced by a direct frontend wallet call because:
+// This route relays a swap that GenLayer consensus has already approved. It is
+// no longer the thing that decides whether the trade may settle.
 //
-//   AgentExecutor.approveTradeWithParams()  →  onlyAgent modifier
-//   AgentExecutor.executeSwap()             →  onlyAgent modifier
+// WHAT CHANGED, AND WHY
+// ---------------------
+// This file used to BE the enforcement point. It read the verdict off the
+// AgentValidator Intelligent Contract, decided it was satisfied, and then wrote
+// its own approval into the executor with a privileged onlyAgent call:
 //
-// Only the authorisedAgent wallet (set at AgentExecutor deployment time) can call
-// these functions. This server holds that private key and acts as the agent.
+//     approveTradeWithParams(user, tokenIn, tokenOut, amountIn, minOut, slippage, deadline)
 //
-// SECURITY MODEL
-// --------------
-// 1. The user calls /api/genlayer-validate FIRST (GenLayer write tx → consensus)
-// 2. Only after approved=true does the user call this route with a proposalId
-// 3. This route re-validates the proposal params against the GenLayer IC result
-//    (stored in the request - a production system would verify on-chain)
-// 4. Calls AgentExecutor.approveTradeWithParams() with the EXACT same params
-// 5. Then calls AgentExecutor.executeSwap() - which checks+consumes the hash
-// 6. Any parameter difference → TradeNotApproved revert on-chain
+// The executor learned nothing about GenLayer from that. Its only real gate was
+// "is the caller the agent", so the root of trust was the private key in this
+// server's environment and consensus was advisory. Three consequences followed:
+//
+//   1. Anyone holding AGENT_PRIVATE_KEY could approve and settle a trade
+//      GenLayer had never seen.
+//   2. The approval hash covered seven fields and left aggProgram, feeBps and
+//      feeCollector free, so even a genuine approval could be executed down a
+//      different route, or with a fee of the agent's choosing paid to an address
+//      of the agent's choosing.
+//   3. The re-quote ran AFTER the verdict and rewrote minAmountOut, so the
+//      protection the user actually settled with was not the one consensus had
+//      approved.
+//
+// All three are closed. The executor now accepts verdicts only from the
+// AgentValidator IC (which reaches the EVM through its ghost contract, so
+// msg.sender is the IC's address), the commitment spans the entire order, and
+// the quote is settled at the value it was validated at.
+//
+// TWO WAYS IN
+// -----------
+// Normally /api/genlayer-validate has already built the order and started its
+// consensus round, and passes both here. This route then only waits for the
+// verdict to reach the executor and settles - one round per trade.
+//
+// Called without them it does the whole thing itself: quote, build, validate,
+// wait, settle. That path is kept so the route works standalone, but it is the
+// slow one, because it starts a round the caller could have started earlier.
 //
 // FAIL-CLOSED: if any step fails, the entire settlement is aborted.
 
-import { createPublicClient, createWalletClient, http, parseUnits, zeroAddress, keccak256, encodeAbiParameters, parseAbiParameters } from 'viem';
+import { createPublicClient, createWalletClient, http, zeroAddress, keccak256 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import AGENT_EXECUTOR_ABI from '../../abi/AgentExecutor.json';
 import { CONTRACT_ADDRESSES } from '../../constants/addresses.js';
-import { quoteBestRouteMultiHop } from '../../lib/dexQuote.js';
-import { computeProposalId, readValidationVerdict, checkTradeAgainstMandate } from '../../lib/genlayer.js';
+import { validateSwapOrder, finalizeRound } from '../../lib/genlayer.js';
+import { leaseAgent } from '../../lib/agentPool.js';
+import { buildSwapOrder, serialiseOrder, deserialiseOrder } from '../../lib/swapOrder.js';
+import { obtainVerdict, isVerdictLive, VERDICT_POLL_MS, VERDICT_WAIT_MS } from '../../lib/verdict.js';
+import { gatherAttestations } from '../../lib/attest.js';
 
 // GenLayer Bradbury Testnet chain config (chain ID 4221)
 const genLayerBradbury = {
@@ -42,28 +66,14 @@ const genLayerBradbury = {
 };
 
 /**
- * Compute the exact same trade hash as TradeHashLib.swapHash() in Solidity:
- *   keccak256(abi.encode(user, tokenIn, tokenOut, amountIn, minAmountOut, slippageBps, deadline))
- */
-function computeTradeHash(user, tokenIn, tokenOut, amountIn, minAmountOut, slippageBps, deadline) {
-  return keccak256(
-    encodeAbiParameters(
-      parseAbiParameters('address, address, address, uint256, uint256, uint256, uint256'),
-      [user, tokenIn, tokenOut, BigInt(amountIn), BigInt(minAmountOut), BigInt(slippageBps), BigInt(deadline)]
-    )
-  );
-}
-
-/**
  * Retry a write that the RPC node throttled.
  *
  * Bradbury replies `-32005 transaction gas rate limit exceeded: node is at
  * capacity, retry in ~Nms`. Settlement cannot rotate senders the way validation
- * can - AgentExecutor's onlyAgent modifier means these calls must come from the
- * authorised agent - so waiting the hinted interval is the correct remedy here.
- * Without this the throttle surfaced mid-flow as a bare
- * "Request exceeds defined limit", which reads like a failed trade when in fact
- * nothing was submitted.
+ * can - AgentExecutor's onlyAgent modifier means these calls must come from an
+ * authorised relayer - so waiting the hinted interval is the correct remedy
+ * here. Without this the throttle surfaced mid-flow as a bare "Request exceeds
+ * defined limit", which reads like a failed trade when nothing was submitted.
  */
 async function sendWithRetry(fn, label) {
   for (let attempt = 0; ; attempt += 1) {
@@ -86,7 +96,6 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // --- Environment guard ---
   const agentPrivateKey = process.env.AGENT_PRIVATE_KEY;
 
   // Resolve the executor from the SAME constant the client approves against.
@@ -96,20 +105,16 @@ export default async function handler(req, res) {
   // on a different contract and settlement failed inside the token's
   // transferFrom - surfacing as the token's SafeMath error,
   // "ds-math-sub-underflow", which looks like a routing/liquidity bug.
-  // Keeping both sides on one source of truth removes that whole class of drift.
   const agentExecutorAddress = CONTRACT_ADDRESSES[4221]?.agentExecutor
     || process.env.AGENT_EXECUTOR_ADDRESS
     || process.env.NEXT_PUBLIC_AGENT_EXECUTOR_ADDRESS;
 
   if (!agentPrivateKey) {
     console.error('[agent-execute] AGENT_PRIVATE_KEY not set - settlement aborted (fail-closed)');
-    return res.status(503).json({
-      success: false,
-      error: 'Settlement agent not configured - fail-closed',
-    });
+    return res.status(503).json({ success: false, error: 'Settlement agent not configured - fail-closed' });
   }
 
-  if (!agentExecutorAddress || agentExecutorAddress === '0x0000000000000000000000000000000000000000') {
+  if (!agentExecutorAddress || agentExecutorAddress === zeroAddress) {
     console.error('[agent-execute] AGENT_EXECUTOR_ADDRESS not set - settlement aborted (fail-closed)');
     return res.status(503).json({
       success: false,
@@ -122,35 +127,29 @@ export default async function handler(req, res) {
     tokenIn,
     tokenOut,
     amountIn,
-    minAmountOut,
+    minAmountOut,   // client's reference figure; the settled floor is derived live
     slippageBps,
     deadline,
-    aggProgram,       // bytes - the AGGFlow routing program
-    proposalId,       // from GenLayer validation response (informational)
-    mandateId,        // consensus-issued mandate, if the trade was validated that way
-    validationApproved,
+    // Handed over by /api/genlayer-validate: the exact order its consensus round
+    // was opened against. Sending them back is also how a caller resumes after a
+    // `pending` response.
+    pendingOrder,
+    pendingProgram,
+    // True when a round for this commitment has already been submitted, so this
+    // route waits instead of opening a second one.
+    validationSubmitted,
+    // The round to finalize while waiting. Without it a resumed settlement can
+    // only watch, and finalization is a call somebody has to make.
+    validationTxHash,
   } = req.body;
 
-  // --- Input validation ---
-  if (!user || !tokenIn || !tokenOut || !amountIn || !minAmountOut || slippageBps === undefined || !deadline) {
+  const resuming = Boolean(pendingOrder && pendingProgram);
+
+  if (!resuming && (!user || !tokenIn || !tokenOut || !amountIn || slippageBps === undefined || !deadline)) {
     return res.status(400).json({ error: 'Missing required trade parameters' });
   }
 
-  // Cheap client-side hint. NOT the gate - the real check is the on-chain
-  // verdict lookup in STEP 0a below.
-  if (!validationApproved) {
-    return res.status(403).json({
-      success: false,
-      error: 'Settlement blocked: GenLayer validation was not approved - fail-closed',
-    });
-  }
-
-  if (!aggProgram) {
-    return res.status(400).json({ error: 'aggProgram (routing calldata) is required' });
-  }
-
   try {
-    // --- Set up agent wallet (server-side only) ---
     const pkHex = agentPrivateKey.startsWith('0x') ? agentPrivateKey : `0x${agentPrivateKey}`;
     const account = privateKeyToAccount(pkHex);
 
@@ -158,289 +157,235 @@ export default async function handler(req, res) {
       chain: genLayerBradbury,
       transport: http('https://rpc-bradbury.genlayer.com'),
     });
-
     const walletClient = createWalletClient({
       account,
       chain: genLayerBradbury,
       transport: http('https://rpc-bradbury.genlayer.com'),
     });
 
-    const tokenInAddr  = tokenIn  === '0x0000000000000000000000000000000000000000' ? zeroAddress : tokenIn;
-    const tokenOutAddr = tokenOut === '0x0000000000000000000000000000000000000000' ? zeroAddress : tokenOut;
-    const amountInBig      = BigInt(amountIn);
-    let   minAmountOutBig  = BigInt(minAmountOut);
-    const slippageBpsBig   = BigInt(slippageBps);
-    const deadlineBig      = BigInt(deadline);
-    const feeCollector     = process.env.FEE_COLLECTOR_ADDRESS || '0x48234eD645676b794a4CbC7483513e58cB04e22E';
-    const feeBps           = 5n; // 0.05% platform fee
-
-    // ── STEP 0a: VERIFY THE GENLAYER VERDICT ON-CHAIN ────────────────────────
-    // This is the enforcement point of the GenLayer-to-settlement flow.
+    // ── STEP 1: Resolve the order ────────────────────────────────────────────
     //
-    // Previously this route accepted the client's word: the request carried
-    // `validationApproved: true` and `proposalId`, neither of which was ever
-    // checked, so a direct POST could settle a trade GenLayer had never seen.
-    // The verdict is now read from the AgentValidator IC itself.
+    // Taking the order back from the caller is safe precisely because of the
+    // architecture this change is about: nothing in this process can authorise
+    // a trade. A tampered order simply hashes to a commitment no verdict backs,
+    // and the executor refuses it. The caller is holding a receipt, not a
+    // permission.
     //
-    // Critically, it is BOUND TO THE EXACT PARAMETERS BEING SETTLED: the
-    // proposal id is derived on-chain by `compute_proposal_id` from these same
-    // params, so an approval issued for one trade cannot authorise a different
-    // one, and a fabricated id simply is not found.
-    //
-    // Verified BEFORE the re-quote below, so the parameters checked against
-    // consensus are exactly the ones the user validated.
-    let verifiedVia = null;
-    let derivedProposalId = null;
+    // It also has to work this way. Re-quoting on a retry would rebuild the
+    // route from current pools, and a route that moved by a single pool produces
+    // a different commitment - so the verdict the previous attempt was waiting
+    // for would be orphaned and the caller could poll forever.
+    let order;
+    let aggProgram;
+    let commitment;
 
-    // Kick the ERC-20 pre-flight off now so it overlaps the GenLayer verdict
-    // lookup instead of running after it - these are independent RPC round
-    // trips against different chains.
-    const preflightPromise = (tokenInAddr !== zeroAddress)
-      ? (async () => {
-          const erc20Abi = [
-            { name: 'allowance', type: 'function', stateMutability: 'view', inputs: [{ type: 'address' }, { type: 'address' }], outputs: [{ type: 'uint256' }] },
-            { name: 'balanceOf', type: 'function', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] },
-          ];
-          return Promise.all([
-            publicClient.readContract({ address: tokenInAddr, abi: erc20Abi, functionName: 'allowance', args: [user, agentExecutorAddress] }),
-            publicClient.readContract({ address: tokenInAddr, abi: erc20Abi, functionName: 'balanceOf', args: [user] }),
-          ]);
-        })()
-      : Promise.resolve(null);
+    if (resuming) {
+      order = deserialiseOrder(pendingOrder);
+      aggProgram = pendingProgram;
 
-    try {
-      derivedProposalId = await computeProposalId({
-        action: 'SWAP',
-        tokenIn: tokenInAddr,
-        tokenOut: tokenOutAddr,
-        amountIn: amountInBig.toString(),
-        minAmountOut: minAmountOutBig.toString(),
-        slippageBps: Number(slippageBpsBig),
-        deadline: Number(deadlineBig),
-      });
-
-      if (derivedProposalId) {
-        const verdict = await readValidationVerdict(derivedProposalId);
-        if (verdict?.approved) {
-          verifiedVia = { path: 'consensus_write', proposalId: derivedProposalId };
-        }
-      }
-
-      // Mandate path - OFF BY DEFAULT.
-      //
-      // A mandate's authority does originate from a consensus WRITE
-      // (`issue_trading_mandate`), but each individual trade is then admitted by
-      // `check_mandate`, a @gl.public.view. That is a read, and it is precisely
-      // what the GenLayer review called "validating through a read simulation".
-      // The enforced flow therefore requires a per-trade consensus verdict
-      // recorded by `validate_proposal`, and this fast lane must be switched on
-      // deliberately (GENLAYER_ALLOW_MANDATE_FAST_PATH=true) for demos where
-      // per-trade round latency is unacceptable.
-      const mandateFastPathEnabled = process.env.GENLAYER_ALLOW_MANDATE_FAST_PATH === 'true';
-      const effectiveMandateId = mandateFastPathEnabled
-        ? (mandateId || process.env.GENLAYER_MANDATE_ID)
-        : null;
-      if (!verifiedVia && effectiveMandateId) {
-        const m = await checkTradeAgainstMandate(effectiveMandateId, {
-          user,
-          tokenIn: tokenInAddr,
-          tokenOut: tokenOutAddr,
-          amountIn: amountInBig.toString(),
-          slippageBps: Number(slippageBpsBig),
-          deadline: Number(deadlineBig),
+      if (order.routeHash.toLowerCase() !== keccak256(aggProgram).toLowerCase()) {
+        return res.status(400).json({
+          success: false,
+          error: 'The supplied order does not match the routing program sent with it.',
         });
-        if (m?.approved) {
-          verifiedVia = { path: 'consensus_mandate', mandateId: effectiveMandateId };
-        }
       }
-    } catch (e) {
-      console.error('[agent-execute] on-chain verdict lookup failed:', e.message);
-    }
 
-    if (!verifiedVia) {
-      console.warn('[agent-execute] REFUSED: no on-chain GenLayer approval for these params');
-      return res.status(403).json({
-        success: false,
-        notValidated: true,
-        error:
-          'Settlement blocked: no GenLayer consensus verdict exists on-chain for these exact trade parameters. '
-          + 'The trade must be validated by a validate_proposal consensus write on the AgentValidator '
-          + 'Intelligent Contract before it can settle - fail-closed.',
-        derivedProposalId,
+      commitment = await publicClient.readContract({
+        address: agentExecutorAddress,
+        abi: AGENT_EXECUTOR_ABI,
+        functionName: 'getSwapCommitment',
+        args: [order],
       });
+      console.log('[agent-execute] settling a pre-validated order, skipping re-quote');
+    } else {
+      const built = await buildSwapOrder({
+        publicClient,
+        executor: agentExecutorAddress,
+        abi: AGENT_EXECUTOR_ABI,
+        user, tokenIn, tokenOut, amountIn, slippageBps, deadline,
+        expectedMinAmountOut: minAmountOut,
+      });
+      if (!built.ok) return res.status(built.status).json(built.body);
+      ({ order, aggProgram, commitment } = built);
     }
 
-    console.log(`[agent-execute] GenLayer approval verified on-chain via ${verifiedVia.path}`);
+    console.log(`[agent-execute] commitment ${commitment.slice(0, 10)}... user=${order.user}`);
+    console.log(`[agent-execute] amountIn=${order.amountIn} quoted=${order.quotedAmountOut} minOut=${order.minAmountOut} slippage=${order.slippageBps}bps`);
 
-    // ── STEP 0: Pre-flight allowance / balance check ─────────────────────────
+    // ── STEP 2: Pre-flight allowance / balance check ─────────────────────────
     // AgentExecutor pulls tokenIn from the user with transferFrom. If the user
     // has not approved THIS executor (or is short on balance), the token's own
     // SafeMath reverts with "ds-math-sub-underflow" - an opaque message that
-    // reads like a routing or liquidity bug. Check first and say plainly what
-    // is wrong and which contract needs approving.
-    const preflight = await preflightPromise;
-    if (preflight) {
-      const [allowance, balance] = preflight;
+    // reads like a routing or liquidity bug. Check first and say plainly what is
+    // wrong and which contract needs approving.
+    if (order.tokenIn !== zeroAddress) {
+      const erc20Abi = [
+        { name: 'allowance', type: 'function', stateMutability: 'view', inputs: [{ type: 'address' }, { type: 'address' }], outputs: [{ type: 'uint256' }] },
+        { name: 'balanceOf', type: 'function', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] },
+      ];
+      const [allowance, balance] = await Promise.all([
+        publicClient.readContract({ address: order.tokenIn, abi: erc20Abi, functionName: 'allowance', args: [order.user, agentExecutorAddress] }),
+        publicClient.readContract({ address: order.tokenIn, abi: erc20Abi, functionName: 'balanceOf', args: [order.user] }),
+      ]);
 
-      if (balance < amountInBig) {
+      if (balance < order.amountIn) {
         return res.status(400).json({
           success: false,
-          error: `Insufficient balance: wallet holds ${balance} but the trade needs ${amountInBig} (raw units).`,
+          error: `Insufficient balance: wallet holds ${balance} but the trade needs ${order.amountIn} (raw units).`,
           needsApproval: false,
         });
       }
-      if (allowance < amountInBig) {
+      if (allowance < order.amountIn) {
         return res.status(400).json({
           success: false,
-          error: `Token approval missing for the settlement contract. Approve at least ${amountInBig} (raw units) for AgentExecutor at ${agentExecutorAddress}, then execute again.`,
+          error: `Token approval missing for the settlement contract. Approve at least ${order.amountIn} (raw units) for AgentExecutor at ${agentExecutorAddress}, then execute again.`,
           needsApproval: true,
           spender: agentExecutorAddress,
         });
       }
     }
 
-    // ── STEP 0b: Re-quote against live pool state ────────────────────────────
-    // minAmountOut is computed when the quote is generated and then sits in the
-    // client's React state. If the pool moves - or the page simply held the
-    // proposal for a while, or a hot reload left a stale proposal on screen -
-    // that minimum becomes unreachable and settlement reverts with
-    // AGGFlowEntrypoint_InsufficientAmountAfterFees() (0x499c1728), which tells
-    // the user nothing about the actual remedy (re-quote).
+    // ── STEP 3: The consensus verdict ────────────────────────────────────────
     //
-    // Re-derive the floor from live reserves. If the requested minimum is still
-    // achievable it is kept untouched, so the user's protection is never
-    // silently weakened. If the price moved further than their own slippage
-    // tolerance allows, refuse and say so plainly instead of settling at a
-    // materially worse rate.
-    let requoteInfo = null;
-    try {
-      const wgenAddr = CONTRACT_ADDRESSES[4221]?.wgen || '0x315374AA9b5536037Cc1Efeea2439CCC0913A77e';
-      const fresh = await quoteBestRouteMultiHop(
-        tokenInAddr === zeroAddress ? wgenAddr : tokenInAddr,
-        tokenOutAddr === zeroAddress ? wgenAddr : tokenOutAddr,
-        amountInBig,
-        'best'
-      );
+    // Ask the EXECUTOR, not the validator. The validator can only say what it
+    // decided; the executor is what will enforce it, and between the two sits
+    // the finalization delay - external messages from an IC are delivered on
+    // finalization, never on acceptance.
+    const lease = leaseAgent?.();
+    const nudge = (txHash) => finalizeRound(txHash, lease?.account || account);
 
-      if (!fresh?.amountOutRaw) {
-        // No pool can fill this pair. The proposal's minAmountOut came from the
-        // reference-price fallback in /api/agent-v2, which is a display estimate
-        // and not backed by any liquidity - settling it could only ever revert.
-        return res.status(400).json({
-          success: false,
-          notRoutable: true,
-          error:
-            'No routable liquidity pool exists for this pair on Soyara DEX, so this trade cannot settle. ' +
-            'The displayed rate was a reference estimate, not a live pool quote.',
-        });
-      }
+    // ── FAST RAIL ────────────────────────────────────────────────────────────
+    //
+    // Ask the attestors before settling in to wait.
+    //
+    // The consensus round decides in about twenty seconds; what takes forty
+    // minutes is finalization, and the only reason settlement waits for it is
+    // that the IC's verdict travels as an external message. The verdict itself
+    // is readable from the IC as soon as the round is accepted, so if attestors
+    // will vouch for it the executor can verify their quorum over the same
+    // commitment and settle now.
+    //
+    // This never widens what may settle. gatherAttestations refuses unless the
+    // IC has recorded an approval for this exact commitment, and the executor
+    // still checks every parameter against it. The rail can also be switched off
+    // on chain by setting the threshold to zero, in which case this falls
+    // through to the consensus rail below.
+    let attestations = [];
+    let settlementRail = 'genlayer_consensus';
 
-      {
-        const liveOut = fresh.amountOutRaw;
-        if (minAmountOutBig > liveOut) {
-          // One slippage band of drift is what the user already accepted.
-          const tolerated = (liveOut * (10000n + slippageBpsBig)) / 10000n;
-          if (minAmountOutBig > tolerated) {
-            return res.status(409).json({
-              success: false,
-              stale: true,
-              error:
-                `Price moved beyond your ${Number(slippageBpsBig) / 100}% slippage tolerance since this quote was made. ` +
-                `The pool now returns ${liveOut} but the trade requires at least ${minAmountOutBig} (raw units). ` +
-                `Request a fresh quote and execute again.`,
-              liveAmountOut: liveOut.toString(),
-              requestedMinOut: minAmountOutBig.toString(),
-            });
-          }
-          const adjusted = (liveOut * (10000n - slippageBpsBig)) / 10000n;
-          requoteInfo = { from: minAmountOutBig.toString(), to: adjusted.toString(), liveAmountOut: liveOut.toString() };
-          console.log(`[agent-execute] re-quoted minOut ${minAmountOutBig} -> ${adjusted} (live ${liveOut})`);
-          minAmountOutBig = adjusted;
-        }
-      }
-    } catch (e) {
-      // A quoter failure must not block settlement - the on-chain minAmountOut
-      // check is still the real guard.
-      console.warn('[agent-execute] live re-quote unavailable:', e.message);
-    }
-
-    // Trade hash must be computed AFTER any re-quote so it commits to the value
-    // actually settled with.
-    const tradeHash = computeTradeHash(
-      user, tokenInAddr, tokenOutAddr,
-      amountInBig, minAmountOutBig, slippageBpsBig, deadlineBig
-    );
-
-    console.log(`[agent-execute] Binding one-time approval for trade ${tradeHash.slice(0, 10)}...`);
-    console.log(`[agent-execute] user=${user} tokenIn=${tokenInAddr} tokenOut=${tokenOutAddr}`);
-    console.log(`[agent-execute] amountIn=${amountInBig} minOut=${minAmountOutBig} slippage=${slippageBpsBig}bps`);
-
-    // ── STEP 1: approveTradeWithParams (onlyAgent - server-side only) ─────────
-    // Writes keccak256(abi.encode(user, tokenIn, tokenOut, amountIn, minOut, slippage, deadline))
-    // to approvedTrades[tradeHash] = true in AgentExecutor storage.
-    const approveTxHash = await sendWithRetry(() => walletClient.writeContract({
-      address: agentExecutorAddress,
-      abi: AGENT_EXECUTOR_ABI,
-      functionName: 'approveTradeWithParams',
-      args: [user, tokenInAddr, tokenOutAddr, amountInBig, minAmountOutBig, slippageBpsBig, deadlineBig],
-    }), 'approveTradeWithParams');
-
-    console.log(`[agent-execute] approveTradeWithParams submitted: ${approveTxHash}`);
-
-    // Wait for approval tx to be mined
-    const approveReceipt = await publicClient.waitForTransactionReceipt({
-      hash: approveTxHash,
+    const alreadyLive = await isVerdictLive({
+      publicClient, executor: agentExecutorAddress, abi: AGENT_EXECUTOR_ABI, commitment,
     });
 
-    if (approveReceipt.status !== 'success') {
-      return res.status(500).json({
-        success: false,
-        error: 'approveTradeWithParams transaction reverted - settlement aborted (fail-closed)',
-        approveTxHash,
+    if (!alreadyLive) {
+      try {
+        const att = await gatherAttestations(commitment);
+        if (att.ok) {
+          attestations = att.attestations;
+          settlementRail = 'attestor_quorum';
+          console.log(`[agent-execute] fast rail: ${att.attestors.length} attestations over ${commitment.slice(0, 10)}...`);
+        } else if (att.status === 403) {
+          // The IC recorded a REFUSAL. That is a verdict, and waiting will not
+          // turn it into an approval.
+          return res.status(403).json({
+            success: false, notValidated: true, error: att.error, commitment,
+          });
+        }
+      } catch (e) {
+        console.warn('[agent-execute] attestation unavailable, falling back to the consensus rail:', e.message);
+      }
+    }
+
+    let verdict;
+    if (alreadyLive || attestations.length > 0) {
+      verdict = { live: true, pending: false, rejected: false, reason: null, validationTxHash: validationTxHash || null };
+    } else if (validationSubmitted) {
+      // A round is already in flight for exactly this commitment. Opening a
+      // second one would pay the multi-minute latency twice for one trade.
+      //
+      // Finalization still has to be driven, though: the round will sit in
+      // `Accepted` until somebody calls it, and the verdict rides an external
+      // message that is only emitted at that point.
+      let live = await isVerdictLive({ publicClient, executor: agentExecutorAddress, abi: AGENT_EXECUTOR_ABI, commitment });
+      const until = Date.now() + VERDICT_WAIT_MS;
+      while (!live && Date.now() < until) {
+        await new Promise((r) => setTimeout(r, VERDICT_POLL_MS));
+        if (validationTxHash) { try { await nudge(validationTxHash); } catch { /* window open */ } }
+        live = await isVerdictLive({ publicClient, executor: agentExecutorAddress, abi: AGENT_EXECUTOR_ABI, commitment });
+      }
+      verdict = { live, pending: !live, rejected: false, reason: null, validationTxHash: validationTxHash || null };
+    } else {
+      verdict = await obtainVerdict({
+        publicClient,
+        executor: agentExecutorAddress,
+        abi: AGENT_EXECUTOR_ABI,
+        commitment,
+        submit: () => validateSwapOrder({ ...order, aggProgram }, lease ? { account: lease.account } : {}),
+        finalize: nudge,
       });
     }
 
-    console.log(`[agent-execute] Approval confirmed in block ${approveReceipt.blockNumber}. Executing swap...`);
+    if (verdict.rejected) {
+      return res.status(403).json({
+        success: false,
+        notValidated: true,
+        error: `GenLayer consensus rejected this trade: ${verdict.reason}`,
+        commitment,
+        validationTxHash: verdict.validationTxHash,
+      });
+    }
 
-    // ── STEP 2: executeSwap (onlyAgent - server-side only) ────────────────────
+    if (!verdict.live) {
+      // Not a rejection. The round is still working its way to finalization, and
+      // the commitment is stable, so the same request will pick it up.
+      return res.status(202).json({
+        success: false,
+        pending: true,
+        error:
+          'GenLayer consensus has not yet finalised a verdict for these exact parameters. '
+          + 'The validator IC delivers its approval to the executor on finalization, which is '
+          + 'still in progress - retry this request shortly.',
+        commitment,
+        validationTxHash: verdict.validationTxHash,
+        // Send these back on the retry to resume THIS settlement rather than
+        // starting a new one against a freshly quoted route.
+        pendingOrder: serialiseOrder(order),
+        pendingProgram: aggProgram,
+        validationSubmitted: true,
+      });
+    }
+
+    console.log(`[agent-execute] verdict live on executor for ${commitment.slice(0, 10)}...`);
+
+    // ── STEP 4: Settle ───────────────────────────────────────────────────────
     // AgentExecutor internally:
-    //   1. Validates all params
-    //   2. Reads+deletes approvedTrades[tradeHash] - reverts with TradeNotApproved if missing or tampered
-    //   3. Pulls tokenIn from user → approves entrypoint → calls AGGFlowEntrypoint.executeSwapWithReceiver
-    //   4. Output tokens go directly to user
-    const isNative = tokenInAddr === zeroAddress;
+    //   1. Validates all params, including that keccak256(aggProgram) matches the
+    //      approved routeHash and that minAmountOut sits in the slippage band
+    //      below the validated quote
+    //   2. Re-derives the commitment and consumes the verdict - reverts with
+    //      NoConsensusVerdict if anything differs from what was approved
+    //   3. Pulls tokenIn from the user, routes, and sends output straight to them
+    //
+    // `attestations` is empty on the consensus rail (the executor already holds
+    // the verdict) and carries the quorum on the fast rail.
+    const isNative = order.tokenIn === zeroAddress;
     const execTxHash = await sendWithRetry(() => walletClient.writeContract({
       address: agentExecutorAddress,
       abi: AGENT_EXECUTOR_ABI,
       functionName: 'executeSwap',
-      args: [
-        user,
-        tokenInAddr,
-        tokenOutAddr,
-        amountInBig,
-        minAmountOutBig,
-        slippageBpsBig,
-        deadlineBig,
-        aggProgram,
-        feeBps,
-        feeCollector,
-      ],
-      value: isNative ? amountInBig : 0n,
+      args: [order, aggProgram, attestations],
+      value: isNative ? order.amountIn : 0n,
     }), 'executeSwap');
 
     console.log(`[agent-execute] executeSwap submitted: ${execTxHash}`);
-
-    // Wait for execution receipt
-    const execReceipt = await publicClient.waitForTransactionReceipt({
-      hash: execTxHash,
-    });
+    const execReceipt = await publicClient.waitForTransactionReceipt({ hash: execTxHash });
 
     if (execReceipt.status !== 'success') {
       return res.status(500).json({
         success: false,
-        error: 'executeSwap transaction reverted - TradeNotApproved or parameter mismatch',
+        error: 'executeSwap transaction reverted - the settled parameters did not match the consensus verdict',
         execTxHash,
-        approveReceipt: approveTxHash,
+        commitment,
       });
     }
 
@@ -448,37 +393,50 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      tradeHash,
-      proposalId: proposalId || '',
-      approveTxHash,
+      commitment,
+      validationTxHash: verdict.validationTxHash,
       execTxHash,
       blockNumber: execReceipt.blockNumber.toString(),
       explorerUrl: `https://explorer-bradbury.genlayer.com/tx/${execTxHash}`,
-      // Non-null when the pool moved between quote and settlement and the
-      // minimum was re-derived from live reserves within the user's tolerance.
-      requoted: requoteInfo,
-      // How the GenLayer approval was verified on-chain for this settlement.
-      verifiedVia,
+      quotedAmountOut: order.quotedAmountOut.toString(),
+      minAmountOut: order.minAmountOut.toString(),
+      verifiedVia: { path: settlementRail, commitment },
+      // Which road the verdict travelled. Both require a consensus approval
+      // for this exact commitment; they differ only in how it reached the
+      // executor, and therefore in how long it took.
+      rail: settlementRail,
     });
 
   } catch (err) {
     console.error('[agent-execute] Settlement error (fail-closed):', err);
 
-    // Map known revert errors to helpful messages
     let errorMessage = err?.shortMessage || err?.message || 'Settlement failed - fail-closed';
-    if (errorMessage.includes('TradeNotApproved')) {
-      errorMessage = 'Trade hash mismatch - parameters were tampered after approval. Settlement reverted.';
+    if (errorMessage.includes('NoConsensusVerdict')) {
+      errorMessage = 'No GenLayer verdict exists for these exact parameters - settlement refused (fail-closed).';
+    } else if (errorMessage.includes('CommitmentAlreadyUsed')) {
+      // Not a failure. The verdict was spent, which is what settling is.
+      return res.status(200).json({
+        success: true,
+        alreadySettled: true,
+        error: null,
+        reason: 'This trade has already settled. A consensus verdict is single use, so a second attempt finds it spent.',
+      });
+    } else if (errorMessage.includes('VerdictExpired')) {
+      errorMessage = 'The consensus verdict expired before settlement - request a fresh validation.';
+    } else if (errorMessage.includes('RouteMismatch')) {
+      errorMessage = 'The routing program does not match the route GenLayer approved.';
+    } else if (errorMessage.includes('QuoteInconsistent')) {
+      errorMessage = 'minAmountOut is not within the approved slippage band below the validated quote.';
+    } else if (errorMessage.includes('FeeTooHigh')) {
+      errorMessage = 'The order carries a fee above the on-chain cap.';
     } else if (errorMessage.includes('Unauthorized')) {
-      errorMessage = 'Agent wallet is not authorised on AgentExecutor - check AGENT_PRIVATE_KEY.';
+      errorMessage = 'Agent wallet is not an authorised relayer on AgentExecutor - check AGENT_PRIVATE_KEY.';
     } else if (errorMessage.includes('DeadlineExpired')) {
       errorMessage = 'Trade deadline has expired - request a new validation and retry.';
     } else if (errorMessage.includes('SlippageExceeded')) {
-      errorMessage = 'Slippage exceeds the on-chain cap - GenLayer validator should have caught this.';
+      errorMessage = 'Slippage exceeds the on-chain cap.';
     }
 
-    return res.status(500).json({
-      success: false,
-      error: errorMessage,
-    });
+    return res.status(500).json({ success: false, error: errorMessage });
   }
 }

@@ -247,6 +247,34 @@ export async function quoteBestRouteMultiHop(tokenInAddr, tokenOutAddr, amountIn
   // Best executable output wins - that is the whole promise of an aggregator.
   all.sort((a, b) => (b.amountOutRaw > a.amountOutRaw ? 1 : b.amountOutRaw < a.amountOutRaw ? -1 : 0));
   const best = all[0];
+  // ── Is the winning route pricing off broken pools? ───────────────────────
+  //
+  // The aggregator picks the highest output, which is its job, and the
+  // constant-product maths behind each hop is exact. Neither of those stops the
+  // answer being nonsense when two pools disagree about what a token is worth.
+  //
+  // Observed on this testnet: WGEN/USDC held 2.65 WGEN against 4,127 USDC
+  // (1 WGEN = 1,557 USDC) while WGEN/USDT held 8.33 WGEN against 601 USDT
+  // (1 WGEN = 72 USDT). A 21x disagreement. Routing USDT to USDC through WGEN
+  // therefore quoted 219 USDC for 11 USDT, against 10.97 on the direct pool, and
+  // every number in that quote was arithmetically correct.
+  //
+  // What was missing was anyone comparing the two. A multi-hop route paying
+  // wildly more than the direct route is not a better route; it is a reading off
+  // a mispriced pool, it will be arbitraged, and a minimum built from it is a
+  // floor no pool has promised to honour. So measure the gap and say so. The
+  // route is still the aggregator's to choose - this reports, it does not
+  // override - but the caller can no longer present it as merely optimal.
+  const dislocationFactor = direct?.amountOutRaw > 0n && best.amountOutRaw > direct.amountOutRaw
+    ? Number((best.amountOutRaw * 100n) / direct.amountOutRaw) / 100
+    : 1;
+
+  // A hop that eats a meaningful share of a pool moves the price against itself,
+  // and a thin pool is where dislocations live in the first place.
+  const worstImpact = Math.max(0, ...(best.hops || []).map((h) => Number(h.priceImpactPct || 0)));
+
+  const dislocated = dislocationFactor >= 1.25;
+
   return {
     ...best,
     effectiveAmountInRaw: applyEntrypointFee(amountInWei),
@@ -254,5 +282,55 @@ export async function quoteBestRouteMultiHop(tokenInAddr, tokenOutAddr, amountIn
     improvedOverDirect: direct && best.amountOutRaw > direct.amountOutRaw
       ? Number(((best.amountOutRaw - direct.amountOutRaw) * 10000n) / direct.amountOutRaw) / 100
       : 0,
+    directAmountOutRaw: direct?.amountOutRaw ?? null,
+    dislocationFactor,
+    worstHopImpactPct: worstImpact,
+    priceWarning: dislocated
+      ? {
+          severity: dislocationFactor >= 3 ? 'severe' : 'high',
+          factor: dislocationFactor,
+          directAmountOutRaw: direct?.amountOutRaw?.toString() ?? null,
+          bestAmountOutRaw: best.amountOutRaw.toString(),
+          reason:
+            `This route pays about ${dislocationFactor.toFixed(1)}x what the direct pool pays, `
+            + 'which means the pools it passes through disagree about the price rather than that '
+            + 'the route is better. A quote built on a mispriced pool is usually arbitraged before '
+            + 'it settles, and the minimum received is a floor no pool has committed to.',
+        }
+      : null,
   };
+}
+
+
+/**
+ * The amount of `tokenB` that pairs with `amountA` at the pool's live ratio.
+ *
+ * A deposit is not a trade, and quoting it as one is wrong in a way that looks
+ * plausible: a swap quote deducts the 0.30% fee and applies price impact,
+ * neither of which happens when you add liquidity. On a balanced stable pool
+ * that showed "15 USDC + 14.9472 USDT" where the real pairing is ~15 USDT.
+ *
+ * Returns null when no pool exists yet, where any ratio is valid because the
+ * depositor sets the opening price.
+ */
+export async function quoteV2Pairing(tokenAAddr, tokenBAddr, amountAWei) {
+  const client = getQuoteClient();
+  const pair = await client.readContract({
+    address: CONTRACT_ADDRESSES[4221].factory,
+    abi: V2_FACTORY_ABI,
+    functionName: 'getPair',
+    args: [tokenAAddr, tokenBAddr],
+  }).catch(() => null);
+  if (!pair || pair === '0x0000000000000000000000000000000000000000') return null;
+
+  const [reserves, token0] = await Promise.all([
+    client.readContract({ address: pair, abi: V2_PAIR_ABI, functionName: 'getReserves' }),
+    client.readContract({ address: pair, abi: V2_PAIR_ABI, functionName: 'token0' }),
+  ]);
+  const aIsToken0 = String(token0).toLowerCase() === String(tokenAAddr).toLowerCase();
+  const rA = aIsToken0 ? reserves[0] : reserves[1];
+  const rB = aIsToken0 ? reserves[1] : reserves[0];
+  if (rA === 0n || rB === 0n) return null;
+
+  return { pool: pair, amountBWei: (BigInt(amountAWei) * rB) / rA, reserveA: rA, reserveB: rB };
 }

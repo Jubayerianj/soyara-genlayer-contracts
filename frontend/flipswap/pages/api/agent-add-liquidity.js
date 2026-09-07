@@ -9,8 +9,10 @@
 //        ↓ verdict recorded on-chain
 //   this route reads the verdict back with get_validation       ← never trusted from the client
 //        ↓
-//   AgentExecutor.approveTrade(v2AddHash)                       ← binds the one-time approval
-//   AgentExecutor.executeAddLiquidityV2(...)                    ← checks + CONSUMES it
+//   AgentValidator.validate_liquidity_v2_add(...)               ← consensus round; the IC
+//                                                                 emits recordVerdict to the
+//                                                                 executor on finalization
+//   AgentExecutor.executeAddLiquidityV2(...)                    ← checks + CONSUMES the verdict
 //
 // Why AgentValidator and not LiquidityValidator: LiquidityValidator has no
 // verdict persistence (no `get_validation`, no `compute_proposal_id`), so a
@@ -26,7 +28,12 @@ import { createPublicClient, createWalletClient, http, zeroAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts';
 import AGENT_EXECUTOR_ABI from '../../abi/AgentExecutor.json';
 import { CONTRACT_ADDRESSES } from '../../constants/addresses.js';
-import { computeProposalId, readValidationVerdict } from '../../lib/genlayer.js';
+import { validateLiquidityV2Add } from '../../lib/genlayer.js';
+import { obtainVerdict } from '../../lib/verdict.js';
+import { leaseAgent } from '../../lib/agentPool.js';
+import { deserialiseLiquidityOrder } from '../../lib/liquidityOrder.js';
+import { toRawAmount } from '../../lib/amounts.js';
+import { TOKEN_LIST } from '../../constants/tokens.js';
 
 const genLayerBradbury = {
   id: 4221,
@@ -110,49 +117,46 @@ export default async function handler(req, res) {
     const publicClient = createPublicClient({ chain: genLayerBradbury, transport: http('https://rpc-bradbury.genlayer.com') });
     const walletClient = createWalletClient({ account, chain: genLayerBradbury, transport: http('https://rpc-bradbury.genlayer.com') });
 
-    const aDesired = BigInt(amountADesired);
-    const bDesired = BigInt(amountBDesired);
+    // Amounts go through the shared converter, not a bare BigInt().
+    //
+    // `BigInt("10.0")` throws, and `BigInt("10")` is TEN WEI - a deposit
+    // eighteen orders of magnitude smaller than the one asked for, with no error
+    // raised anywhere. The validation path was fixed for this; this route is the
+    // one that actually pulls the tokens, so it needs the same treatment.
+    const decOf = (addr) => TOKEN_LIST[4221]?.find(
+      (t) => t.address?.toLowerCase() === String(addr).toLowerCase()
+    )?.decimals ?? 18;
+
     const bpsBig = BigInt(slippageBps ?? 30);
-    // Default the minimums from the slippage tolerance when the caller omits them.
-    const aMin = amountAMin !== undefined && amountAMin !== null ? BigInt(amountAMin) : (aDesired * (10000n - bpsBig)) / 10000n;
-    const bMin = amountBMin !== undefined && amountBMin !== null ? BigInt(amountBMin) : (bDesired * (10000n - bpsBig)) / 10000n;
+    const amtA = toRawAmount({ raw: amountADesired, human: null, decimals: decOf(tokenA), label: 'amountADesired' });
+    const amtB = toRawAmount({ raw: amountBDesired, human: null, decimals: decOf(tokenB), label: 'amountBDesired' });
+    if (!amtA.ok || !amtB.ok) {
+      return res.status(400).json({ success: false, error: amtA.ok ? amtB.error : amtA.error });
+    }
+    const aDesired = amtA.value;
+    const bDesired = amtB.value;
+
+    const minA = amountAMin !== undefined && amountAMin !== null
+      ? toRawAmount({ raw: amountAMin, decimals: decOf(tokenA), label: 'amountAMin', allowZero: true })
+      : { ok: true, value: (aDesired * (10000n - bpsBig)) / 10000n };
+    const minB = amountBMin !== undefined && amountBMin !== null
+      ? toRawAmount({ raw: amountBMin, decimals: decOf(tokenB), label: 'amountBMin', allowZero: true })
+      : { ok: true, value: (bDesired * (10000n - bpsBig)) / 10000n };
+    if (!minA.ok || !minB.ok) {
+      return res.status(400).json({ success: false, error: minA.ok ? minB.error : minA.error });
+    }
+    const aMin = minA.value;
+    const bMin = minB.value;
     const deadlineBig = BigInt(deadline);
 
-    // ── STEP 1: VERIFY THE GENLAYER VERDICT ON-CHAIN ─────────────────────────
-    // Same enforcement as /api/agent-execute: the id is derived on-chain from
-    // the exact parameters being settled, so an approval for one deposit cannot
-    // authorise a different one.
-    let derivedProposalId = null;
-    let verified = false;
-    try {
-      derivedProposalId = await computeProposalId({
-        action: 'ADD_LIQUIDITY',
-        tokenIn: tokenA,
-        tokenOut: tokenB,
-        amountIn: aDesired.toString(),
-        minAmountOut: bDesired.toString(),
-        slippageBps: Number(bpsBig),
-        deadline: Number(deadlineBig),
-      });
-      if (derivedProposalId) {
-        const verdict = await readValidationVerdict(derivedProposalId);
-        verified = Boolean(verdict?.approved);
-      }
-    } catch (e) {
-      console.error('[agent-add-liquidity] verdict lookup failed:', e.message);
-    }
-
-    if (!verified) {
-      return res.status(403).json({
-        success: false,
-        notValidated: true,
-        error:
-          'Settlement blocked: no GenLayer consensus verdict exists on-chain for these exact liquidity parameters. '
-          + 'The deposit must be validated by a validate_proposal consensus write on the AgentValidator '
-          + 'Intelligent Contract before it can settle - fail-closed.',
-        derivedProposalId,
-      });
-    }
+    // NOTE: there is no off-chain verdict lookup here any more.
+    //
+    // This route used to read the verdict from the IC, satisfy ITSELF that
+    // consensus had approved, and then write its own approval into the executor.
+    // That check was real but it was advisory - it lived in this process, and
+    // the executor had no way to know whether it had run. The gate is now the
+    // executor's own verdict registry, which only the validator IC can write to,
+    // so the check happens where it can actually be enforced. See STEP 3.
 
     // ── STEP 2: Pre-flight balances and allowances for BOTH tokens ───────────
     // executeAddLiquidityV2 pulls both sides with transferFrom; without this the
@@ -232,30 +236,65 @@ export default async function handler(req, res) {
     const aMinFinal = (aFinal * (10000n - bpsBig)) / 10000n;
     const bMinFinal = (bFinal * (10000n - bpsBig)) / 10000n;
 
-    // ── STEP 3: Bind the one-time approval ──────────────────────────────────
-    // The hash is read from the contract itself rather than recomputed here, so
-    // this can never drift from TradeHashLib.v2AddHash.
-    const opHash = await publicClient.readContract({
+    // ── STEP 3: Obtain the consensus verdict ────────────────────────────────
+    // The commitment is read from the contract rather than recomputed here, so
+    // it can never drift from TradeHashLib.v2AddHash.
+    //
+    // This used to be an `approveTrade(opHash)` call from the agent's own key -
+    // the agent approved the operation and then executed against its own
+    // approval, with the executor none the wiser about GenLayer. The registry it
+    // wrote to no longer accepts anything but the validator IC, so the verdict
+    // has to come from a consensus round.
+    //
+    // Note the amounts: the commitment covers aFinal/bFinal, the values AFTER
+    // the pool-ratio pairing above, so what consensus approves is what settles.
+    const commitment = await publicClient.readContract({
       address: agentExecutorAddress,
       abi: AGENT_EXECUTOR_ABI,
       functionName: 'getLiquidityV2AddHash',
       args: [user, tokenA, tokenB, aFinal, bFinal, aMinFinal, bMinFinal, deadlineBig],
     });
 
-    const approveTxHash = await sendWithRetry(() => walletClient.writeContract({
-      address: agentExecutorAddress,
+    const lease = leaseAgent?.();
+    const verdict = await obtainVerdict({
+      publicClient,
+      executor: agentExecutorAddress,
       abi: AGENT_EXECUTOR_ABI,
-      functionName: 'approveTrade',
-      args: [opHash],
-    }), 'approveTrade');
-    await publicClient.waitForTransactionReceipt({ hash: approveTxHash });
+      commitment,
+      submit: () => validateLiquidityV2Add({
+        user, tokenA, tokenB,
+        amountADesired: aFinal, amountBDesired: bFinal,
+        amountAMin: aMinFinal, amountBMin: bMinFinal,
+        deadline: deadlineBig,
+      }, lease ? { account: lease.account } : {}),
+    });
 
-    // ── STEP 4: Execute - checks and CONSUMES the approval ──────────────────
+    if (verdict.rejected) {
+      return res.status(403).json({
+        success: false, notValidated: true,
+        error: `GenLayer consensus rejected this deposit: ${verdict.reason}`,
+        commitment, validationTxHash: verdict.validationTxHash,
+      });
+    }
+    if (!verdict.live) {
+      return res.status(202).json({
+        success: false, pending: true,
+        error:
+          'GenLayer consensus has not yet finalised a verdict for this deposit. The validator '
+          + 'IC delivers its approval to the executor on finalization, which is still in '
+          + 'progress - retry shortly.',
+        commitment, validationTxHash: verdict.validationTxHash,
+      });
+    }
+
+    // ── STEP 4: Execute - checks and CONSUMES the verdict ───────────────────
+    // The trailing empty array is the attestation slot; this deployment settles
+    // on the GenLayer consensus rail, so there are no signatures to present.
     const execTxHash = await sendWithRetry(() => walletClient.writeContract({
       address: agentExecutorAddress,
       abi: AGENT_EXECUTOR_ABI,
       functionName: 'executeAddLiquidityV2',
-      args: [user, tokenA, tokenB, aFinal, bFinal, aMinFinal, bMinFinal, deadlineBig],
+      args: [user, tokenA, tokenB, aFinal, bFinal, aMinFinal, bMinFinal, deadlineBig, []],
     }), 'executeAddLiquidityV2');
     const execReceipt = await publicClient.waitForTransactionReceipt({ hash: execTxHash });
 
@@ -265,12 +304,12 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      opHash,
-      approveTxHash,
+      commitment,
+      validationTxHash: verdict.validationTxHash,
       execTxHash,
       blockNumber: execReceipt.blockNumber.toString(),
       explorerUrl: `https://explorer-bradbury.genlayer.com/tx/${execTxHash}`,
-      verifiedVia: { path: 'consensus_write', proposalId: derivedProposalId },
+      verifiedVia: { path: 'genlayer_consensus', commitment },
     });
   } catch (err) {
     console.error('[agent-add-liquidity] settlement error (fail-closed):', err);

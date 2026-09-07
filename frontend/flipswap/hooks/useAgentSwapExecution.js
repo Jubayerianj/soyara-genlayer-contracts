@@ -18,12 +18,13 @@ import { CONTRACT_ADDRESSES } from '../constants/addresses';
 import { TOKEN_LIST, findTokenByAddress } from '../constants/tokens';
 import { ERC20_ABI } from '../constants/abis';
 import { buildProgram, buildMultiHopProgram } from '../utils/programBuilder';
+import { normaliseAction, assertSettlementRoute } from '../lib/actions';
 
 export function useAgentSwapExecution(proposal) {
   const { address: userAddress } = useAccount();
   const publicClient = usePublicClient();
 
-  const entrypointAddress = CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3';
+  const entrypointAddress = CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0x95feE6Cb918Ed9C621E36082EE8D998873031EaA';
   const wgenAddress = CONTRACT_ADDRESSES[4221]?.wgen || '0x315374AA9b5536037Cc1Efeea2439CCC0913A77e';
 
   // AgentExecutor routes settlement through the one-time approval hash system.
@@ -54,16 +55,53 @@ export function useAgentSwapExecution(proposal) {
   }, [proposal]);
 
   const isFromNative = fromTokenObj?.isNative || fromTokenObj?.symbol === 'GEN';
+  const isToNative = toTokenObj?.isNative || toTokenObj?.symbol === 'GEN';
+
+  const isAddLiquidityProposal = useMemo(
+    () => String(proposal?.action || '').trim().toUpperCase() === 'ADD_LIQUIDITY',
+    [proposal],
+  );
+
+  // For deposits, AgentExecutor pulls ERC-20s (substituting WGEN for native GEN)
+  const tokenAApproveAddr = isAddLiquidityProposal
+    ? (isFromNative ? wgenAddress : fromTokenObj?.address)
+    : (isFromNative ? undefined : fromTokenObj?.address);
+
+  const tokenBApproveAddr = isAddLiquidityProposal
+    ? (isToNative ? wgenAddress : toTokenObj?.address)
+    : undefined;
 
   const { data: allowance, refetch: refetchAllowance, isFetching: isCheckingAllowance } = useReadContract({
-    address: isFromNative ? undefined : fromTokenObj?.address,
+    address: tokenAApproveAddr,
     abi: ERC20_ABI,
     functionName: 'allowance',
-    args: !isFromNative && userAddress && approvalSpender ? [userAddress, approvalSpender] : undefined,
+    args: tokenAApproveAddr && userAddress && approvalSpender ? [userAddress, approvalSpender] : undefined,
     query: {
-      enabled: !isFromNative && !!userAddress && !!approvalSpender && !!fromTokenObj?.address,
+      enabled: !!tokenAApproveAddr && !!userAddress && !!approvalSpender,
     },
   });
+
+  const { data: allowanceB, refetch: refetchAllowanceB } = useReadContract({
+    address: tokenBApproveAddr,
+    abi: ERC20_ABI,
+    functionName: 'allowance',
+    args: tokenBApproveAddr && userAddress && approvalSpender ? [userAddress, approvalSpender] : undefined,
+    query: {
+      enabled: isAddLiquidityProposal && !!tokenBApproveAddr && !!userAddress && !!approvalSpender,
+    },
+  });
+
+  /** Raw amount of token B a deposit will pull. */
+  const amountBRequired = useMemo(() => {
+    if (!isAddLiquidityProposal || !proposal) return 0n;
+    const raw = proposal.amountBRaw ?? proposal.amount1Desired ?? proposal.minAmountOutRaw;
+    try {
+      if (raw !== undefined && raw !== null && /^\d+$/.test(String(raw))) return BigInt(String(raw));
+      return parseUnits(String(proposal.amountB ?? '0'), toTokenObj?.decimals || 18);
+    } catch {
+      return 0n;
+    }
+  }, [isAddLiquidityProposal, proposal, toTokenObj]);
 
   const isWrapOrUnwrapProposal = useMemo(() => {
     if (!proposal) return false;
@@ -73,14 +111,29 @@ export function useAgentSwapExecution(proposal) {
   }, [proposal, fromTokenObj, toTokenObj]);
 
   const needsApproval = useMemo(() => {
-    if (!proposal || isFromNative || isWrapOrUnwrapProposal || !userAddress || !fromTokenObj?.address) return false;
-    if (allowance === undefined) return false;
+    if (!proposal || isWrapOrUnwrapProposal || !userAddress) return false;
     const decimals = fromTokenObj?.decimals || 18;
     const amountInWei = proposal.amountInRaw
       ? BigInt(proposal.amountInRaw)
       : parseUnits(String(proposal.amountIn || '0'), decimals);
+
+    if (isAddLiquidityProposal) {
+      if (tokenAApproveAddr) {
+        if (allowance === undefined) return false;
+        if (allowance < amountInWei) return true;
+      }
+      if (tokenBApproveAddr && amountBRequired > 0n) {
+        if (allowanceB === undefined) return false;
+        if (allowanceB < amountBRequired) return true;
+      }
+      return false;
+    }
+
+    if (isFromNative || !fromTokenObj?.address) return false;
+    if (allowance === undefined) return false;
     return allowance < amountInWei;
-  }, [proposal, isFromNative, isWrapOrUnwrapProposal, userAddress, fromTokenObj, allowance]);
+  }, [proposal, isFromNative, isWrapOrUnwrapProposal, userAddress, fromTokenObj, allowance,
+      isAddLiquidityProposal, toTokenObj, allowanceB, amountBRequired, tokenAApproveAddr, tokenBApproveAddr]);
 
   // ── Balance pre-flight ────────────────────────────────────────────────────
   // Without this the shortfall only surfaced server-side at settlement, as a raw
@@ -239,32 +292,83 @@ export function useAgentSwapExecution(proposal) {
     // agent. Approve max once; every later trade then settles with no prompt.
     //
     // This does not weaken the security model. Per-trade authority comes from
-    // AgentExecutor's one-time approval hash - keccak256(abi.encode(user,
-    // tokenIn, tokenOut, amountIn, minAmountOut, slippageBps, deadline)) - which
-    // is bound by approveTradeWithParams and CONSUMED by executeSwap, and which
-    // is only ever bound after GenLayer's AgentValidator approved the proposal.
-    // A mismatch reverts with TradeNotApproved and the hash cannot be replayed,
-    // so the allowance alone grants nobody the ability to move funds.
+    // the consensus commitment: AgentExecutor will only move funds against an
+    // identifier the AgentValidator Intelligent Contract has approved, and that
+    // identifier covers the route, the fee, the fee collector, the recipient and
+    // the validated quote. It is consumed on use and cannot be replayed. The
+    // allowance on its own grants nobody the ability to move anything.
     const MAX_UINT256 = (1n << 256n) - 1n;
 
-    const hash = await approveAsync({
-      address: fromTokenObj.address,
-      abi: ERC20_ABI,
-      functionName: 'approve',
-      args: [approvalSpender, MAX_UINT256],
-    });
+    // Approve EVERY token this action will pull, not just the first one.
+    //
+    // A deposit moves both sides, and this approved only token A, so settlement
+    // kept refusing with "Token B approval missing" while the button reported
+    // success. Whatever the action pulls, it gets approved here.
+    const targets = [];
+    if (isAddLiquidityProposal) {
+      if (tokenAApproveAddr && (allowance === undefined || allowance < amountInRequired)) {
+        targets.push({ address: tokenAApproveAddr, symbol: isFromNative ? 'WGEN (for GEN LP)' : (fromTokenObj?.symbol || 'Token A'), refetch: refetchAllowance });
+      }
+      if (tokenBApproveAddr && amountBRequired > 0n && (allowanceB === undefined || allowanceB < amountBRequired)) {
+        targets.push({ address: tokenBApproveAddr, symbol: isToNative ? 'WGEN (for GEN LP)' : (toTokenObj?.symbol || 'Token B'), refetch: refetchAllowanceB });
+      }
+    } else {
+      if (!isFromNative && fromTokenObj?.address && (allowance === undefined || allowance < amountInRequired)) {
+        targets.push({ address: fromTokenObj.address, symbol: fromTokenObj.symbol, refetch: refetchAllowance });
+      }
+    }
+    if (targets.length === 0) return null;
 
-    await refetchAllowance();
-    return { hash, amount: proposal.amountIn, symbol: fromTokenObj.symbol, unlimited: true };
-  }, [fromTokenObj, approvalSpender, proposal, approveAsync, refetchAllowance]);
+    let hash = null;
+    const approved = [];
+    for (const { address, symbol, refetch } of targets) {
+      hash = await approveAsync({
+        address,
+        abi: ERC20_ABI,
+        functionName: 'approve',
+        args: [approvalSpender, MAX_UINT256],
+      });
+      // Wait before moving to the next one, so a second wallet prompt does not
+      // race the first transaction.
+      if (publicClient && hash) {
+        try { await publicClient.waitForTransactionReceipt({ hash }); } catch { /* see below */ }
+      }
+      await refetch();
+      approved.push({ symbol, hash });
+    }
+
+    return {
+      hash,
+      approved,
+      amount: proposal.amountIn,
+      symbol: approved.map((a) => a.symbol).join(' and '),
+      unlimited: true,
+    };
+  }, [fromTokenObj, toTokenObj, approvalSpender, proposal, approveAsync, refetchAllowance,
+      refetchAllowanceB, publicClient, isFromNative, isToNative, isAddLiquidityProposal, allowance,
+      allowanceB, amountInRequired, amountBRequired, tokenAApproveAddr, tokenBApproveAddr]);
+
 
   // Execute swap on-chain via the one-time approval gate (/api/agent-execute)
   //
-  // IMPORTANT: AgentExecutor.approveTradeWithParams() and AgentExecutor.executeSwap()
+  // IMPORTANT: AgentExecutor.executeSwap() (approveTradeWithParams no longer exists;
+  // approvals come from the validator IC, not from any key this server holds)
   // are both protected by `onlyAgent` - they will REVERT if called from the user wallet.
   // The server-side /api/agent-execute route holds the agent private key and calls them.
   // The user wallet only handles ERC20 approve (spender=AgentExecutor) before calling the API.
-  const execute = useCallback(async (validationResult) => {
+  /**
+   * @param validationResult  the GenLayer validation this execution follows
+   * @param resumeState       `{ pendingOrder, pendingProgram, validationSubmitted }`
+   *                          - the order /api/genlayer-validate opened its
+   *                          consensus round against, or the one a previous
+   *                          `pending` attempt handed back. Passing it back
+   *                          settles THAT commitment. Omitting it makes the
+   *                          settlement route quote afresh and open its own
+   *                          round, which both costs a second multi-minute wait
+   *                          and waits on a different commitment from the one
+   *                          consensus is already finalising.
+   */
+  const execute = useCallback(async (validationResult, resumeState = null) => {
     if (!proposal || !userAddress) return null;
 
     // FAIL CLOSED: validation must have run and been approved before settlement.
@@ -288,6 +392,18 @@ export function useAgentSwapExecution(proposal) {
         `Insufficient ${sym} balance for this trade. Reduce the amount and request a fresh quote.`
       );
       err.insufficientBalance = true;
+      setExecutionError(err.message);
+      throw err;
+    }
+
+    // The action decides which funds move and how. Read it once, here, and
+    // refuse anything unrecognised rather than letting it reach a default.
+    const action = normaliseAction(proposal.action);
+    if (action === 'UNKNOWN') {
+      const err = new Error(
+        `Refusing to settle: the request's action is "${proposal.action}", which is not `
+        + 'one this executor recognises. Nothing has moved.'
+      );
       setExecutionError(err.message);
       throw err;
     }
@@ -322,7 +438,7 @@ export function useAgentSwapExecution(proposal) {
       // ── REMOVE_LIQUIDITY settles through its own gated route ────────────────
       // Before this existed, an approved withdrawal validated and then did
       // nothing on-chain - execute() only ever handled swaps and deposits.
-      if (proposal.action === 'REMOVE_LIQUIDITY') {
+      if (action === 'REMOVE_LIQUIDITY') {
         const res = await fetch('/api/agent-remove-liquidity', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -336,7 +452,7 @@ export function useAgentSwapExecution(proposal) {
             // derives the identical proposal id.
             validatedMinOut: proposal.minAmountOutRaw ?? null,
             slippageBps: proposal.slippageBps || 100,
-            deadline: proposal.deadline || (Math.floor(Date.now() / 1000) + 1800),
+            deadline: proposal.deadline || (Math.floor(Date.now() / 1000) + 7200),
             validationApproved: Boolean(validationResult?.approved),
           }),
         });
@@ -346,15 +462,18 @@ export function useAgentSwapExecution(proposal) {
           err.needsApproval = Boolean(out.needsApproval);
           err.approvalToken = out.token || null;
           err.notValidated = Boolean(out.notValidated);
+          // Still finalising rather than failed - see the note on the swap path.
+          err.pending = Boolean(out.pending);
+          err.commitment = out.commitment;
           throw err;
         }
         setActiveTxHash(out.execTxHash);
         return {
           kind: 'remove_liquidity',
           hash: out.execTxHash,
-          opHash: out.opHash,
+          commitment: out.commitment,
           lpBurned: out.lpBurned,
-          approveTxHash: out.approveTxHash,
+          validationTxHash: out.validationTxHash,
           explorerUrl: out.explorerUrl,
         };
       }
@@ -362,7 +481,7 @@ export function useAgentSwapExecution(proposal) {
       // ── ADD_LIQUIDITY settles through its own gated route ───────────────────
       // Previously execute() only ever handled swaps, so an approved liquidity
       // proposal on /a2a validated and then did nothing on-chain at all.
-      if (proposal.action === 'ADD_LIQUIDITY') {
+      if (action === 'ADD_LIQUIDITY') {
         const amountARaw = proposal.amountARaw ?? proposal.amountInRaw;
         const amountBRaw = proposal.amountBRaw ?? proposal.minAmountOutRaw;
         const tokenAAddr = tokenInFormatted.isNative ? wgenAddress : tokenInFormatted.address;
@@ -380,7 +499,7 @@ export function useAgentSwapExecution(proposal) {
             slippageBps: proposal.slippageBps || 30,
             // `deadlineNum` is declared further down in this function, so it is
             // in the temporal dead zone here - compute the fallback inline.
-            deadline: proposal.deadline || (Math.floor(Date.now() / 1000) + 1800),
+            deadline: proposal.deadline || (Math.floor(Date.now() / 1000) + 7200),
             validationApproved: Boolean(validationResult?.approved),
           }),
         });
@@ -389,14 +508,17 @@ export function useAgentSwapExecution(proposal) {
           const err = new Error(lpResult.error || 'Liquidity settlement failed - aborted (fail-closed)');
           err.needsApproval = Boolean(lpResult.needsApproval);
           err.notValidated = Boolean(lpResult.notValidated);
+          // Still finalising rather than failed - see the note on the swap path.
+          err.pending = Boolean(lpResult.pending);
+          err.commitment = lpResult.commitment;
           throw err;
         }
         setActiveTxHash(lpResult.execTxHash);
         return {
           kind: 'add_liquidity',
           hash: lpResult.execTxHash,
-          opHash: lpResult.opHash,
-          approveTxHash: lpResult.approveTxHash,
+          commitment: lpResult.commitment,
+          validationTxHash: lpResult.validationTxHash,
           explorerUrl: lpResult.explorerUrl,
         };
       }
@@ -442,12 +564,25 @@ export function useAgentSwapExecution(proposal) {
         ? buildMultiHopProgram(tokenInFormatted, tokenOutFormatted, proposal.hops, wgenAddress)
         : buildProgram(tokenInFormatted, tokenOutFormatted, resolvedRoute, wgenAddress);
       const feeCollector = CONTRACT_ADDRESSES[4221]?.dexFeeVault || '0x48234eD645676b794a4CbC7483513e58cB04e22E';
-      const deadlineNum = Math.floor(Date.now() / 1000) + 1800;
+      const deadlineNum = Math.floor(Date.now() / 1000) + 7200;
       const slippageNum = proposal.slippageBps || 30;
 
       // ── Route through /api/agent-execute (server-side agent wallet) ──────────
       if (isAgentExecutorDeployed) {
         const programHex = typeof program === 'string' ? program : `0x${Buffer.from(program).toString('hex')}`;
+
+        // A liquidity request must never reach the swap settlement route.
+        //
+        // The branches above should have handled it, and this exists because
+        // they did not: a deposit reached here and settled as a swap, moving
+        // funds the user never agreed to move. A guard immediately before the
+        // call that spends money is cheap, and the failure it prevents is not.
+        try {
+          assertSettlementRoute(action, '/api/agent-execute');
+        } catch (err) {
+          setExecutionError(err.message);
+          throw err;
+        }
 
         const agentExecRes = await fetch('/api/agent-execute', {
           method: 'POST',
@@ -461,8 +596,13 @@ export function useAgentSwapExecution(proposal) {
             slippageBps:  slippageNum,
             deadline:     proposal.deadline || deadlineNum,
             aggProgram:   programHex,
-            proposalId:   validationResult?.proposal_id || '',
-            validationApproved: Boolean(validationResult?.approved),
+            // The order /api/genlayer-validate already opened its consensus
+            // round against, or the one a previous `pending` attempt handed
+            // back. Either way settlement waits on THAT commitment instead of
+            // quoting again and starting a second round.
+            pendingOrder:        resumeState?.pendingOrder,
+            pendingProgram:      resumeState?.pendingProgram,
+            validationSubmitted: resumeState?.validationSubmitted,
           }),
         });
 
@@ -473,6 +613,21 @@ export function useAgentSwapExecution(proposal) {
           // the caller should offer a re-quote instead of showing a hard failure.
           err.stale = Boolean(agentResult.stale);
           err.needsApproval = Boolean(agentResult.needsApproval);
+          // `pending` is not a failure at all. The validator IC delivers its
+          // verdict to AgentExecutor as an external message, and those are
+          // delivered on FINALIZATION - so there is a real window in which
+          // consensus has approved the trade but the executor cannot honour it
+          // yet. The commitment is stable across retries, so the same request
+          // will pick the verdict up; surfacing this as a hard error would tell
+          // the user their trade failed when it is simply still settling.
+          err.pending = Boolean(agentResult.pending);
+          err.commitment = agentResult.commitment;
+          // Everything needed to resume THIS settlement. Retrying without them
+          // would re-quote, rebuild the route, and end up waiting on a
+          // different commitment from the one consensus is finalising.
+          err.pendingOrder = agentResult.pendingOrder;
+          err.pendingProgram = agentResult.pendingProgram;
+          err.validationSubmitted = agentResult.validationSubmitted;
           throw err;
         }
 
@@ -481,8 +636,11 @@ export function useAgentSwapExecution(proposal) {
         return {
           kind: 'swap',
           hash,
-          tradeHash: agentResult.tradeHash,
-          approveTxHash: agentResult.approveTxHash,
+          // The consensus-approved identifier this settlement consumed. It
+          // replaces `tradeHash`, which covered only seven of the parameters
+          // that decide where the money goes.
+          commitment: agentResult.commitment,
+          validationTxHash: agentResult.validationTxHash,
           explorerUrl: agentResult.explorerUrl,
         };
       }

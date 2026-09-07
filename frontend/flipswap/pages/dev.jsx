@@ -65,7 +65,7 @@ export async function executeAgentTrade() {
   console.log('Validating proposal on GenLayer GenVM...');
   const result = await genClient.readContract({
     address: AGENT_VALIDATOR,
-    functionName: 'validate_proposal',
+    functionName: 'validate_swap',
     args: [
       proposal.action,
       proposal.tokenIn,

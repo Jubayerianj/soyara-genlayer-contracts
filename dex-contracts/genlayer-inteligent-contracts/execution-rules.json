@@ -1,0 +1,113 @@
+{
+  "_comment": "Soyara DEX - AgentValidator execution rules. Since v2 these rules are only half the story: the binding constraint is the settlement commitment, which AgentExecutor re-derives from calldata and which only the AgentValidator Intelligent Contract can issue a verdict for.",
+  "_version": "2.0.0",
+  "_chain": "GenLayer Testnet (4221) + LitVM / Somnia (4441)",
+  "slippage": {
+    "max_bps": 300,
+    "warn_bps": 100,
+    "description": "300 bps = 3.00% hard cap. 100 bps = 1.00% warning threshold."
+  },
+  "allowed_actions": [
+    "SWAP",
+    "ADD_LIQUIDITY",
+    "REMOVE_LIQUIDITY"
+  ],
+  "forbidden_actions": [
+    "TRANSFER",
+    "APPROVE",
+    "UPGRADE",
+    "CHANGE_OWNER",
+    "ARBITRARY_CALL",
+    "DELEGATE_CALL"
+  ],
+  "approved_tokens": {
+    "GEN": "0x0000000000000000000000000000000000000000",
+    "WGEN": "0x315374AA9b5536037Cc1Efeea2439CCC0913A77e",
+    "WSOMI": "0x315374AA9b5536037Cc1Efeea2439CCC0913A77e",
+    "USDC": "0x58B6CD7891cd0A682226E25607b958a6479195A6",
+    "USDT": "0x4B54235778c26Ee8ac27744A53d4c5BC4c9D46fc",
+    "WBTC": "0x723534bc6C2B536fF5D0455111513A9431c44e25",
+    "ETH": "0x0F56b4E7f4e2cf346a94aB9263Ed3F3644db7c0C",
+    "FSWP": "0xA2eC9aAf2235C66491767e69eBBD885469697B3E"
+  },
+  "approved_routers": {
+    "AGGFlowEntrypoint": "0x95feE6Cb918Ed9C621E36082EE8D998873031EaA",
+    "AGGFlowEntrypoint_Legacy": "0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3",
+    "AGGFlowEntrypoint_Legacy2": "0xF69E64804000d28aA695eB5c594B996100fb3B49",
+    "AGGFlowRouter": "0xafCAD2bf0E85e30a2b54ac6491dC81987cE7767C",
+    "AGGFlowRouter_Legacy": "0xDF474006aa807598B616500d146FfF661d644138",
+    "V2Router": "0xF456737D17C2Bbb348fd4F7D1b000D62A46FB3b5",
+    "V3Router": "0xdf69970B2fE416339187aA41D39882e864984CE9",
+    "V3PositionManager": "0x779380011B5F2aB40985D810B5c7641539beD870",
+    "AgentExecutor": "0xaE547F01f9ddCa4dB66cdbf0727f7563Fc44bC26"
+  },
+  "intelligent_contracts": {
+    "AgentValidator": "0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e",
+    "LiquidityValidator": "0xEFb9473B5269A79d72Df4b6E73E310791a185eeC"
+  },
+  "v3_fee_tiers": [
+    500,
+    3000,
+    10000
+  ],
+  "v3_ticks": {
+    "min_tick": -887272,
+    "max_tick": 887272
+  },
+  "amounts": {
+    "min_amount_in": 1,
+    "max_swap_amount_usd_estimated": 1000000,
+    "description": "Soft USD cap for UI display. Executor enforces on-chain."
+  },
+  "deadline": {
+    "min_seconds_remaining": 60,
+    "description": "Proposals must not be expired. Executor enforces on-chain."
+  },
+  "llm_review_policy": {
+    "enabled": true,
+    "model": "genlayer-default",
+    "prompt_injection_protection": "Only structured numeric/enum fields are passed to LLM. User free-text is NEVER included.",
+    "fallback_on_error": "approve",
+    "description": "LLM is a secondary coherence check. Deterministic rules run first and are authoritative."
+  },
+  "security_notes": [
+    "Never allow arbitrary calldata to reach the executor",
+    "All token addresses must be in the approved list",
+    "All router addresses must be in the approved list",
+    "Slippage is hard-capped at max_bps",
+    "LLM prompt never contains user-supplied free-text",
+    "Contract can be paused by owner in emergencies"
+  ],
+  "fee": {
+    "max_bps": 100,
+    "canonical_collector": "0x48234eD645676b794a4CbC7483513e58cB04e22E",
+    "description": "Fee and fee collector are consensus-governed parameters bound into the settlement commitment. Previously neither was hashed nor checked, so a settlement agent could route the input to any address at any rate the entrypoint accepted - up to 100%. AgentExecutor enforces its own cap independently (maxFeeBps, hard ceiling 500)."
+  },
+  "quote": {
+    "tolerance_bps": 50,
+    "verdict_ttl_seconds": 900,
+    "description": "Validators decode the aggregator route program, confirm every pool against the V2/V3 factory, and re-derive the output from live reserves; the declared quote must match within tolerance_bps. minAmountOut must sit one slippage band below that verified quote, and the verdict expires after verdict_ttl_seconds so a quote checked against live pools cannot be settled long after those pools have moved."
+  },
+  "settlement": {
+    "verdict_source": "AgentValidator Intelligent Contract only",
+    "mechanism": "IC external message -> ghost contract handleOp() -> AgentExecutor.recordVerdict",
+    "bound_parameters": [
+      "user",
+      "tokenIn",
+      "tokenOut",
+      "amountIn",
+      "minAmountOut",
+      "quotedAmountOut",
+      "slippageBps",
+      "deadline",
+      "router",
+      "feeBps",
+      "feeCollector",
+      "routeHash",
+      "nonce",
+      "chainId",
+      "executorAddress"
+    ],
+    "description": "The settlement agent is a relayer. It cannot create an approval: recordVerdict is gated on msg.sender being the validator IC, which no operator key can produce."
+  }
+}

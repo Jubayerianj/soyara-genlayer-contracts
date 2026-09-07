@@ -250,6 +250,318 @@ export async function computeProposalId(args) {
 }
 
 /**
+ * Submit a swap order for a full GenVM consensus round.
+ *
+ * This replaces `validateSwapProposal` for swaps. The difference is not the
+ * plumbing but what crosses the boundary: the IC now receives the ROUTE PROGRAM
+ * itself, the fee, the fee collector, the user and the quote, decodes the route,
+ * checks every pool it touches against the V2/V3 factories, and re-derives the
+ * output from live reserves. A quote the pools would not honour, or a route
+ * through a contract the factories never deployed, is rejected here rather than
+ * discovered at settlement.
+ *
+ * On approval the IC emits an external message to AgentExecutor.recordVerdict.
+ * That message is delivered on FINALIZATION, so the verdict appears on chain a
+ * while after this call returns - poll `isVerdictLive(commitment)` on the
+ * executor rather than treating the receipt as permission to settle.
+ *
+ * @param {object} order   full settlement surface, including aggProgram
+ * @param {object} options { account } - a leased pool lane for the write
+ */
+export async function validateSwapOrder(order, options = {}) {
+  const client = getGenLayerClient();
+  const validatorAddress = GENLAYER_CONFIG.agentValidator;
+
+  const args = [
+    String(order.user),
+    String(order.tokenIn),
+    String(order.tokenOut),
+    String(order.amountIn),
+    String(order.minAmountOut),
+    String(order.quotedAmountOut),
+    parseInt(order.slippageBps, 10),
+    parseInt(order.deadline, 10),
+    String(order.router),
+    parseInt(order.feeBps, 10),
+    String(order.feeCollector),
+    String(order.aggProgram),
+    parseInt(order.nonce, 10),
+  ];
+
+  return _consensusRound('validate_swap', args, options, 'SWAP', options.commitment);
+}
+
+/**
+ * Read back the verdict a round recorded, by commitment.
+ *
+ * This lookup is not optional plumbing. A GenLayer write's RETURN VALUE cannot
+ * be recovered from its receipt - `receipt.result` is the consensus vote enum,
+ * not the contract's payload - so a decided round tells you only that the
+ * validators agreed, never what they agreed. Skipping this step is what made
+ * approved trades surface in the UI as "Rejected by Validator", because
+ * `approved` defaults to false and nothing ever resolved it.
+ *
+ * Returns null when no verdict is recorded yet, which is different from a
+ * recorded rejection and must not be collapsed into one.
+ */
+export async function readVerdict(commitment) {
+  if (!commitment) return null;
+  const client = getGenLayerClient();
+  try {
+    const v = await client.readContract({
+      address: GENLAYER_CONFIG.agentValidator,
+      functionName: 'get_validation',
+      args: [String(commitment)],
+    });
+    if (!v || !v.found) return null;
+    return { approved: Boolean(v.approved), reason: v.reason || '' };
+  } catch (err) {
+    console.warn('[genlayer] get_validation failed:', err?.shortMessage || err?.message);
+    return null;
+  }
+}
+
+/**
+ * Push a decided consensus round towards finalization.
+ *
+ * This is not housekeeping, it is part of the settlement path. An Intelligent
+ * Contract delivers its verdict to AgentExecutor as an external message, and
+ * external messages are emitted on finalization only. Finalization is a call
+ * that somebody has to make, so a round nobody finalizes produces a trade that
+ * can never settle, however cleanly consensus approved it.
+ *
+ * Safe to call repeatedly: it does nothing until the appeal window has elapsed.
+ *
+ * @param {string} txHash   the consensus round to finalize
+ * @param {object} account  any funded account; anyone may finalize
+ */
+export async function finalizeRound(txHash, account) {
+  const client = getGenLayerClient();
+  if (!txHash || !account || typeof client.finalizeIdlenessTxs !== 'function') return false;
+  try {
+    await client.finalizeIdlenessTxs({ account, txIds: [txHash] });
+    return true;
+  } catch {
+    // Expected while the appeal window is open.
+    return false;
+  }
+}
+
+/**
+ * Consensus round for a V2 add-liquidity operation.
+ *
+ * Liquidity used to settle through the agent's own `approveTrade(hash)` call,
+ * with no consensus involvement at settlement at all. It now goes through the
+ * same registry as swaps, and the IC additionally confirms that the pair being
+ * deposited into is the one the Soyara V2 factory actually deployed.
+ */
+export async function validateLiquidityV2Add(op, options = {}) {
+  return _liquidityRound('validate_liquidity_v2_add', [
+    String(op.user), String(op.tokenA), String(op.tokenB),
+    String(op.amountADesired), String(op.amountBDesired),
+    String(op.amountAMin), String(op.amountBMin),
+    parseInt(op.deadline, 10),
+  ], options);
+}
+
+/**
+ * Consensus round for a V2 remove-liquidity operation.
+ *
+ * The IC checks that `lpToken` IS the canonical pair for the two tokens, which
+ * is the check that stops a real LP position being burned against a look-alike
+ * contract.
+ */
+export async function validateLiquidityV2Remove(op, options = {}) {
+  return _liquidityRound('validate_liquidity_v2_remove', [
+    String(op.user), String(op.tokenA), String(op.tokenB),
+    String(op.lpToken), String(op.lpAmount),
+    String(op.amountAMin), String(op.amountBMin),
+    parseInt(op.deadline, 10),
+  ], options);
+}
+
+/**
+ * Consensus round for a V3 mint.
+ *
+ * Ticks are passed as strings because they are signed and routinely negative
+ * below spot; the IC sign-extends them the way Solidity's abi.encode does.
+ */
+export async function validateLiquidityV3Add(op, options = {}) {
+  return _liquidityRound('validate_liquidity_v3_add', [
+    String(op.user), String(op.token0), String(op.token1),
+    parseInt(op.fee, 10),
+    String(op.tickLower), String(op.tickUpper),
+    String(op.amount0Desired), String(op.amount1Desired),
+    String(op.amount0Min), String(op.amount1Min),
+    parseInt(op.deadline, 10),
+  ], options);
+}
+
+/**
+ * Consensus round for a V3 decrease-liquidity.
+ *
+ * token0/token1 are included because AgentExecutor reads them to enforce its
+ * whitelist, which makes them inputs to whether the call is permitted - so they
+ * belong in the commitment even though the withdrawal itself follows tokenId.
+ */
+export async function validateLiquidityV3Remove(op, options = {}) {
+  return _liquidityRound('validate_liquidity_v3_remove', [
+    String(op.user), String(op.tokenId),
+    String(op.token0), String(op.token1),
+    String(op.liquidity),
+    String(op.amount0Min), String(op.amount1Min),
+    parseInt(op.deadline, 10),
+  ], options);
+}
+
+const _liquidityRound = (functionName, args, options) =>
+  // The commitment has to travel with the round.
+  //
+  // Without it `_consensusRound` cannot do its two cheap wins - reuse a verdict
+  // already on record, and read the verdict back once the round decides - and,
+  // worse, it returns an empty `proposal_id`. The client then polls with nothing
+  // to look the verdict up by, so a deposit that consensus had already approved
+  // sat on "Consensus Pending" until the poll budget ran out and the UI froze
+  // there. Swaps passed it; liquidity did not.
+  _consensusRound(functionName, args, options, undefined, options?.commitment);
+
+/**
+ * Submit one binding consensus round and interpret its outcome.
+ *
+ * Shared by every binding validator entry point. The important part is what it
+ * does with a SUBMISSION failure: an RPC throttle means the round never
+ * started, which is not a rejection of the trade and must not be reported as
+ * one. It comes back as `rateLimited`, which /api/genlayer-validate uses to
+ * rotate to a different sender lane - waiting is the wrong remedy, because
+ * Bradbury throttles per sender, so a throttled lane stays throttled however
+ * long you wait while another funded lane submits immediately.
+ */
+async function _consensusRound(functionName, args, options, action = undefined, commitment = null) {
+  const client = getGenLayerClient();
+  const validatorAddress = GENLAYER_CONFIG.agentValidator;
+
+  // Is there already a verdict for this exact commitment?
+  //
+  // The commitment is deterministic for a given intent, and the IC keeps its
+  // verdicts, so a repeat of the same trade, a retry after a timeout, or a
+  // second tab asking the same question all resolve to an identifier that has
+  // already been decided. Paying for another consensus round in that case buys
+  // nothing and costs the user the whole wait again.
+  //
+  // This is a plain read and returns in milliseconds.
+  if (commitment) {
+    const existing = await readVerdict(commitment);
+    if (existing) {
+      return {
+        success: true,
+        approved: existing.approved,
+        pending: false,
+        reason: existing.approved
+          ? `${existing.reason} (verdict already on record, no new round needed)`
+          : existing.reason,
+        proposalId: commitment,
+        reused: true,
+        txHash: null,
+        contractAddress: validatorAddress,
+        contractName: 'AgentValidator (GenLayer IC)',
+        network: GENLAYER_CONFIG.chainName,
+        chainId: GENLAYER_CONFIG.chainId,
+        timestamp: new Date().toISOString(),
+      };
+    }
+  }
+
+  let txHash;
+  try {
+    txHash = await client.writeContract({
+      account: options.account,
+      address: validatorAddress,
+      functionName,
+      args,
+      value: 0n,
+    });
+  } catch (writeErr) {
+    const submissionDetail = await describeSubmissionRevert(writeErr?.shortMessage || writeErr?.message);
+    console.error(`AgentValidator.${functionName} submission failed (failing closed):`, writeErr);
+    return {
+      success: false,
+      approved: false,
+      ...submissionDetail,
+      ...(parseRateLimit(writeErr) ? { retryable: true, rateLimited: true } : {}),
+      reason:
+        (parseRateLimit(writeErr)
+          ? 'The GenLayer RPC node is at capacity and throttled the submission, so no consensus round started. '
+            + 'Your trade was not validated or rejected - retry in a moment.'
+          : null)
+        || submissionDetail?.reason
+        || writeErr?.shortMessage
+        || writeErr?.message
+        || 'GenLayer write transaction failed - consensus unavailable, failed closed',
+      proposalId: '',
+      contractAddress: validatorAddress,
+      contractName: 'AgentValidator (GenLayer IC)',
+      network: GENLAYER_CONFIG.chainName,
+      chainId: GENLAYER_CONFIG.chainId,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  try {
+    // Wait briefly, then hand back the tx hash.
+    //
+    // Blocking here for the whole round meant the browser sat on one request
+    // with nothing to render, so a 25 second consensus round looked like a hung
+    // app. Returning early lets the client poll and show the round's real phase
+    // (Activated, Proposed, Committed, Revealing, Accepted) as it happens. The
+    // wait is the same length; the difference is that it is legible.
+    const receipt = await client.waitForTransactionReceipt({
+      hash: txHash, status: 'ACCEPTED', retries: 3, fullTransaction: true,
+    });
+    const interpreted = interpretValidationReceipt(receipt, { txHash, validatorAddress, action });
+
+    // The round decided. Now find out WHAT it decided - see readVerdict.
+    if (interpreted.needsVerdictLookup) {
+      const verdict = await readVerdict(commitment);
+      if (verdict) {
+        return {
+          ...interpreted,
+          approved: verdict.approved,
+          reason: verdict.reason || interpreted.reason,
+          proposalId: commitment || interpreted.proposalId,
+          txHash,
+        };
+      }
+      // Decided but the verdict is not readable yet. That is a timing gap, not
+      // a rejection, so it must come back as pending for the caller to poll.
+      return {
+        ...interpreted,
+        pending: true,
+        proposalId: commitment || interpreted.proposalId,
+        reason: 'Consensus round decided; waiting for the recorded verdict to become readable.',
+        txHash,
+      };
+    }
+
+    return { ...interpreted, proposalId: commitment || interpreted.proposalId, txHash };
+  } catch (err) {
+    if (String(err?.message || '').includes('Timed out waiting')) {
+      // The round is running; the caller polls the EXECUTOR for the verdict,
+      // because acceptance is not yet authority - finalization is.
+      return {
+        success: true,
+        approved: false,
+        pending: true,
+        txHash,
+        proposalId: commitment || '',
+        reason: 'Consensus round submitted and still running - poll for the verdict.',
+        contractAddress: validatorAddress,
+      };
+    }
+    throw err;
+  }
+}
+
+/**
  * Establish a trading mandate: ONE consensus round that authorises many trades.
  *
  * This is the slow call, and it is meant to be made rarely (once per session /
@@ -329,12 +641,18 @@ export async function getMandate(mandateId) {
  * `issue_trading_mandate`, which DID run full Optimistic Democracy consensus
  * when the session's mandate was established.
  *
- * Settlement is still gated exactly as before: AgentExecutor requires a
- * one-time approval hash over the exact trade parameters and consumes it on
- * use, so a trade that is unapproved, modified, or replayed still cannot settle.
+ * ADVISORY ONLY - nothing here can make a trade settle.
  *
- * Returns null when there is no usable mandate, so callers fall back to the
- * full per-trade consensus round.
+ * The description above is how this worked when the settlement agent enforced
+ * the verdict. It no longer does. AgentExecutor accepts verdicts only from the
+ * AgentValidator IC, delivered over its ghost contract, and `check_mandate` is
+ * a view that emits nothing - so a mandate cannot produce one. The IC reflects
+ * this by returning `settlement_authority: false`.
+ *
+ * Kept for risk-envelope bookkeeping and session UI. No caller in the
+ * settlement path uses it; every trade needs its own `validate_swap` round.
+ *
+ * Returns null when there is no usable mandate.
  */
 export async function checkTradeAgainstMandate(mandateId, trade) {
   if (!mandateId) return null;
@@ -568,7 +886,44 @@ export function resolveTokenAddress(tokenOrAddress) {
  *                             If neither is provided, falls back to readContract
  *                             (non-state-mutating preview only, for UI display).
  */
+/**
+ * ADVISORY pre-trade validation. It does NOT authorise settlement.
+ *
+ * This runs `validate_proposal`, which predates the settlement binding and
+ * never sees the route, the fee, the fee collector or the user - so it cannot
+ * produce the identifier AgentExecutor checks, and it emits no verdict. Its
+ * result is for the pre-trade UI panel only.
+ *
+ * The binding round is `validateSwapOrder` (IC method `validate_swap`), which
+ * /api/agent-execute runs over the exact order it is about to settle.
+ */
 export async function validateSwapProposal(proposal, options = {}) {
+  // `validate_proposal` was removed from AgentValidator.
+  //
+  // It authorised nothing (it never saw the route, the fee or the user, so it
+  // could not produce the identifier the executor checks) and the contract is
+  // deployed as source against a per-block size limit, so dead weight has a
+  // real cost. Calling it now makes the round run and the contract raise, which
+  // surfaces as "consensus failed: ACCEPTED" and reads like a refusal.
+  //
+  // Fail here instead, naming the method that replaced it.
+  return {
+    success: false,
+    approved: false,
+    reason:
+      'validate_proposal no longer exists on AgentValidator. Swaps validate through '
+      + 'validate_swap and V2 liquidity through validate_liquidity_v2_add / _remove, '
+      + 'which are the methods bound to the settlement contract.',
+    proposalId: '',
+    contractAddress: GENLAYER_CONFIG.agentValidator,
+    contractName: 'AgentValidator (GenLayer IC)',
+    network: GENLAYER_CONFIG.chainName,
+    chainId: GENLAYER_CONFIG.chainId,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+async function _retiredValidateSwapProposal(proposal, options = {}) {
   const client = getGenLayerClient();
   const validatorAddress = GENLAYER_CONFIG.agentValidator;
 
@@ -608,7 +963,7 @@ export async function validateSwapProposal(proposal, options = {}) {
   let slippageBps = parseInt(proposal.slippageBps || 30, 10);
   if (isNaN(slippageBps)) slippageBps = 30;
 
-  const defaultRouter = CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3';
+  const defaultRouter = CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0x95feE6Cb918Ed9C621E36082EE8D998873031EaA';
   const router = proposal.router || defaultRouter;
 
   const deadline = parseInt(proposal.deadline || (Math.floor(Date.now() / 1000) + 1200), 10);
@@ -657,40 +1012,22 @@ export async function validateSwapProposal(proposal, options = {}) {
     }
   }
 
-  // ── Fast path: trade covered by a consensus-approved mandate - OPT-IN ─────
-  // A GenVM write has to be activated by the network before validators can vote,
-  // which on Bradbury can take minutes. `check_mandate` is a view, so it answers
-  // immediately, and the mandate it reads was itself established by a full
-  // Optimistic Democracy round.
+  // The mandate fast path that used to sit here has been removed.
   //
-  // It is nevertheless OFF BY DEFAULT. Admitting each individual trade through a
-  // view is what the GenLayer review called "validating through a read
-  // simulation", so the enforced flow requires a per-trade `validate_proposal`
-  // consensus write whose verdict is recorded on-chain and re-read by
-  // /api/agent-execute before settlement. This must stay in lockstep with the
-  // matching gate there: enabling one without the other means validation
-  // approves via mandate while settlement refuses for want of a written verdict.
-  const mandateFastPathEnabled = process.env.GENLAYER_ALLOW_MANDATE_FAST_PATH === 'true';
-  const mandateId = mandateFastPathEnabled
-    ? (options.mandateId || proposal.mandateId || process.env.GENLAYER_MANDATE_ID)
-    : null;
-  if (mandateId && proposal.user) {
-    const fast = await checkTradeAgainstMandate(mandateId, {
-      user: proposal.user,
-      tokenIn,
-      tokenOut,
-      amountIn: String(amountInRaw),
-      slippageBps,
-      deadline,
-    });
-    if (fast?.approved) {
-      return {
-        ...fast,
-        details: { action, tokenIn, tokenOut, amountInRaw: String(amountInRaw), minAmountOutRaw: String(minAmountOutRaw), slippageBps, router, deadline },
-      };
-    }
-    // Not covered by the mandate (or unavailable) → fall through to a full round.
-  }
+  // It admitted individual trades through `check_mandate`, a @gl.public.view -
+  // a read, not a consensus round, and exactly what the GenLayer review called
+  // "validating through a read simulation". It mattered because the settlement
+  // agent acted on the answer.
+  //
+  // It cannot matter any more: AgentExecutor's verdict registry is closed to
+  // every key an operator holds, and a view emits nothing, so a mandate can no
+  // longer make anything settle. What it COULD still do is show the user a
+  // green "validated by GenLayer" panel for a trade that will then be refused
+  // on chain for want of a verdict - a fast answer that is wrong in the only
+  // direction that matters. Better removed than kept as decoration.
+  //
+  // `issue_trading_mandate` and `check_mandate` remain on the IC for risk
+  // bookkeeping, and both now return `settlement_authority: false`.
 
   // ── GenLayer Write Flow (correct path) ────────────────────────────────────
   // validate_proposal is @gl.public.write - it MUST be called as a write
@@ -874,7 +1211,18 @@ export async function validateSwapProposal(proposal, options = {}) {
 }
 
 /**
- * Validate a Liquidity Proposal using GenLayer LiquidityValidator IC
+ * ADVISORY liquidity validation via the separate LiquidityValidator IC.
+ *
+ * It does NOT authorise settlement, and it is not in the settlement path.
+ * AgentExecutor accepts verdicts only from the AgentValidator IC, so a
+ * different Intelligent Contract cannot produce one however it votes.
+ *
+ * The binding rounds are `validateLiquidityV2Add` / `validateLiquidityV2Remove`
+ * / `validateLiquidityV3Add` / `validateLiquidityV3Remove`, which the
+ * /api/agent-add-liquidity and /api/agent-remove-liquidity routes run against
+ * AgentValidator over the exact operation they are about to settle.
+ *
+ * Kept for the pre-trade UI panel and the docs page.
  */
 export async function validateLiquidityProposal(proposal, options = {}) {
   const client = getGenLayerClient();
@@ -906,43 +1254,43 @@ export async function validateLiquidityProposal(proposal, options = {}) {
     const tokenBIn = proposal.tokenB ?? proposal.token1 ?? proposal.tokenOut;
     if (tokenAIn && tokenBIn) {
       // Use the WRAPPED address for native on both sides of the flow.
-      //
-      // AgentExecutor.executeAddLiquidityV2 pulls both sides with transferFrom,
-      // so it can only ever deal in ERC-20s - settlement therefore substitutes
-      // WGEN for native GEN. Validation used to resolve GEN to the zero address
-      // instead, which produced a DIFFERENT proposal_id from the one settlement
-      // derives, so the verdict could never be found and every deposit was
-      // refused with "no GenLayer consensus verdict exists on-chain for these
-      // exact liquidity parameters". Both sides must normalise identically.
       const WGEN = CONTRACT_ADDRESSES[4221]?.wgen || '0x315374AA9b5536037Cc1Efeea2439CCC0913A77e';
       const asErc20 = (t) => {
         const resolved = resolveTokenAddress(t);
         return (!resolved || resolved === '0x0000000000000000000000000000000000000000') ? WGEN : resolved;
       };
+      const tokenA = asErc20(tokenAIn);
+      const tokenB = asErc20(tokenBIn);
       const amountARaw = String(proposal.amountARaw ?? proposal.amountA ?? proposal.amountInRaw ?? '0');
       const amountBRaw = String(proposal.amountBRaw ?? proposal.amountB ?? proposal.minAmountOutRaw ?? '0');
-      const result = await validateSwapProposal(
-        {
-          ...proposal,
-          // Use the PROPOSAL's action. Hardcoding ADD_LIQUIDITY meant a
-          // withdrawal was validated as a deposit, so settlement (which derives
-          // the id with REMOVE_LIQUIDITY) could never find the verdict.
-          action: isRemove ? 'REMOVE_LIQUIDITY' : 'ADD_LIQUIDITY',
-          tokenIn: asErc20(tokenAIn),
-          tokenOut: asErc20(tokenBIn),
-          amountInRaw: amountARaw,
-          minAmountOutRaw: amountBRaw,
-          slippageBps: proposal.slippageBps ?? 30,
-        },
-        options
-      );
-      return {
-        ...result,
-        isLiquidity: true,
-        liquidityModel: 'v2',
-        amountARaw,
-        amountBRaw,
-      };
+      const slippageBps = Number(proposal.slippageBps ?? 30);
+      const deadline = parseInt(proposal.deadline || (Math.floor(Date.now() / 1000) + 7200), 10);
+      const amountAMin = proposal.amountAMin ?? String((BigInt(amountARaw || '0') * BigInt(10000 - slippageBps)) / 10000n);
+      const amountBMin = proposal.amountBMin ?? String((BigInt(amountBRaw || '0') * BigInt(10000 - slippageBps)) / 10000n);
+
+      if (isRemove) {
+        return validateLiquidityV2Remove({
+          user: proposal.user || '0x0000000000000000000000000000000000000000',
+          tokenA,
+          tokenB,
+          lpToken: proposal.lpToken || proposal.pair || '0x0000000000000000000000000000000000000000',
+          lpAmount: String(proposal.lpAmount || proposal.amountInRaw || '0'),
+          amountAMin: String(proposal.minAmountA || amountAMin),
+          amountBMin: String(proposal.minAmountB || amountBMin),
+          deadline,
+        }, options);
+      }
+
+      return validateLiquidityV2Add({
+        user: proposal.user || '0x0000000000000000000000000000000000000000',
+        tokenA,
+        tokenB,
+        amountADesired: amountARaw,
+        amountBDesired: amountBRaw,
+        amountAMin,
+        amountBMin,
+        deadline,
+      }, options);
     }
   }
 

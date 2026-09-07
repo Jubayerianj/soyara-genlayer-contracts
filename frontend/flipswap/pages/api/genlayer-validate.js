@@ -1,16 +1,42 @@
 // pages/api/genlayer-validate.js
 //
-// Validation route - calls AgentValidator GenLayer IC using the WRITE flow.
-// validate_proposal is @gl.public.write and mutates state (validated_count etc).
-// It MUST be called as writeContract + waitForTransactionReceipt to trigger
-// GenLayer's Optimistic Democracy consensus across all validator nodes.
+// Validation route - opens the BINDING consensus round for a swap.
+//
+// This used to run `validate_proposal`, an advisory round that populated the UI
+// panel and authorised nothing, after which /api/agent-execute ran a SECOND
+// round - the binding one - at settlement. On Bradbury that meant paying the
+// multi-minute round latency twice for a single trade, and it meant the panel
+// showed a verdict on something other than what would actually settle.
+//
+// For swaps this route now builds the exact order that will be settled and runs
+// `validate_swap` over it. It returns that order, so /api/agent-execute can wait
+// for the verdict and settle without starting anything new. One round per trade,
+// and the thing the user was shown is the thing that settles.
+//
+// validate_swap is @gl.public.write, so it MUST go through writeContract +
+// waitForTransactionReceipt to trigger Optimistic Democracy across validators.
 //
 // When AGENT_PRIVATE_KEY is set in .env.local, the server-side agent wallet
 // signs the write transaction. If not set, falls back to read simulation
 // (marked isSimulation=true - callers must NOT use simulations to gate settlement).
 
-import { validateSwapProposal, validateLiquidityProposal, checkSwapValidationStatus, finalizeStuckValidation, GENLAYER_CONFIG } from '../../lib/genlayer.js';
+import { validateSwapOrder, validateLiquidityV2Add, validateLiquidityProposal, checkSwapValidationStatus, finalizeStuckValidation, GENLAYER_CONFIG } from '../../lib/genlayer.js';
 import { leaseAgent, getKeeperAccount, poolStatus } from '../../lib/agentPool.js';
+import { createPublicClient, http } from 'viem';
+import AGENT_EXECUTOR_ABI from '../../abi/AgentExecutor.json';
+import { CONTRACT_ADDRESSES } from '../../constants/addresses.js';
+import { buildSwapOrder, serialiseOrder, normaliseSwapIntent } from '../../lib/swapOrder.js';
+import { buildLiquidityV2AddOrder, serialiseLiquidityOrder } from '../../lib/liquidityOrder.js';
+
+const genLayerBradbury = {
+  id: 4221,
+  name: 'GenLayer Bradbury Testnet',
+  nativeCurrency: { name: 'GEN', symbol: 'GEN', decimals: 18 },
+  rpcUrls: {
+    default: { http: ['https://rpc-bradbury.genlayer.com'] },
+    public:  { http: ['https://rpc-bradbury.genlayer.com'] },
+  },
+};
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -83,6 +109,7 @@ export default async function handler(req, res) {
   }
 
   const action = (proposal.action || 'SWAP').toUpperCase();
+  const isV2Liquidity = action === 'ADD_LIQUIDITY' && proposal.model !== 'v3' && !proposal.isV3;
 
   if (!['SWAP', 'ADD_LIQUIDITY', 'REMOVE_LIQUIDITY'].includes(action)) {
     return res.status(400).json({
@@ -132,9 +159,118 @@ export default async function handler(req, res) {
     // capacity no matter how long we wait - while another funded lane submits
     // instantly. Waiting is the wrong remedy; rotating is. Try successive lanes
     // before reporting a throttle to the user.
-    const run = (opts) => (action === 'SWAP'
-      ? validateSwapProposal(proposal, opts)
-      : validateLiquidityProposal(proposal, opts));
+    // For a swap, build the order the settlement will use and validate THAT.
+    // Everything downstream - the commitment, the verdict, the executor's checks
+    // - is derived from this object, so it has to be built once and carried
+    // through rather than reconstructed later from the same inputs.
+    let swapOrder = null;
+    let swapProgram = null;
+    let swapCommitment = null;
+
+    if (action === 'SWAP') {
+      const executorAddress = CONTRACT_ADDRESSES[4221]?.agentExecutor;
+      if (!executorAddress) {
+        return res.status(503).json({
+          approved: false,
+          reason: 'AgentExecutor is not configured, so no commitment can be derived - failed closed.',
+          proposal_id: '',
+        });
+      }
+
+      const publicClient = createPublicClient({
+        chain: genLayerBradbury,
+        transport: http('https://rpc-bradbury.genlayer.com'),
+      });
+
+      // A proposal arrives loosely typed - tokens as symbols, amounts as
+      // human-readable strings. Normalise strictly before anything reaches the
+      // commitment: on this path a mis-parsed amount would not just misreport a
+      // number, it would mint a consensus verdict for a trade the user never
+      // asked for.
+      const intent = normaliseSwapIntent(proposal);
+      if (!intent.ok) {
+        if (lease) lease.release();
+        return res.status(400).json({ approved: false, reason: intent.error, proposal_id: '' });
+      }
+
+      const built = await buildSwapOrder({
+        publicClient,
+        executor: executorAddress,
+        abi: AGENT_EXECUTOR_ABI,
+        user:        intent.user,
+        tokenIn:     intent.tokenIn,
+        tokenOut:    intent.tokenOut,
+        amountIn:    intent.amountIn,
+        slippageBps: intent.slippageBps,
+        deadline:    intent.deadline,
+        expectedMinAmountOut: intent.expectedMinAmountOut,
+      });
+
+      if (!built.ok) {
+        if (lease) lease.release();
+        return res.status(built.status).json({
+          approved: false,
+          reason: built.body.error,
+          proposal_id: '',
+          ...built.body,
+        });
+      }
+
+      swapOrder = built.order;
+      swapProgram = built.aggProgram;
+      swapCommitment = built.commitment;
+    }
+
+    // A V2 deposit is built here for the same reason a swap is: the amounts that
+    // settle are the typed amounts REDUCED TO THE POOL RATIO, not the typed
+    // amounts. Validating one set and settling the other produces two different
+    // commitments and a verdict that fits neither.
+    //
+    // It also has to go to `validate_liquidity_v2_add`. The old path called
+    // `validate_proposal`, which no longer exists on the validator, so every
+    // deposit came back as "consensus failed: ACCEPTED" - the round ran and the
+    // contract raised on a missing method.
+    let liquidityOrder = null;
+    if (isV2Liquidity) {
+      const executorAddress = CONTRACT_ADDRESSES[4221]?.agentExecutor;
+      const publicClient = createPublicClient({
+        chain: genLayerBradbury,
+        transport: http('https://rpc-bradbury.genlayer.com'),
+      });
+      const built = await buildLiquidityV2AddOrder({
+        publicClient,
+        executor: executorAddress,
+        abi: AGENT_EXECUTOR_ABI,
+        user: proposal.user,
+        // Prefer the explicit address fields. `tokenA` is often a SYMBOL.
+        tokenA: proposal.tokenAAddress ?? proposal.tokenA ?? proposal.token0 ?? proposal.tokenIn,
+        tokenB: proposal.tokenBAddress ?? proposal.tokenB ?? proposal.token1 ?? proposal.tokenOut,
+        // Raw and human amounts are kept apart on purpose. Collapsing them with
+        // ?? meant a human "10" was read as ten WEI, and "10.0" threw.
+        rawA: proposal.amountARaw ?? proposal.amount0Desired ?? proposal.amountInRaw ?? null,
+        rawB: proposal.amountBRaw ?? proposal.amount1Desired ?? proposal.minAmountOutRaw ?? null,
+        amountADesired: proposal.amountA ?? null,
+        amountBDesired: proposal.amountB ?? null,
+        slippageBps: proposal.slippageBps ?? 30,
+        deadline: proposal.deadline || (Math.floor(Date.now() / 1000) + 7200),
+      });
+      if (!built.ok) {
+        if (lease) lease.release();
+        return res.status(built.status).json({ approved: false, reason: built.body.error, proposal_id: '' });
+      }
+      liquidityOrder = built.order;
+      swapCommitment = built.commitment;
+    }
+
+    const run = (opts) => {
+      if (action === 'SWAP') {
+        return validateSwapOrder({ ...swapOrder, aggProgram: swapProgram }, { ...opts, commitment: swapCommitment });
+      }
+      if (isV2Liquidity) {
+        return validateLiquidityV2Add(liquidityOrder, { ...opts, commitment: swapCommitment });
+      }
+      return validateLiquidityProposal(proposal, opts);
+    };
 
     let currentLease = lease;
     let opts = options;
@@ -185,6 +321,11 @@ export default async function handler(req, res) {
       statusName:       validationResult.statusName || null,
       queue_full:       Boolean(validationResult.queueFull),
       rate_limited:     Boolean(validationResult.rateLimited),
+      // The round decided but its verdict has not been read back yet. Callers
+      // must treat this as pending: a GenLayer write's return value is not in
+      // its receipt, so `approved` is false here only because nothing has
+      // resolved it, never because the validators refused the trade.
+      needs_verdict_lookup: Boolean(validationResult.needsVerdictLookup),
       via_mandate:      Boolean(validationResult.viaMandate),
       consensus_mode:   validationResult.viaMandate
         ? 'Mandate (pre-approved by GenVM consensus - instant view check)'
@@ -194,6 +335,20 @@ export default async function handler(req, res) {
       is_write_flow:    !validationResult.isSimulation,
       live_execution:   Boolean(validationResult.success),
       details:          validationResult.details || null,
+
+      // The settlement handoff. /api/agent-execute takes these back verbatim and
+      // waits for the verdict on this exact commitment instead of quoting again
+      // and opening a second round. Passing them is safe because nothing in the
+      // settlement route can authorise a trade: a tampered order hashes to a
+      // commitment no verdict backs, and the executor refuses it.
+      commitment:           swapCommitment,
+      pendingOrder:         swapOrder ? serialiseOrder(swapOrder)
+                            : liquidityOrder ? serialiseLiquidityOrder(liquidityOrder) : null,
+      orderKind:            swapOrder ? 'swap' : liquidityOrder ? 'v2_add' : null,
+      pendingProgram:       swapProgram,
+      validationSubmitted:  action === 'SWAP' && Boolean(validationResult.txHash),
+      quoted_amount_out:    swapOrder ? swapOrder.quotedAmountOut.toString() : null,
+      min_amount_out:       swapOrder ? swapOrder.minAmountOut.toString() : null,
     });
   } catch (error) {
     console.error('API /genlayer-validate error (failing closed):', error);

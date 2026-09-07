@@ -622,7 +622,7 @@ def validate_proposal(self, action: str, token_in: str, token_out: str, amount_i
   "amount_in": "50000000000000000000",
   "min_amount_out": "99200000000000000000",
   "slippage_bps": 30,
-  "router": "0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3",
+  "router": "0x95feE6Cb918Ed9C621E36082EE8D998873031EaA",
   "deadline": 1787685000,
   "agent_id": "0x23D542DCEFb00b1f4268E67a0EC1EF4de0A58fe2",
   "extra_data": {

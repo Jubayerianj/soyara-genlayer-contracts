@@ -20,7 +20,7 @@ export default function A2APortalGateway() {
           </div>
           <h1 className={styles.heroTitle}>Select Your Agent Portal</h1>
           <p className={styles.heroSubtitle}>
-            Zero API keys. 100% decentralized AI consensus on GenLayer GenVM.
+            Seven agents, zero API keys. Every trade is decided by GenLayer consensus and enforced by the settlement contract.
           </p>
         </section>
 
@@ -33,7 +33,7 @@ export default function A2APortalGateway() {
               </div>
               <h2 className={styles.portalTitle}>Trader Swarm</h2>
               <p className={styles.portalDesc}>
-                Conversational DeFi trading. 4 autonomous agents simulate V2/V3 liquidity, validate GenVM consensus, and execute non-custodial swaps.
+                Conversational trading. Seven agents quote every venue, read the pools behind the quote, debate the risk, run GenLayer consensus, and prove on-chain that the verdict binds your route, fee and price.
               </p>
             </div>
             <div className={styles.portalAction} style={{ color: '#38bdf8' }}>

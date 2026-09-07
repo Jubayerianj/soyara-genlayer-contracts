@@ -1,9 +1,10 @@
 // pages/api/agent-v2.js
 import { formatUnits, parseUnits } from 'viem';
 import { parseIntent } from '../../lib/parseIntent.js';
-import { quoteBestRouteMultiHop, quoteBestRoute } from '../../lib/dexQuote.js';
+import { quoteBestRouteMultiHop, quoteBestRoute, getQuoteClient } from '../../lib/dexQuote.js';
 import { TOKEN_LIST, GEN_NATIVE_TOKEN } from '../../constants/tokens.js';
 import { CONTRACT_ADDRESSES, INTELLIGENT_CONTRACTS } from '../../constants/addresses.js';
+import { POOLS_URL, mentionsLiquidity } from '../../lib/pools.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
@@ -51,14 +52,21 @@ const GENLAYER_KNOWLEDGE = {
     v3Router: CONTRACT_ADDRESSES[4221].v3Router,
     v3PositionManager: CONTRACT_ADDRESSES[4221].v3PositionManager,
   },
+  // No prices here on purpose.
+  //
+  // These used to carry figures like '$68,500.00' for WBTC, presented to the
+  // user as fact. They are constants in a source file on a testnet whose pools
+  // price nothing like that, so every one of them was wrong, and stating a wrong
+  // price confidently is worse than stating none. Prices come from pool
+  // reserves, through the quoter, and appear in the proposal card.
   tokens: [
-    { symbol: 'GEN', name: 'GenLayer Native Token', price: '$0.50', address: 'Native (0x0)' },
-    { symbol: 'WGEN', name: 'Wrapped GEN', price: '$0.50', address: '0x315374AA9b5536037Cc1Efeea2439CCC0913A77e' },
-    { symbol: 'USDC', name: 'USD Coin', price: '$1.00', address: '0x58B6CD7891cd0A682226E25607b958a6479195A6' },
-    { symbol: 'USDT', name: 'Tether USD', price: '$1.00', address: '0x4B54235778c26Ee8ac27744A53d4c5BC4c9D46fc' },
-    { symbol: 'WBTC', name: 'Wrapped Bitcoin', price: '$68,500.00', address: '0x723534bc6C2B536fF5D0455111513A9431c44e25' },
-    { symbol: 'ETH', name: 'Ethereum', price: '$2,650.00', address: '0x0F56b4E7f4e2cf346a94aB9263Ed3F3644db7c0C' },
-    { symbol: 'FSWP', name: 'Soyara Protocol Token', price: '$0.15', address: '0xA2eC9aAf2235C66491767e69eBBD885469697B3E' },
+    { symbol: 'GEN', name: 'GenLayer Native Token', address: 'Native (0x0)' },
+    { symbol: 'WGEN', name: 'Wrapped GEN', address: '0x315374AA9b5536037Cc1Efeea2439CCC0913A77e' },
+    { symbol: 'USDC', name: 'USD Coin', address: '0x58B6CD7891cd0A682226E25607b958a6479195A6' },
+    { symbol: 'USDT', name: 'Tether USD', address: '0x4B54235778c26Ee8ac27744A53d4c5BC4c9D46fc' },
+    { symbol: 'WBTC', name: 'Wrapped Bitcoin', address: '0x723534bc6C2B536fF5D0455111513A9431c44e25' },
+    { symbol: 'ETH', name: 'Ethereum', address: '0x0F56b4E7f4e2cf346a94aB9263Ed3F3644db7c0C' },
+    { symbol: 'FSWP', name: 'Soyara Protocol Token', address: '0xA2eC9aAf2235C66491767e69eBBD885469697B3E' },
   ],
 };
 
@@ -103,6 +111,57 @@ function formatAmountDisplay(raw, decimals) {
   const places = Math.min(8, Math.max(2, 5 - magnitude));
   const [int, frac = ''] = full.split('.');
   return `${int}.${frac.padEnd(places, '0').slice(0, places)}`;
+}
+
+/**
+ * Read a V2 pair's actual reserves.
+ *
+ * Returned in token units only. There is no price oracle wired into this app,
+ * so a dollar-denominated TVL would have to be invented - and an invented
+ * figure presented as a pool fact is something a user reasonably believes.
+ */
+async function readPoolDepth(tokenASym, tokenBSym) {
+  const a = getTokenObject(tokenASym);
+  const b = getTokenObject(tokenBSym);
+  const wgen = CONTRACT_ADDRESSES[4221]?.wgen;
+  const factory = CONTRACT_ADDRESSES[4221]?.factory;
+  const addrA = a?.isNative ? wgen : a?.address;
+  const addrB = b?.isNative ? wgen : b?.address;
+  const base = { pair: `${tokenASym}/${tokenBSym}`, feeTier: '0.30%' };
+  if (!factory || !addrA || !addrB) return { ...base, error: 'Unknown token in this pair.' };
+
+  const client = getQuoteClient();
+  const FACTORY_ABI = [{ inputs: [{ type: 'address' }, { type: 'address' }], name: 'getPair', outputs: [{ type: 'address' }], stateMutability: 'view', type: 'function' }];
+  const PAIR_ABI = [
+    { inputs: [], name: 'getReserves', outputs: [{ type: 'uint112' }, { type: 'uint112' }, { type: 'uint32' }], stateMutability: 'view', type: 'function' },
+    { inputs: [], name: 'token0', outputs: [{ type: 'address' }], stateMutability: 'view', type: 'function' },
+  ];
+
+  try {
+    const pair = await client.readContract({ address: factory, abi: FACTORY_ABI, functionName: 'getPair', args: [addrA, addrB] });
+    if (!pair || pair === '0x0000000000000000000000000000000000000000') {
+      return { ...base, exists: false, note: 'No V2 pool exists for this pair on Soyara DEX.' };
+    }
+    const [reserves, token0] = await Promise.all([
+      client.readContract({ address: pair, abi: PAIR_ABI, functionName: 'getReserves' }),
+      client.readContract({ address: pair, abi: PAIR_ABI, functionName: 'token0' }),
+    ]);
+    const aIs0 = String(token0).toLowerCase() === String(addrA).toLowerCase();
+    const rA = aIs0 ? reserves[0] : reserves[1];
+    const rB = aIs0 ? reserves[1] : reserves[0];
+    const humanA = Number(formatUnits(rA, a?.decimals ?? 18));
+    const humanB = Number(formatUnits(rB, b?.decimals ?? 18));
+    return {
+      ...base,
+      exists: true,
+      address: pair,
+      reserves: `${humanA.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${tokenASym} / ${humanB.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${tokenBSym}`,
+      impliedRate: humanA > 0 ? `1 ${tokenASym} = ${(humanB / humanA).toLocaleString(undefined, { maximumFractionDigits: 8 })} ${tokenBSym}` : null,
+      note: 'Reserves are in token units. This app has no price oracle, so no USD value is available and none should be stated.',
+    };
+  } catch (err) {
+    return { ...base, error: `Pool state could not be read: ${err.shortMessage || err.message}` };
+  }
 }
 
 async function calculateQuote(tokenInSym, tokenOutSym, amountInNum, dex = 'best') {
@@ -185,6 +244,14 @@ async function calculateQuote(tokenInSym, tokenOutSym, amountInNum, dex = 'best'
           dex: onChain.dex,
           poolAddress: onChain.pool,
           isLiveQuote: true,
+          // A route paying far more than the direct pool is reading a price
+          // disagreement between pools, not finding a better path. Carry it
+          // through so the proposal can say so instead of calling it optimal.
+          priceWarning: onChain.priceWarning || null,
+          dislocationFactor: onChain.dislocationFactor ?? 1,
+          directAmountOut: onChain.directAmountOutRaw
+            ? formatAmountDisplay(onChain.directAmountOutRaw, decimalsOut)
+            : null,
         };
       }
     } catch (err) {
@@ -250,7 +317,7 @@ const tools = [
       },
       {
         name: 'get_pool_info',
-        description: 'Fetch pool details including TVL, volume, fee tiers, and depth on Soyara DEX.',
+        description: 'Fetch pool details for a pair on Soyara DEX. Returns only what is read on chain. Never state TVL, volume or pool share unless this tool returned it.',
         parameters: {
           type: 'OBJECT',
           properties: {
@@ -277,7 +344,7 @@ const tools = [
 ];
 
 async function buildProposalObject(action, params) {
-  const defaultRouter = CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0xfdf5cD6452EDC340e67cd16db6A9D74aaa4f81a3';
+  const defaultRouter = CONTRACT_ADDRESSES[4221]?.aggregatorEntrypoint || '0x95feE6Cb918Ed9C621E36082EE8D998873031EaA';
   // Quantise the deadline to a 10-minute boundary.
   //
   // deadline is one of the inputs to compute_proposal_id, so a per-second value
@@ -324,6 +391,9 @@ async function buildProposalObject(action, params) {
       slippageBps: DEFAULT_SLIPPAGE_BPS,
       priceImpact: quote.priceImpact,
       priceImpactPct: quote.priceImpactPct ?? null,
+      priceWarning: quote.priceWarning || null,
+      dislocationFactor: quote.dislocationFactor ?? 1,
+      directAmountOut: quote.directAmountOut ?? null,
       highImpact: Boolean(quote.highImpact),
       route: quote.route,
       // Carry the routed venue so settlement builds a program for the SAME pool
@@ -359,11 +429,10 @@ async function buildProposalObject(action, params) {
     const decimalsA = tokenAObj?.decimals || 18;
     const decimalsB = tokenBObj?.decimals || 18;
 
-    const slippageFactor = 0.995; // 0.50% slippage (50 bps, strictly within GenLayer 300 bps cap)
-    const amountARaw = (BigInt(Math.floor(amountA * 1e6)) * BigInt(10 ** (decimalsA - 6))).toString();
-    const amountBRaw = (BigInt(Math.floor(amountB * 1e6)) * BigInt(10 ** (decimalsB - 6))).toString();
-    const minAmountARaw = (BigInt(Math.floor(amountA * slippageFactor * 1e6)) * BigInt(10 ** (decimalsA - 6))).toString();
-    const minAmountBRaw = (BigInt(Math.floor(amountB * slippageFactor * 1e6)) * BigInt(10 ** (decimalsB - 6))).toString();
+    const amountARaw = parseUnits(String(amountA), decimalsA).toString();
+    const amountBRaw = parseUnits(String(amountB), decimalsB).toString();
+    const minAmountARaw = ((BigInt(amountARaw) * 9950n) / 10000n).toString();
+    const minAmountBRaw = ((BigInt(amountBRaw) * 9950n) / 10000n).toString();
 
     return {
       action: 'ADD_LIQUIDITY',
@@ -373,12 +442,14 @@ async function buildProposalObject(action, params) {
       tokenOut: tokenB,
       tokenAAddress: tokenAObj?.address || '0x0000000000000000000000000000000000000000',
       tokenBAddress: tokenBObj?.address || '0x0000000000000000000000000000000000000000',
+      tokenInAddress: tokenAObj?.address || '0x0000000000000000000000000000000000000000',
+      tokenOutAddress: tokenBObj?.address || '0x0000000000000000000000000000000000000000',
       amountA,
       amountB,
       amountARaw,
       amountBRaw,
-      minAmountA: (amountA * slippageFactor).toFixed(4),
-      minAmountB: (amountB * slippageFactor).toFixed(4),
+      minAmountA: (amountA * 0.995).toFixed(4),
+      minAmountB: (amountB * 0.995).toFixed(4),
       minAmountARaw,
       minAmountBRaw,
       amount0Desired: amountARaw,
@@ -395,7 +466,9 @@ async function buildProposalObject(action, params) {
       model: params.model || 'v2',
       router: params.model === 'v3' ? CONTRACT_ADDRESSES[4221].v3PositionManager : CONTRACT_ADDRESSES[4221].router,
       deadline,
-      genlayerContract: INTELLIGENT_CONTRACTS.liquidityValidator,
+      isLiveQuote: true,
+      executable: true,
+      genlayerContract: INTELLIGENT_CONTRACTS.agentValidator,
     };
   }
 
@@ -417,9 +490,9 @@ async function generateComprehensiveDiscussion(message) {
 
   // 2. TOKEN ASSETS & PRICES
   if (text.includes('token') || text.includes('list') || text.includes('what can i trade') || text.includes('supported') || text.includes('price')) {
-    const tokenSummary = GENLAYER_KNOWLEDGE.tokens.map(t => `- **${t.symbol}** (${t.name}): ${t.price} · \`${t.address.slice(0, 10)}...\``).join('\n');
+    const tokenSummary = GENLAYER_KNOWLEDGE.tokens.map(t => `- **${t.symbol}** (${t.name}) · \`${t.address.slice(0, 10)}...\``).join('\n');
     return {
-      reply: `### 🪙 Supported Tokens on GenLayer Bradbury Testnet:\n\n${tokenSummary}\n\nAll of these tokens are whitelisted in **AgentValidator** and **LiquidityValidator** contracts.\n\n*Try saying: "Swap 100 USDC to GEN" or "Compare V2 vs V3 for 50 WGEN to USDT".*`,
+      reply: `### 🪙 Supported Tokens on GenLayer Bradbury Testnet:\n\n${tokenSummary}\n\nAll of these tokens are whitelisted in the **AgentValidator** Intelligent Contract, which is what gates settlement.\n\n*Try saying: "Swap 100 USDC to GEN" or "Compare V2 vs V3 for 50 WGEN to USDT".*`,
       proposal: null,
       toolsUsed: ['Token Registry'],
     };
@@ -485,9 +558,33 @@ async function generateComprehensiveDiscussion(message) {
     });
     const rate = (parseFloat(quote.amountOut) / (intent.amountIn ?? 100)).toFixed(6);
     return {
-      reply: `### ⚡ Swap Execution Proposal Prepared\n\n- **Route:** ${quote.route} (best route chosen by the aggregator)\n- **Rate:** 1 ${intent.tokenIn} ≈ ${rate} ${intent.tokenOut}${quote.isLiveQuote ? ' (live pool price)' : ' (estimated - no live pool)'}\n- **Expected Output:** **${quote.amountOut} ${intent.tokenOut}**\n- **Min. Received (${(intent.slippageBps / 100).toFixed(2)}% slippage):** ${quote.minAmountOut} ${intent.tokenOut}\n- **Price Impact:** ${quote.priceImpact}\n\n👉 **Next:** click **"Validate with GenLayer IC"** to run this through GenVM consensus.`,
+      reply: `### ⚡ Swap Execution Proposal Prepared\n\n- **Route:** ${quote.route} (best route chosen by the aggregator)\n- **Rate:** 1 ${intent.tokenIn} ≈ ${rate} ${intent.tokenOut}${quote.isLiveQuote ? ' (live pool price)' : ' (estimated - no live pool)'}\n- **Expected Output:** **${quote.amountOut} ${intent.tokenOut}**\n- **Min. Received (${(intent.slippageBps / 100).toFixed(2)}% slippage):** ${quote.minAmountOut} ${intent.tokenOut}\n- **Price Impact:** ${quote.priceImpact}${quote.priceWarning ? `\n\n> ⚠️ **This price is not trustworthy.** The route pays about ${quote.dislocationFactor.toFixed(1)}x what the direct pool pays${quote.directAmountOut ? ` (direct: ${quote.directAmountOut} ${intent?.tokenOut ?? ''})` : ''}. That gap means the pools disagree about the price, not that the route is better. Expect this to be arbitraged before it settles, and treat the minimum received as unreliable.` : ''}\n\n👉 **Next:** click **"Validate with GenLayer IC"** to run this through GenVM consensus.`,
       proposal,
       toolsUsed: ['get_quote', 'best-route aggregator', 'AgentValidator IC'],
+    };
+  }
+
+  // Liquidity is not this aggregator's job.
+  //
+  // It routes and settles swaps. Deposits and withdrawals belong to the pools
+  // app, which is built for them. Carrying a half-supported liquidity path
+  // through here produced a run of confusing failures - a deposit quoted as a
+  // swap, a "Deposit into Pool" button that settled a trade - and none of it
+  // bought the user anything the pools page does not do better.
+  if (intent.action === 'ADD_LIQUIDITY' || intent.action === 'REMOVE_LIQUIDITY') {
+    const pair = intent.tokenIn && intent.tokenOut ? ` for **${intent.tokenIn}/${intent.tokenOut}**` : '';
+    const verb = intent.action === 'REMOVE_LIQUIDITY' ? 'Withdrawing' : 'Adding';
+    return {
+      reply: `### 💧 Liquidity happens on the pools app\n\n`
+        + `${verb} liquidity${pair} is handled at [app.soyara.com/pools](${POOLS_URL}), which is built for managing positions.\n\n`
+        + `I route and settle **swaps**. My seven agents compare every venue, read the pools behind the quote, run the `
+        + `trade through GenLayer consensus, and verify on-chain that the approved commitment binds the route, the fee, `
+        + `you and the quote before anything settles.\n\n`
+        + `👉 [Open the pools app](${POOLS_URL})\n\n`
+        + `Or tell me a swap and I will take it from there - try *"swap 100 USDC to WGEN"*.`,
+      proposal: null,
+      toolsUsed: ['Intent Router'],
+      redirect: { url: POOLS_URL, reason: 'liquidity' },
     };
   }
 
@@ -567,31 +664,26 @@ async function generateComprehensiveDiscussion(message) {
 
     const rate = (parseFloat(quote.amountOut) / amount).toFixed(6);
     return {
-      reply: `### ⚡ Swap Execution Proposal Prepared\n\nI have analyzed routes across GenLayer liquidity pools for your trade:\n\n- **Route:** ${quote.route}\n- **Rate:** 1 ${tokenIn} ≈ ${rate} ${tokenOut}${quote.isLiveQuote ? ' (live pool price)' : ' (estimated - no live pool)'}\n- **Expected Output:** **${quote.amountOut} ${tokenOut}**\n- **Min. Received (${(DEFAULT_SLIPPAGE_BPS / 100).toFixed(2)}% slippage):** ${quote.minAmountOut} ${tokenOut}\n- **Protocol Fee:** ${quote.fee}\n- **Price Impact:** ${quote.priceImpact}\n\n👉 **Next Step:** Click **"Validate with GenLayer IC"** in the proposal card on the right to verify this trade through decentralized consensus on GenVM!`,
+      reply: `### ⚡ Swap Execution Proposal Prepared\n\nI have analyzed routes across GenLayer liquidity pools for your trade:\n\n- **Route:** ${quote.route}\n- **Rate:** 1 ${tokenIn} ≈ ${rate} ${tokenOut}${quote.isLiveQuote ? ' (live pool price)' : ' (estimated - no live pool)'}\n- **Expected Output:** **${quote.amountOut} ${tokenOut}**\n- **Min. Received (${(DEFAULT_SLIPPAGE_BPS / 100).toFixed(2)}% slippage):** ${quote.minAmountOut} ${tokenOut}\n- **Protocol Fee:** ${quote.fee}\n- **Price Impact:** ${quote.priceImpact}${quote.priceWarning ? `\n\n> ⚠️ **This price is not trustworthy.** The route pays about ${quote.dislocationFactor.toFixed(1)}x what the direct pool pays${quote.directAmountOut ? ` (direct: ${quote.directAmountOut} ${intent?.tokenOut ?? ''})` : ''}. That gap means the pools disagree about the price, not that the route is better. Expect this to be arbitraged before it settles, and treat the minimum received as unreliable.` : ''}\n\n👉 **Next Step:** Click **"Validate with GenLayer IC"** in the proposal card on the right to verify this trade through decentralized consensus on GenVM!`,
       proposal,
       toolsUsed: ['get_quote', 'compare_routes', 'AgentValidator IC'],
     };
   }
 
-  // 6. LIQUIDITY INTENTS
-  if (text.includes('liquidity') || text.includes('pool') || text.includes('deposit') || text.includes('provide')) {
-    const tokenA = foundTokens[0] || 'GEN';
-    const tokenB = foundTokens[1] || 'USDC';
-    const amountA = amount;
-    const amountB = numberMatches && numberMatches.length > 1 ? parseFloat(numberMatches[1]) : (amount * 2);
-
-    const proposal = await buildProposalObject('ADD_LIQUIDITY', {
-      tokenA,
-      tokenB,
-      amountA,
-      amountB,
-      model: isV3 ? 'v3' : 'v2',
-    });
-
+  // 6. LIQUIDITY INTENTS - handed to the pools app, never quoted here.
+  if (mentionsLiquidity(text)) {
+    const pair = foundTokens.length >= 2 ? ` for **${foundTokens[0]}/${foundTokens[1]}**` : '';
     return {
-      reply: `### 💧 Liquidity Proposal Prepared: ${tokenA}/${tokenB}\n\n- **Pool Model:** ${isV3 ? 'V3 Concentrated Liquidity (0.05% Fee Tier)' : 'V2 Classic AMM (0.30% Fee)'}\n- **Deposit Amount A:** **${amountA} ${tokenA}** (~$${(amountA * (TOKEN_PRICES_USD[tokenA] || 1)).toFixed(2)})\n- **Deposit Amount B:** **${amountB} ${tokenB}** (~$${(amountB * (TOKEN_PRICES_USD[tokenB] || 1)).toFixed(2)})\n- **Estimated Pool Share:** ~0.24%\n\n👉 **Next Step:** Validate with **LiquidityValidator IC** on the right panel to ensure tick ranges and amounts pass on-chain safety verification.`,
-      proposal,
-      toolsUsed: ['get_pool_info', 'LiquidityValidator IC'],
+      reply: `### 💧 Liquidity happens on the pools app\n\n`
+        + `Managing a position${pair} is handled at [app.soyara.com/pools](${POOLS_URL}), which is built for it.\n\n`
+        + `I route and settle **swaps**. My agents compare every venue, read the reserves behind the quote, run the `
+        + `trade through GenLayer consensus, and verify on-chain that the approved commitment binds the route, the `
+        + `fee, you and the quote before anything settles.\n\n`
+        + `👉 [Open the pools app](${POOLS_URL})\n\n`
+        + `Or tell me a swap - try *"swap 100 USDC to WGEN"*.`,
+      proposal: null,
+      toolsUsed: ['Intent Router'],
+      redirect: { url: POOLS_URL, reason: 'liquidity' },
     };
   }
 
@@ -639,6 +731,33 @@ export default async function handler(req, res) {
   const { message, history = [] } = req.body;
   if (!message) return res.status(400).json({ error: 'Message is required' });
 
+  // ── Liquidity is handed off before anything else runs ────────────────────
+  // The system prompt also tells the model this, and it does comply - but a
+  // prompt is a request and this is a scope boundary. Deciding it here makes it
+  // deterministic, saves the round trip, and sets the `redirect` field the UI
+  // needs to render the handoff panel rather than a wall of text.
+  if (mentionsLiquidity(message)) {
+    const asIntent = parseIntent(message, { slippageBps: 100 });
+    // "swap 100 USDC to WGEN, which pool is that" mentions a pool but is a
+    // trade. Only hand off when the parse agrees it is not a swap.
+    if (asIntent.action !== 'SWAP' && asIntent.action !== 'COMPARE') {
+      const pair = asIntent.tokenIn && asIntent.tokenOut ? ` for **${asIntent.tokenIn}/${asIntent.tokenOut}**` : '';
+      const verb = asIntent.action === 'REMOVE_LIQUIDITY' ? 'Withdrawing' : 'Managing';
+      return res.status(200).json({
+        reply: `### 💧 Liquidity happens on the pools app\n\n`
+          + `${verb} liquidity${pair} is handled at [app.soyara.com/pools](${POOLS_URL}), which is built for positions.\n\n`
+          + `I route and settle **swaps**. My agents compare every venue, read the reserves behind the quote, run the `
+          + `trade through GenLayer consensus, and verify on-chain that the approved commitment binds the route, the `
+          + `fee, you and the quote before anything settles.\n\n`
+          + `👉 [Open the pools app](${POOLS_URL})\n\n`
+          + `Or tell me a swap - try *"swap 100 USDC to WGEN"*.`,
+        proposal: null,
+        toolsUsed: ['Intent Router'],
+        redirect: { url: POOLS_URL, reason: 'liquidity' },
+      });
+    }
+  }
+
   // ── FAST PATH: an unambiguous trade needs no LLM round trip ──────────────
   // The local handler already builds the whole proposal from live pool
   // reserves; routing "swap 50 USDC to USDT" through Gemini first added ~8s to
@@ -668,26 +787,70 @@ export default async function handler(req, res) {
     const systemPrompt = `You are the expert Soyara AI Trading Agent on GenLayer Bradbury Testnet (Chain ID: 4221).
 You possess comprehensive knowledge of decentralized finance, AMMs, SoyaraDex V2/V3 math, AGGFlow routing, and GenLayer Intelligent Contracts running on GenVM.
 
-Supported Tokens on GenLayer Bradbury:
-- GEN: Native currency, $0.50
-- WGEN: Wrapped GEN (0x315374AA9b5536037Cc1Efeea2439CCC0913A77e), $0.50
-- USDC: USD Coin (0x58B6CD7891cd0A682226E25607b958a6479195A6), $1.00
-- USDT: Tether USD (0x4B54235778c26Ee8ac27744A53d4c5BC4c9D46fc), $1.00
-- WBTC: Wrapped BTC (0x723534bc6C2B536fF5D0455111513A9431c44e25), $68,500.00
-- ETH: Ethereum (0x0F56b4E7f4e2cf346a94aB9263Ed3F3644db7c0C), $2,650.00
-- FSWP: Soyara Protocol Token (0xA2eC9aAf2235C66491767e69eBBD885469697B3E), $0.15
+Supported tokens on GenLayer Bradbury (addresses only):
+- GEN: native currency
+- WGEN: 0x315374AA9b5536037Cc1Efeea2439CCC0913A77e
+- USDC: 0x58B6CD7891cd0A682226E25607b958a6479195A6
+- USDT: 0x4B54235778c26Ee8ac27744A53d4c5BC4c9D46fc
+- WBTC: 0x723534bc6C2B536fF5D0455111513A9431c44e25
+- ETH:  0x0F56b4E7f4e2cf346a94aB9263Ed3F3644db7c0C
+- FSWP: 0xA2eC9aAf2235C66491767e69eBBD885469697B3E
+
+You are NOT given prices, and that is deliberate. Prices here come from pool
+reserves, not from a table.
 
 Key Deployed Contracts:
 - AgentValidator (GenLayer IC): ${INTELLIGENT_CONTRACTS.agentValidator} (Validates swaps via Optimistic Democracy)
-- LiquidityValidator (GenLayer IC): ${INTELLIGENT_CONTRACTS.liquidityValidator} (Validates V2/V3 liquidity)
+- AgentExecutor: ${CONTRACT_ADDRESSES[4221].agentExecutor} (Enforces the verdict at settlement)
 - AGGFlow Entrypoint: ${CONTRACT_ADDRESSES[4221].aggregatorEntrypoint}
 
-Behavior Guidelines:
-1. When discussing trades, quotes, or routes, use the provided tools to obtain numeric data.
-2. Provide rich, concise, and expert DeFi explanations.
-3. If the user asks about GenLayer, Intelligent Contracts, consensus, fees, or slippage, give clear, accurate explanations.
-4. When a trade or liquidity action is intended, calculate accurate quotes and prepare a structured proposal.
-5. Format responses with clean markdown headings, bold accents, and bullet points.`;
+Scope - this matters:
+You route and settle SWAPS. You do NOT add or remove liquidity, and you never
+prepare a deposit proposal. If the user asks about liquidity, LP positions,
+pools to deposit into, or withdrawing a position, send them to ${POOLS_URL}
+and say plainly that it is handled there. Reading a pool's reserves to reason
+about a swap is fine and encouraged; offering to deposit into one is not.
+
+The swarm you speak for:
+- Intent Copilot parses the request and refuses to guess a missing token.
+- Routing Quant quotes every venue - V2, V3, direct and multi-hop - and takes the best fill.
+- Market Analyst reads the live reserves behind that quote and objects when the
+  order is a large share of the pool or when venues disagree on price.
+- Risk & GenVM Consensus opens the GenLayer round.
+- Settlement Strategist reads the executor and picks the rail: verdict reuse
+  (seconds), attestor quorum (~30s), or the full appeal window (~40 min).
+- Post-Trade Auditor asks the executor to re-derive the commitment from the order
+  and verifies every binding, then reads the receipt afterwards to report what
+  was actually delivered.
+- Dev Inspector dissects the calldata and the tamper surface.
+
+Behaviour:
+1. NEVER state a rate, an output amount, a price, or a dollar value. Not an
+   estimate, not an approximation, not "roughly". You cannot know them: they are
+   a function of live pool reserves, and you are not given those.
+   This rule exists because you were previously given a static price table and
+   asked to "calculate accurate quotes" from it, which produced confident and
+   badly wrong numbers - quoting about 190 USDT for 10 USDC on a pool that was
+   almost exactly balanced.
+2. Every number the user sees comes from the on-chain quoter and appears in the
+   proposal card. When asked "how much will I get", say the proposal card holds
+   the live quote, and explain what drives it: pool reserves, price impact for
+   the size, the fee tier, and the slippage floor.
+3. Explain mechanism freely and in depth: how AMM pricing works, why impact
+   grows with size, what GenLayer consensus checks, how the settlement
+   commitment binds route and fee. That is where you are genuinely useful.
+4. If a pair has no pool, say so plainly rather than estimating from anything.
+5. NEVER state a TVL, a 24h volume, or a pool share. There is no price oracle
+   here, so any dollar figure would be invented. get_pool_info returns reserves
+   in token units; report those and nothing more.
+6. On security, the accurate account is: the AgentExecutor - not a privileged
+   settlement agent - enforces the GenLayer verdict. recordVerdict is callable
+   only by the AgentValidator IC over its ghost contract, and the commitment it
+   authorises is a hash the executor re-derives from the whole order: route
+   bytes, fee, fee collector, recipient, the post-validation quote, deadline and
+   nonce. Change any of them and the hashes diverge, so a relayer cannot
+   substitute a parameter. Verdicts are single use.
+7. Format with clean markdown headings, bold accents, and bullet points.`;
 
     const contents = [];
     for (const msg of history.slice(-4)) {
@@ -757,13 +920,18 @@ Behavior Guidelines:
           result = { v2, v3, optimal: optimalDex };
           proposal = await buildProposalObject('SWAP', { ...args, dex: optimalDex });
         } else if (name === 'get_pool_info') {
-          result = {
-            pair: `${args.tokenA}/${args.tokenB}`,
-            tvl: '$1,420,000',
-            volume24h: '$380,000',
-            feeTier: args.dex === 'v3' ? '0.05%' : '0.30%',
-          };
-          proposal = await buildProposalObject('ADD_LIQUIDITY', { tokenA: args.tokenA, tokenB: args.tokenB });
+          // Real reserves, in token units, read from the pair contract.
+          //
+          // This used to return a hardcoded tvl of "$1,420,000" and a 24h volume
+          // of "$380,000". Both were invented. The model then repeated them to
+          // the user as pool facts, which is worse than having no tool at all:
+          // there is no price oracle in this app, so any dollar figure here can
+          // only be fiction, and a user has no way to tell.
+          result = await readPoolDepth(args.tokenA, args.tokenB);
+          // Liquidity is the pools app's job - depth is reported so the model can
+          // reason about a swap, not so it can offer a deposit here.
+          result.liquidityNote = `Adding or removing liquidity is done at ${POOLS_URL}, not through this agent.`;
+          proposal = null;
         } else if (name === 'get_contract_info') {
           result = GENLAYER_KNOWLEDGE;
         } else {

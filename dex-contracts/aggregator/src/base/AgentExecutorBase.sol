@@ -3,23 +3,40 @@ pragma solidity ^0.8.24;
 
 // ============================================================================
 //  AgentExecutorBase.sol
-//  FlipSwap DEX · Shared State, Events, Errors, Admin & Approval Management
+//  Soyara DEX · State, Verdict Registry, Admin & Access Control
 // ============================================================================
 //
 //  PURPOSE
 //  -------
-//  Houses everything that is NOT execution logic:
-//    · All state variables
-//    · All events & custom errors
-//    · All access-control modifiers
-//    · Owner admin functions (set agent, tokens, routers, slippage, pause)
-//    · One-time trade approval management (approveTrade / revokeTradeApproval)
+//  Everything that is NOT execution logic: state, events, errors, modifiers,
+//  owner admin, and the verdict registry that decides what may settle.
 //
-//  INHERITANCE
-//  -----------
-//  AgentExecutor inherits AgentExecutorBase and adds the five execute*
-//  functions.  Tests and integrations can import this base to get all
-//  type definitions without pulling in execution logic.
+//  WHAT CHANGED, AND WHY
+//  ---------------------
+//  Previously the settlement agent enforced the GenLayer verdict. The agent
+//  server read the verdict off the AgentValidator Intelligent Contract, decided
+//  it was satisfied, and then called `approveTradeWithParams` — an onlyAgent
+//  function that simply wrote `approvedTrades[hash] = true`. The executor never
+//  learned anything about GenLayer. Its only real gate was "is the caller the
+//  agent", which means the root of trust was a private key sitting in a web
+//  server's environment, and the consensus layer was advisory. Whoever held
+//  that key could approve and settle any trade GenLayer had never seen.
+//
+//  The verdict is now authenticated by the contract itself. `recordVerdict` is
+//  callable ONLY by the AgentValidator Intelligent Contract: on GenLayer an IC
+//  reaches the EVM through its ghost contract, which executes external messages
+//  via `handleOp()` so the recipient sees `msg.sender` equal to the IC's own
+//  address. An approval therefore cannot exist unless a GenVM consensus round
+//  produced it. The agent keeps only the ability to relay a trade consensus has
+//  already approved, and a fully compromised agent key can no longer authorise
+//  anything.
+//
+//  A second, optional rail exists for deployments that cannot absorb GenLayer
+//  finalization latency (external messages are emitted `on='finalized'` only).
+//  There, a quorum of registered attestors signs the same commitment under
+//  EIP-712. It is off by default, requires an explicit threshold, and enforces
+//  separation of duties: an attestor may never also be a settlement agent, so
+//  no single key both authorises and executes.
 //
 // ============================================================================
 
@@ -27,11 +44,23 @@ import { IERC20 }          from "@openzeppelin/contracts/token/ERC20/IERC20.sol"
 import { SafeERC20 }       from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import { Ownable }         from "@openzeppelin/contracts/access/Ownable.sol";
+import { EIP712 }          from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import { ECDSA }           from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { TradeHashLib }    from "../libraries/TradeHashLib.sol";
+import { SwapOrder }       from "../types/SettlementTypes.sol";
 import { IV3PositionManager } from "../interfaces/IAgentExecutorDEX.sol";
 
-abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
+abstract contract AgentExecutorBase is ReentrancyGuard, Ownable, EIP712 {
     using SafeERC20 for IERC20;
+
+    // ── Verdict provenance ────────────────────────────────────────────────────
+
+    /// @notice How a settled commitment obtained its authorisation.
+    enum VerdictSource {
+        None,
+        GenLayerConsensus,  // written by the AgentValidator IC via its ghost
+        AttestorQuorum      // M-of-N EIP-712 signatures over the same commitment
+    }
 
     // ── State ─────────────────────────────────────────────────────────────────
 
@@ -41,14 +70,36 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
 
     /// @notice Additional authorised agents.
     ///
-    /// A single `authorisedAgent` meant only one operator could ever settle, so
-    /// third-party agents had to route through the primary operator's server.
-    /// Registering an address here lets an independent agent bind and consume
-    /// its own one-time approvals directly, WITHOUT weakening the gate: every
-    /// trade is still bound to a consensus-approved parameter hash that is
-    /// checked and deleted on use, so an agent can only execute trades GenLayer
-    /// has already approved.
+    /// Agents are relayers, not authorisers. Registering one lets an independent
+    /// operator submit settlements without routing through the primary server;
+    /// it grants no power to approve anything, because approval comes from the
+    /// verdict registry below.
     mapping(address => bool) public agents;
+
+    /// @notice The AgentValidator Intelligent Contract. The ONLY address that
+    ///         can record a verdict. Zero until bootstrapped, and settlement
+    ///         fails closed while it is zero.
+    ///
+    /// @dev Set after deployment rather than in the constructor because the IC
+    ///      takes this executor's address as its own constructor argument — the
+    ///      executor necessarily exists first, so its address cannot be known
+    ///      here.
+    address public genLayerValidator;
+
+    /// @notice Live verdicts: commitment => expiry timestamp. Zero means no
+    ///         verdict. Deleted when the commitment settles.
+    mapping(bytes32 => uint64) public verdictExpiry;
+
+    /// @notice Permanent one-time gate. Set the moment a commitment settles and
+    ///         never cleared, so a re-recorded verdict cannot replay a trade.
+    mapping(bytes32 => bool) public commitmentUsed;
+
+    /// @notice Addresses permitted to co-sign an EIP-712 verdict attestation.
+    mapping(address => bool) public verdictAttestors;
+
+    /// @notice Number of distinct attestor signatures required. Zero disables
+    ///         the attestation rail entirely, which is the default.
+    uint256 public attestorThreshold;
 
     /// @notice AGGFlowEntrypoint for aggregated swaps
     address public aggFlowEntrypoint;
@@ -62,17 +113,31 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
     /// @notice Maximum allowed slippage for swaps (in basis points)
     uint256 public maxSlippageBps;
 
+    /// @notice Maximum protocol fee an order may carry, in basis points.
+    ///
+    /// Defence in depth. The fee is already inside the commitment, so consensus
+    /// has seen it; this bounds the damage if a verdict is ever issued for an
+    /// order carrying an absurd fee.
+    uint256 public maxFeeBps;
+
+    /// @notice Ceiling the owner itself cannot raise `maxFeeBps` past.
+    uint256 public constant ABSOLUTE_MAX_FEE_BPS = 500; // 5%
+
     /// @notice ERC-20 token whitelist
     mapping(address => bool) public approvedTokens;
 
     /// @notice Router / entrypoint whitelist
     mapping(address => bool) public approvedRouters;
 
-    /// @notice One-time trade approval registry — each entry consumed on use
-    mapping(bytes32 => bool) public approvedTrades;
-
     /// @notice Emergency pause flag
     bool public paused;
+
+    // ── EIP-712 ───────────────────────────────────────────────────────────────
+
+    /// @dev The commitment already binds chainId and this contract's address,
+    ///      so the signed payload needs to carry only the commitment itself.
+    bytes32 public constant VERDICT_TYPEHASH =
+        keccak256("SettlementVerdict(bytes32 commitment)");
 
     // ── Events ────────────────────────────────────────────────────────────────
 
@@ -103,22 +168,18 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
     event TokenApproved(address indexed token, bool approved);
     event RouterApproved(address indexed router, bool approved);
     event AgentUpdated(address indexed oldAgent, address indexed newAgent);
+    event AgentAuthorisationUpdated(address indexed agent, bool allowed);
     event Paused(bool isPaused);
+    event MaxFeeBpsUpdated(uint256 bps);
 
-    /// @notice Emitted when the agent registers a trade approval.
-    /// @dev tokenIn/tokenOut/amountIn/minAmountOut are populated only when
-    ///      approveTradeWithParams is used. Prefer it over raw approveTrade()
-    ///      for complete auditability.
-    event TradeApproved(
-        bytes32 indexed tradeHash,
-        address indexed user,
-        address tokenIn,
-        address tokenOut,
-        uint256 amountIn,
-        uint256 minAmountOut
-    );
-    event TradeApprovalRevoked(bytes32 indexed tradeHash);
-    event TradeApprovalConsumed(bytes32 indexed tradeHash, address indexed user);
+    event GenLayerValidatorUpdated(address indexed oldValidator, address indexed newValidator);
+    event VerdictAttestorUpdated(address indexed attestor, bool allowed);
+    event AttestorThresholdUpdated(uint256 threshold);
+
+    /// @notice A GenLayer consensus round approved this commitment.
+    event VerdictRecorded(bytes32 indexed commitment, uint64 expiry);
+    event VerdictRevoked(bytes32 indexed commitment);
+    event VerdictConsumed(bytes32 indexed commitment, address indexed user, VerdictSource source);
 
     // ── Errors ────────────────────────────────────────────────────────────────
 
@@ -129,17 +190,42 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
     error SlippageExceeded(uint256 bps, uint256 maxBps);
     error DeadlineExpired();
     error ZeroAmount();
-    event AgentAuthorisationUpdated(address indexed agent, bool allowed);
-
     error ZeroAddress();
     error SameToken();
-    error TradeNotApproved(bytes32 tradeHash);
-    error InvalidTradeHash();
+
+    error ValidatorNotSet();
+    error NotValidator(address caller);
+    /// @notice No consensus verdict exists for the exact parameters being settled.
+    error NoConsensusVerdict(bytes32 commitment);
+    error VerdictExpired(bytes32 commitment);
+    error CommitmentAlreadyUsed(bytes32 commitment);
+    error InvalidCommitment();
+
+    error AttestationRailDisabled();
+    error InsufficientAttestations(uint256 got, uint256 required);
+    error UnsortedOrDuplicateSigner();
+    error NotAnAttestor(address signer);
+    error RoleConflict(address account);
+
+    error RouteMismatch(bytes32 expected, bytes32 actual);
+    error RouterMismatch(address expected, address actual);
+    error FeeTooHigh(uint256 bps, uint256 maxBps);
+    error QuoteInconsistent(uint256 minAmountOut, uint256 quotedAmountOut);
 
     // ── Modifiers ─────────────────────────────────────────────────────────────
 
+    /// @dev Gates who may RELAY a settlement. This is an operational control,
+    ///      not the security boundary — the security boundary is the verdict
+    ///      registry, which no agent can write to.
     modifier onlyAgent() {
         if (msg.sender != authorisedAgent && !agents[msg.sender]) revert Unauthorized();
+        _;
+    }
+
+    /// @dev Gates who may AUTHORISE a settlement: the AgentValidator IC alone.
+    modifier onlyValidator() {
+        if (genLayerValidator == address(0)) revert ValidatorNotSet();
+        if (msg.sender != genLayerValidator) revert NotValidator(msg.sender);
         _;
     }
 
@@ -163,7 +249,7 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
         address _v3PositionManager,
         uint256 _maxSlippageBps,
         address[] memory _initialApprovedTokens
-    ) Ownable(_owner) {
+    ) Ownable(_owner) EIP712("SoyaraAgentExecutor", "2") {
         if (_authorisedAgent   == address(0)) revert ZeroAddress();
         if (_aggFlowEntrypoint == address(0)) revert ZeroAddress();
         if (_v2Router          == address(0)) revert ZeroAddress();
@@ -174,6 +260,7 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
         v2Router          = _v2Router;
         v3PositionManager = _v3PositionManager;
         maxSlippageBps    = _maxSlippageBps;
+        maxFeeBps         = 100; // 1% — the platform fee is 5 bps in practice
         paused            = false;
 
         approvedRouters[_aggFlowEntrypoint] = true;
@@ -187,30 +274,71 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
 
     // ── Owner Admin ───────────────────────────────────────────────────────────
 
+    /**
+     * @notice Bootstrap or rotate the AgentValidator Intelligent Contract.
+     * @dev The IC's ghost contract shares the IC's address, and external
+     *      messages arrive with `msg.sender` set to it, so this is the address
+     *      published for the validator on GenLayer.
+     */
+    function setGenLayerValidator(address _validator) external onlyOwner {
+        if (_validator == address(0)) revert ZeroAddress();
+        emit GenLayerValidatorUpdated(genLayerValidator, _validator);
+        genLayerValidator = _validator;
+    }
+
     function setAuthorisedAgent(address _agent) external onlyOwner {
         if (_agent == address(0)) revert ZeroAddress();
+        if (verdictAttestors[_agent]) revert RoleConflict(_agent);
         emit AgentUpdated(authorisedAgent, _agent);
         authorisedAgent = _agent;
     }
 
-    /// @notice Register or revoke an additional agent.
-    /// @dev Owner-only. Revoking cannot strand funds: agents never custody
-    ///      anything — tokens move from the user straight through the router in
-    ///      a single call.
+    /**
+     * @notice Register or revoke an additional relaying agent.
+     * @dev An agent that is also an attestor would be able to both authorise and
+     *      execute, collapsing the separation the attestation rail depends on.
+     */
     function setAgentAuthorisation(address _agent, bool _allowed) external onlyOwner {
         if (_agent == address(0)) revert ZeroAddress();
+        if (_allowed && verdictAttestors[_agent]) revert RoleConflict(_agent);
         agents[_agent] = _allowed;
         emit AgentAuthorisationUpdated(_agent, _allowed);
     }
 
-    /// @notice True when `_who` may bind and consume trade approvals.
+    /// @notice True when `_who` may relay settlements.
     function isAgent(address _who) external view returns (bool) {
         return _who == authorisedAgent || agents[_who];
+    }
+
+    /**
+     * @notice Register or revoke a verdict attestor.
+     * @dev Mirrors the check in setAgentAuthorisation from the other side.
+     */
+    function setVerdictAttestor(address _attestor, bool _allowed) external onlyOwner {
+        if (_attestor == address(0)) revert ZeroAddress();
+        if (_allowed && (_attestor == authorisedAgent || agents[_attestor])) {
+            revert RoleConflict(_attestor);
+        }
+        verdictAttestors[_attestor] = _allowed;
+        emit VerdictAttestorUpdated(_attestor, _allowed);
+    }
+
+    /// @notice Set how many attestor signatures authorise a settlement. Zero
+    ///         disables the rail, leaving GenLayer consensus as the only source.
+    function setAttestorThreshold(uint256 _threshold) external onlyOwner {
+        attestorThreshold = _threshold;
+        emit AttestorThresholdUpdated(_threshold);
     }
 
     function setMaxSlippage(uint256 _bps) external onlyOwner {
         require(_bps <= 10_000, "Cannot exceed 100%");
         maxSlippageBps = _bps;
+    }
+
+    function setMaxFeeBps(uint256 _bps) external onlyOwner {
+        if (_bps > ABSOLUTE_MAX_FEE_BPS) revert FeeTooHigh(_bps, ABSOLUTE_MAX_FEE_BPS);
+        maxFeeBps = _bps;
+        emit MaxFeeBpsUpdated(_bps);
     }
 
     function setApprovedToken(address _token, bool _approved) external onlyOwner {
@@ -228,116 +356,177 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
         emit Paused(_paused);
     }
 
-    // ── Hash Helpers (public — agent/frontend compute off-chain too) ──────────
+    // ── Verdict Registry ──────────────────────────────────────────────────────
 
-    /// @notice Compute the approval hash for a swap.
-    function getTradeHash(
-        address user,
-        address tokenIn,
-        address tokenOut,
-        uint256 amountIn,
-        uint256 minAmountOut,
-        uint256 slippageBps,
-        uint256 deadline
-    ) public pure returns (bytes32) {
-        return TradeHashLib.swapHash(user, tokenIn, tokenOut, amountIn, minAmountOut, slippageBps, deadline);
+    /**
+     * @notice Record a GenLayer consensus verdict for one commitment.
+     *
+     * @dev CALLABLE ONLY BY THE AGENTVALIDATOR INTELLIGENT CONTRACT. This is the
+     *      authentication the whole design rests on: the IC emits an external
+     *      message on finalization, its ghost delivers the call, and `msg.sender`
+     *      is the IC's address. No key held by any operator can reach this.
+     *
+     * @dev WHY uint256 AND NOT bytes32. The commitment is a 32-byte hash and
+     *      `bytes32` is its natural type, but this parameter is not really typed
+     *      by Solidity — it is typed by the GenVM stub on the other side of the
+     *      call, and py-genlayer builds the selector from the stub's declared
+     *      types. GenLayer's documented type mapping covers `u256`/`u64` and
+     *      says nothing about a `bytes32` equivalent, so declaring this
+     *      `bytes32` would make the integration depend on an undocumented type
+     *      being present in whichever runner version the IC is pinned to. Both
+     *      types occupy one static ABI word, so `uint256` costs nothing and
+     *      keeps the boundary inside what GenLayer actually guarantees.
+     *
+     * @param commitment The identifier the IC derived from the full order — the
+     *                   same value the executor re-derives from calldata, passed
+     *                   as a uint256 and used as bytes32.
+     * @param expiry     Unix timestamp after which the verdict is stale. Bounds
+     *                   how long an approval can sit unspent, independently of
+     *                   the trade's own deadline — a verdict issued against a
+     *                   live quote should not still be spendable an hour later.
+     */
+    function recordVerdict(uint256 commitment, uint64 expiry) external onlyValidator {
+        bytes32 id = bytes32(commitment);
+        if (id == bytes32(0)) revert InvalidCommitment();
+        if (commitmentUsed[id]) revert CommitmentAlreadyUsed(id);
+        verdictExpiry[id] = expiry;
+        emit VerdictRecorded(id, expiry);
     }
 
-    /// @notice Compute the approval hash for a V2 add-liquidity operation.
+    /**
+     * @notice Withdraw a verdict that has not yet settled.
+     * @dev Open to the validator IC and to the owner. Revocation can only ever
+     *      subtract authority, so allowing the owner to do it adds a safety
+     *      lever without adding a way to authorise anything.
+     */
+    function revokeVerdict(bytes32 commitment) external {
+        if (msg.sender != genLayerValidator && msg.sender != owner()) revert Unauthorized();
+        delete verdictExpiry[commitment];
+        emit VerdictRevoked(commitment);
+    }
+
+    /// @notice True when `commitment` currently carries a live consensus verdict.
+    function isVerdictLive(bytes32 commitment) external view returns (bool) {
+        uint64 exp = verdictExpiry[commitment];
+        return exp != 0 && block.timestamp <= exp;
+    }
+
+    /**
+     * @dev Authorise and burn one commitment. Reverts unless the commitment is
+     *      backed by a live consensus verdict or by a sufficient attestor quorum.
+     *
+     *      The used-marker is written BEFORE any external call in the caller, so
+     *      a commitment can never settle twice even across a reentrant path.
+     */
+    function _consumeVerdict(
+        bytes32 commitment,
+        address user,
+        bytes[] calldata attestations
+    ) internal returns (VerdictSource source) {
+        if (commitmentUsed[commitment]) revert CommitmentAlreadyUsed(commitment);
+
+        uint64 exp = verdictExpiry[commitment];
+        if (exp != 0) {
+            if (block.timestamp > exp) revert VerdictExpired(commitment);
+            delete verdictExpiry[commitment];
+            source = VerdictSource.GenLayerConsensus;
+        } else {
+            if (attestations.length == 0) revert NoConsensusVerdict(commitment);
+            _verifyAttestorQuorum(commitment, attestations);
+            source = VerdictSource.AttestorQuorum;
+        }
+
+        commitmentUsed[commitment] = true;
+        emit VerdictConsumed(commitment, user, source);
+    }
+
+    /**
+     * @dev Verify M-of-N EIP-712 attestations over `commitment`.
+     *
+     *      Signatures must be ordered by strictly increasing signer address.
+     *      That single rule rejects duplicates in O(n) without a seen-set: the
+     *      same attestor cannot sign twice to fake a quorum of one.
+     */
+    function _verifyAttestorQuorum(bytes32 commitment, bytes[] calldata attestations) internal view {
+        uint256 required = attestorThreshold;
+        if (required == 0) revert AttestationRailDisabled();
+        if (attestations.length < required) {
+            revert InsufficientAttestations(attestations.length, required);
+        }
+
+        bytes32 digest = _hashTypedDataV4(keccak256(abi.encode(VERDICT_TYPEHASH, commitment)));
+
+        address previous = address(0);
+        for (uint256 i = 0; i < attestations.length; i++) {
+            address signer = ECDSA.recover(digest, attestations[i]);
+            if (signer <= previous) revert UnsortedOrDuplicateSigner();
+            if (!verdictAttestors[signer]) revert NotAnAttestor(signer);
+            previous = signer;
+        }
+    }
+
+    /// @notice The EIP-712 digest an attestor signs for `commitment`.
+    function verdictDigest(bytes32 commitment) external view returns (bytes32) {
+        return _hashTypedDataV4(keccak256(abi.encode(VERDICT_TYPEHASH, commitment)));
+    }
+
+    // ── Commitment Helpers ────────────────────────────────────────────────────
+    //
+    // Public so the validator IC, the settlement agent and the frontend all
+    // derive the identifier from one implementation instead of three.
+
+    /// @notice The commitment for a swap order, bound to this chain and contract.
+    function getSwapCommitment(SwapOrder calldata order) public view returns (bytes32) {
+        return TradeHashLib.swapCommitment(order, block.chainid, address(this));
+    }
+
     function getLiquidityV2AddHash(
         address user,
         address tokenA, address tokenB,
         uint256 amountADesired, uint256 amountBDesired,
         uint256 amountAMin, uint256 amountBMin,
         uint256 deadline
-    ) public pure returns (bytes32) {
+    ) public view returns (bytes32) {
         return TradeHashLib.v2AddHash(
             user, tokenA, tokenB,
             amountADesired, amountBDesired,
             amountAMin, amountBMin,
-            deadline
+            deadline, block.chainid, address(this)
         );
     }
 
-    /// @notice Compute the approval hash for a V2 remove-liquidity operation.
     function getLiquidityV2RemoveHash(
         address user,
         address tokenA, address tokenB,
         address lpToken, uint256 lpAmount,
         uint256 amountAMin, uint256 amountBMin,
         uint256 deadline
-    ) public pure returns (bytes32) {
+    ) public view returns (bytes32) {
         return TradeHashLib.v2RemoveHash(
             user, tokenA, tokenB,
             lpToken, lpAmount,
             amountAMin, amountBMin,
-            deadline
+            deadline, block.chainid, address(this)
         );
     }
 
-    /// @notice Compute the approval hash for a V3 mint operation.
     function getLiquidityV3AddHash(
         address user,
         IV3PositionManager.MintParams calldata params
-    ) public pure returns (bytes32) {
-        return TradeHashLib.v3AddHash(user, params);
+    ) public view returns (bytes32) {
+        return TradeHashLib.v3AddHash(user, params, block.chainid, address(this));
     }
 
-    /// @notice Compute the approval hash for a V3 decrease-liquidity operation.
     function getLiquidityV3RemoveHash(
         address user,
         IV3PositionManager.DecreaseLiquidityParams calldata params,
-        uint256 tokenId
-    ) public pure returns (bytes32) {
-        return TradeHashLib.v3RemoveHash(user, params, tokenId);
-    }
-
-    // ── Approval Management ───────────────────────────────────────────────────
-
-    /**
-     * @notice Approve a pre-computed trade hash for one-time settlement.
-     * @dev Prefer approveTradeWithParams — this raw-hash overload emits
-     *      zeroed event fields which limits off-chain auditability.
-     */
-    function approveTrade(bytes32 tradeHash) external onlyAgent whenNotPaused {
-        if (tradeHash == bytes32(0)) revert InvalidTradeHash();
-        approvedTrades[tradeHash] = true;
-        emit TradeApproved(tradeHash, address(0), address(0), address(0), 0, 0);
-    }
-
-    /**
-     * @notice Approve a swap by its exact parameters (PREFERRED — fully auditable).
-     * @dev Computes hash on-chain so the event carries complete parameter data.
-     */
-    function approveTradeWithParams(
-        address user,
-        address tokenIn,
-        address tokenOut,
-        uint256 amountIn,
-        uint256 minAmountOut,
-        uint256 slippageBps,
-        uint256 deadline
-    ) external onlyAgent whenNotPaused {
-        bytes32 tradeHash = TradeHashLib.swapHash(
-            user, tokenIn, tokenOut, amountIn, minAmountOut, slippageBps, deadline
+        uint256 tokenId,
+        address token0,
+        address token1
+    ) public view returns (bytes32) {
+        return TradeHashLib.v3RemoveHash(
+            user, params, tokenId, token0, token1, block.chainid, address(this)
         );
-        approvedTrades[tradeHash] = true;
-        emit TradeApproved(tradeHash, user, tokenIn, tokenOut, amountIn, minAmountOut);
-    }
-
-    /**
-     * @notice Revoke a pending trade approval (e.g. user cancelled intent).
-     */
-    function revokeTradeApproval(bytes32 tradeHash) external onlyAgent {
-        delete approvedTrades[tradeHash];
-        emit TradeApprovalRevoked(tradeHash);
-    }
-
-    /**
-     * @notice Check whether a trade hash is currently approved.
-     */
-    function isTradeApproved(bytes32 tradeHash) external view returns (bool) {
-        return approvedTrades[tradeHash];
     }
 
     // ── Safety ────────────────────────────────────────────────────────────────

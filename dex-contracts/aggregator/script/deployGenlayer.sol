@@ -101,6 +101,16 @@ contract deployGenlayer is Script {
         console.log("Owner/Agent:       ", flowOwner);
         console.log("===========================================================");
         console.log("NEXT STEPS:");
+        console.log("");
+        console.log("0. THE EXECUTOR CANNOT SETTLE YET. genLayerValidator is unset, so");
+        console.log("   recordVerdict reverts with ValidatorNotSet and every trade fails");
+        console.log("   closed. This is deliberate - the executor never falls back to");
+        console.log("   trusting the agent key. To finish:");
+        console.log("     a. Deploy AgentValidator with agent_executor =", address(agentExecutor));
+        console.log("     b. AGENT_EXECUTOR=", address(agentExecutor));
+        console.log("        GENLAYER_VALIDATOR=<ic address>");
+        console.log("        forge script script/BootstrapValidator.s.sol --broadcast");
+        console.log("");
         console.log("1. Set CONTRACT_ADDRESSES[4221].agentExecutor =", address(agentExecutor));
         console.log("2. Set AGENT_EXECUTOR_ADDRESS=", address(agentExecutor), "in .env.local");
         console.log("3. Set AGENT_PRIVATE_KEY=<GOV_PRIVATE_KEY> in .env.local");

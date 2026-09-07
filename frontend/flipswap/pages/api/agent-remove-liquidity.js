@@ -12,8 +12,11 @@
 //        ↓ verdict recorded on-chain
 //   this route reads it back with get_validation                 ← never trusted from the client
 //        ↓
-//   AgentExecutor.approveTrade(v2RemoveHash)                     ← binds the one-time approval
-//   AgentExecutor.executeRemoveLiquidityV2(...)                  ← checks + CONSUMES it
+//   AgentValidator.validate_liquidity_v2_remove(...)             ← consensus round; the IC
+//                                                                 confirms lpToken IS the
+//                                                                 canonical pair, then emits
+//                                                                 recordVerdict on finalization
+//   AgentExecutor.executeRemoveLiquidityV2(...)                  ← checks + CONSUMES the verdict
 //
 // The user must have approved their LP token to AgentExecutor, because
 // executeRemoveLiquidityV2 pulls the LP position with transferFrom.
@@ -22,7 +25,13 @@ import { createPublicClient, createWalletClient, http, zeroAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts';
 import AGENT_EXECUTOR_ABI from '../../abi/AgentExecutor.json';
 import { CONTRACT_ADDRESSES } from '../../constants/addresses.js';
-import { computeProposalId, readValidationVerdict } from '../../lib/genlayer.js';
+import { validateLiquidityV2Remove } from '../../lib/genlayer.js';
+import { obtainVerdict } from '../../lib/verdict.js';
+import { leaseAgent } from '../../lib/agentPool.js';
+// LP amounts arrive from the caller. A bare BigInt() throws on a decimal
+// string and reads a plain integer as wei, so it goes through the shared
+// converter like every other amount that decides how much moves.
+import { toRawAmount } from '../../lib/amounts.js';
 
 const genLayerBradbury = {
   id: 4221,
@@ -110,7 +119,7 @@ export default async function handler(req, res) {
     // A percentage is the natural way to say this ("remove 50% liquidity"); an
     // explicit LP amount is honoured when given.
     const burn = lpAmount !== undefined && lpAmount !== null
-      ? BigInt(lpAmount)
+      ? (toRawAmount({ raw: lpAmount, decimals: 18, label: 'lpAmount' }).value)
       : (lpBalance * BigInt(Math.round(Math.min(100, Math.max(1, Number(percent ?? 100)))))) / 100n;
 
     if (burn > lpBalance) {
@@ -126,42 +135,15 @@ export default async function handler(req, res) {
     const aMin = (expectedA * (10000n - bpsBig)) / 10000n;
     const bMin = (expectedB * (10000n - bpsBig)) / 10000n;
 
-    // ── STEP 1: verify the GenLayer verdict on-chain ─────────────────────────
-    // Bound to the exact parameters being settled, so an approval for one
-    // withdrawal cannot authorise another.
-    let derivedProposalId = null;
-    let verified = false;
-    try {
-      derivedProposalId = await computeProposalId({
-        action: 'REMOVE_LIQUIDITY',
-        tokenIn: tokenA,
-        tokenOut: tokenB,
-        amountIn: burn.toString(),
-        // The id must be derived from what was VALIDATED, not from the minimum
-        // recomputed here. Validation runs before reserves are read, so the two
-        // sides disagreed and the verdict could never be found.
-        minAmountOut: (validatedMinOut ?? aMin).toString(),
-        slippageBps: Number(bpsBig),
-        deadline: Number(deadlineBig),
-      });
-      if (derivedProposalId) {
-        const verdict = await readValidationVerdict(derivedProposalId);
-        verified = Boolean(verdict?.approved);
-      }
-    } catch (e) {
-      console.error('[remove-liquidity] verdict lookup failed:', e.message);
-    }
-
-    if (!verified) {
-      return res.status(403).json({
-        success: false,
-        notValidated: true,
-        error:
-          'Settlement blocked: no GenLayer consensus verdict exists on-chain for these exact withdrawal parameters. '
-          + 'The withdrawal must be validated by a validate_proposal consensus write before it can settle - fail-closed.',
-        derivedProposalId,
-      });
-    }
+    // NOTE: the off-chain verdict lookup that used to sit here is gone.
+    //
+    // It read the verdict from the IC and then let this process write its own
+    // approval into the executor. The check was real but unenforceable: it lived
+    // here, and the executor could not tell whether it had run. Worse, it had to
+    // reconstruct the id from `validatedMinOut` because validation happened
+    // before reserves were read - two sides of the same trade disagreeing about
+    // what had been approved. The verdict now comes from the executor's own
+    // registry, over parameters read from the executor itself. See STEP 3.
 
     // ── STEP 2: the LP token itself must be approved ─────────────────────────
     if (lpAllowance < burn) {
@@ -176,29 +158,55 @@ export default async function handler(req, res) {
       });
     }
 
-    // ── STEP 3: bind the one-time approval ───────────────────────────────────
-    // Read the hash from the contract so it can never drift from
-    // TradeHashLib.v2RemoveHash.
-    const opHash = await publicClient.readContract({
+    // ── STEP 3: obtain the consensus verdict ─────────────────────────────────
+    // The commitment is read from the contract so it can never drift from
+    // TradeHashLib.v2RemoveHash, and it covers the minimums computed from live
+    // reserves above - the values that actually settle.
+    const commitment = await publicClient.readContract({
       address: agentExecutorAddress,
       abi: AGENT_EXECUTOR_ABI,
       functionName: 'getLiquidityV2RemoveHash',
       args: [user, tokenA, tokenB, lpToken, burn, aMin, bMin, deadlineBig],
     });
 
-    const approveTxHash = await sendWithRetry(
-      () => walletClient.writeContract({ address: agentExecutorAddress, abi: AGENT_EXECUTOR_ABI, functionName: 'approveTrade', args: [opHash] }),
-      'approveTrade'
-    );
-    await publicClient.waitForTransactionReceipt({ hash: approveTxHash });
+    const lease = leaseAgent?.();
+    const verdict = await obtainVerdict({
+      publicClient,
+      executor: agentExecutorAddress,
+      abi: AGENT_EXECUTOR_ABI,
+      commitment,
+      submit: () => validateLiquidityV2Remove({
+        user, tokenA, tokenB, lpToken,
+        lpAmount: burn, amountAMin: aMin, amountBMin: bMin,
+        deadline: deadlineBig,
+      }, lease ? { account: lease.account } : {}),
+    });
 
-    // ── STEP 4: execute - checks and CONSUMES the approval ───────────────────
+    if (verdict.rejected) {
+      return res.status(403).json({
+        success: false, notValidated: true,
+        error: `GenLayer consensus rejected this withdrawal: ${verdict.reason}`,
+        commitment, validationTxHash: verdict.validationTxHash,
+      });
+    }
+    if (!verdict.live) {
+      return res.status(202).json({
+        success: false, pending: true,
+        error:
+          'GenLayer consensus has not yet finalised a verdict for this withdrawal. The validator '
+          + 'IC delivers its approval to the executor on finalization, which is still in '
+          + 'progress - retry shortly.',
+        commitment, validationTxHash: verdict.validationTxHash,
+      });
+    }
+
+    // ── STEP 4: execute - checks and CONSUMES the verdict ─────────────────────
     const execTxHash = await sendWithRetry(
       () => walletClient.writeContract({
         address: agentExecutorAddress,
         abi: AGENT_EXECUTOR_ABI,
         functionName: 'executeRemoveLiquidityV2',
-        args: [user, tokenA, tokenB, lpToken, burn, aMin, bMin, deadlineBig],
+        args: [user, tokenA, tokenB, lpToken, burn, aMin, bMin, deadlineBig, []],
       }),
       'executeRemoveLiquidityV2'
     );
@@ -210,16 +218,16 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      opHash,
+      commitment,
       lpToken,
       lpBurned: burn.toString(),
       expectedA: expectedA.toString(),
       expectedB: expectedB.toString(),
-      approveTxHash,
+      validationTxHash: verdict.validationTxHash,
       execTxHash,
       blockNumber: receipt.blockNumber.toString(),
       explorerUrl: `https://explorer-bradbury.genlayer.com/tx/${execTxHash}`,
-      verifiedVia: { path: 'consensus_write', proposalId: derivedProposalId },
+      verifiedVia: { path: 'genlayer_consensus', commitment },
     });
   } catch (err) {
     console.error('[remove-liquidity] settlement error (fail-closed):', err);
