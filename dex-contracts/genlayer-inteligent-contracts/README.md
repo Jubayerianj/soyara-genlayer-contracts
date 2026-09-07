@@ -17,6 +17,31 @@ AI-validated execution layer for the FlipSwap DEX aggregator, deployed on the **
 > accepts `recordVerdict` only from the IC. The LiquidityValidator authorises
 > nothing on this path; the executor takes verdicts only from AgentValidator.
 
+### The matched settlement contract
+
+`AgentValidator.py` and the `AgentExecutor` are a matched pair: the validator
+holds the executor's address, and the executor accepts `recordVerdict` **only**
+from this validator, over its ghost contract. They must be reviewed and
+deployed together.
+
+The executor's Solidity source is **not duplicated into this folder**. It lives
+at its canonical path, with the base contract and libraries it needs:
+
+| File | Path |
+|---|---|
+| `AgentExecutor.sol` | [`../aggregator/src/AgentExecutor.sol`](../aggregator/src/AgentExecutor.sol) |
+| `AgentExecutorBase.sol` | [`../aggregator/src/base/AgentExecutorBase.sol`](../aggregator/src/base/AgentExecutorBase.sol) |
+| `TradeHashLib.sol` | [`../aggregator/src/libraries/TradeHashLib.sol`](../aggregator/src/libraries/TradeHashLib.sol) |
+| `SettlementTypes.sol` | [`../aggregator/src/types/SettlementTypes.sol`](../aggregator/src/types/SettlementTypes.sol) |
+| Tests (57) | [`../aggregator/test/`](../aggregator/test/) |
+
+A copy of `AgentExecutor.sol` used to sit in this folder and had gone stale: it
+still carried `onlyAgent` on `executeSwap` and an `approveTradeWithParams` that
+let the settlement agent write its own approval, which is the design this work
+replaced. Anyone reading the pair here would have concluded the verdict was
+still enforced by a privileged key. `test_commitment_conformance.py` now fails
+if a copy is reintroduced.
+
 ### Frontend address map
 
 ```js

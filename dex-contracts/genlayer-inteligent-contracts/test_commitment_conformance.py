@@ -25,6 +25,7 @@ against stubs, so what is under test is the real code, not a copy of it.
 
 import ast
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -412,6 +413,46 @@ def main() -> int:
     check("v2 output on an empty pool", ns["_v2_amount_out"](amount_in, 0, r_out, fee_ppm), 0)
 
     print()
+    # ── The matched settlement contract ──────────────────────────────────
+    #
+    # A copy of AgentExecutor.sol used to live in this folder and went stale
+    # with nothing noticing. It still carried `onlyAgent` on executeSwap and an
+    # `approveTradeWithParams` that let the settlement agent write its own
+    # approval, which is the design this work replaced. A reviewer opening the
+    # folder saw the fixed validator sitting beside the rejected executor and
+    # would reasonably have concluded nothing had been fixed.
+    #
+    # "Keep the copy in sync" was already the intent and it failed silently, so
+    # the rule is one copy at its canonical path and a failure here if a second
+    # one appears.
+    here = os.path.dirname(os.path.abspath(__file__))
+    agg = os.path.normpath(os.path.join(here, "..", "aggregator", "src"))
+
+    strays = sorted(f for f in os.listdir(here) if f.endswith(".sol"))
+    check("no Solidity copy duplicated into the IC folder", strays, [])
+
+    exec_src = os.path.join(agg, "AgentExecutor.sol")
+    base_src = os.path.join(agg, "base", "AgentExecutorBase.sol")
+    check("canonical AgentExecutor.sol exists", os.path.isfile(exec_src), True)
+    check("canonical AgentExecutorBase.sol exists", os.path.isfile(base_src), True)
+
+    if os.path.isfile(exec_src) and os.path.isfile(base_src):
+        both = open(exec_src).read() + open(base_src).read()
+        # The markers that separate the enforcing executor from the one the
+        # review rejected. Match DECLARATIONS, not mentions: the base contract
+        # carries a comment explaining why the agent-written approval was
+        # removed, and a comment recording that history is worth keeping - an
+        # earlier version of this check failed on it, which would have pushed
+        # someone to delete the explanation to make a test go green.
+        check("executor authenticates the verdict itself (recordVerdict)",
+              bool(re.search(r"function\s+recordVerdict\s*\(", both)), True)
+        check("recordVerdict is restricted to the validator (onlyValidator)",
+              bool(re.search(r"modifier\s+onlyValidator\b", both)), True)
+        check("no agent-written approval function remains",
+              bool(re.search(r"function\s+approveTrade\w*\s*\(", both)), False)
+        check("executeSwap is not gated on the agent alone (onlyAgent)",
+              bool(re.search(r"function\s+executeSwap[\s\S]{0,400}?\bonlyAgent\b[\s\S]{0,40}?\{", both)), False)
+
     if failures:
         print(f"FAILED ({len(failures)}):")
         for f in failures:
