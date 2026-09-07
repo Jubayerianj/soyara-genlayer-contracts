@@ -1,7 +1,7 @@
 {
   "name": "@soyaradex/sdk",
-  "version": "0.1.1",
-  "description": "Agentic DEX SDK for GenLayer \u2014 natural-language intent parsing, best-route aggregation, and consensus-gated settlement on Soyara.",
+  "version": "0.2.0",
+  "description": "Agentic DEX SDK for GenLayer: natural-language intent parsing, best-route aggregation, live pool analysis, and consensus-gated settlement whose authorisation you can verify on-chain.",
   "type": "module",
   "main": "src/index.js",
   "exports": {
@@ -13,8 +13,9 @@
   ],
   "scripts": {
     "sync": "node scripts/sync-from-app.mjs",
-    "test": "node test/smoke.mjs && node test/addresses.mjs",
-    "test:addresses": "node test/addresses.mjs"
+    "test": "node test/smoke.mjs && node test/addresses.mjs && node test/architecture.mjs",
+    "test:addresses": "node test/addresses.mjs",
+    "test:architecture": "node test/architecture.mjs"
   },
   "keywords": [
     "genlayer",

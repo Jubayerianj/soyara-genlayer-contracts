@@ -25,6 +25,29 @@
 
 import { INTELLIGENT_CONTRACTS, EXPLORER_URL } from './addresses.js';
 
+/**
+ * Carry the immutable half of a consensus response across a status poll.
+ *
+ * Exported because anyone driving `/api/genlayer-validate` directly needs the
+ * same guarantee: a poll may update the verdict, but it must never blank out
+ * the commitment or the bound order, which it was never in a position to know.
+ */
+export function mergeVerdict(base, poll) {
+  if (!poll) return base;
+  if (!base) return poll;
+  return {
+    ...base,
+    ...poll,
+    commitment:        poll.commitment        ?? base.commitment        ?? null,
+    pendingOrder:      poll.pendingOrder      ?? base.pendingOrder      ?? null,
+    pendingProgram:    poll.pendingProgram    ?? base.pendingProgram    ?? null,
+    orderKind:         poll.orderKind         ?? base.orderKind         ?? null,
+    quoted_amount_out: poll.quoted_amount_out ?? base.quoted_amount_out ?? null,
+    min_amount_out:    poll.min_amount_out    ?? base.min_amount_out    ?? null,
+    proposal_id:       poll.proposal_id || base.proposal_id || '',
+  };
+}
+
 export class SoyaraClient {
   /**
    * @param {object} opts
@@ -65,7 +88,8 @@ export class SoyaraClient {
    * not rejections, and are reported as `{ approved: false, retryable: true }`.
    */
   async validate(proposal, { onProgress } = {}) {
-    let result = await this.#post('/api/genlayer-validate', proposal);
+    const submitted = await this.#post('/api/genlayer-validate', proposal);
+    let result = submitted;
     let proposalId = result.proposal_id || null;
 
     for (let attempt = 0; (result.pending || result.retryable) && attempt < this.maxPollAttempts; attempt += 1) {
@@ -74,11 +98,21 @@ export class SoyaraClient {
       if (onProgress) {
         onProgress({ attempt: attempt + 1, phase: result.statusName || 'PENDING', txHash: result.tx_hash });
       }
-      result = await this.#post('/api/genlayer-validate', {
+      const polled = await this.#post('/api/genlayer-validate', {
         checkTxHash: result.tx_hash,
         proposalId,
       });
-      // The status check cannot always resolve an id; keep the one we have.
+      // MERGE, never replace.
+      //
+      // A round returns two different kinds of thing. The bound order, its
+      // aggregator program and the commitment are computed once at submission
+      // and cannot change for that round. The verdict is what the poll asks
+      // about. A status check is handed only a transaction hash, so it cannot
+      // return the first kind - and overwriting the whole response with the
+      // poll therefore erased the commitment and the order, leaving a caller
+      // with an approval it could not verify or settle against. Any round slow
+      // enough to need a single poll hit this.
+      result = mergeVerdict(result, polled);
       proposalId = result.proposal_id || proposalId;
     }
 
@@ -94,6 +128,16 @@ export class SoyaraClient {
       reason: result.reason || '',
       validator: INTELLIGENT_CONTRACTS.agentValidator,
       explorerUrl: result.tx_hash ? `${EXPLORER_URL}/tx/${result.tx_hash}` : null,
+
+      // The settlement handoff. These are what make the verdict checkable:
+      // pass them to `verifyBindings` to prove the approved commitment really
+      // binds this route, fee, recipient and quote before settling.
+      commitment: result.commitment || null,
+      order: result.pendingOrder || null,
+      program: result.pendingProgram || null,
+      orderKind: result.orderKind || null,
+      quotedAmountOut: result.quoted_amount_out || null,
+      minAmountOut: result.min_amount_out || null,
     };
   }
 
