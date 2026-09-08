@@ -18,7 +18,7 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 
 | Contract | Address | Transaction Hash |
 |---|---|---|
-| **AgentValidator** (current — paired with the executor that has no bypass) | `0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A` | `0xae9fdd749b3c01462c266cefa03e6b427b66e34f09a3005afdb35b87e937b6cc` |
+| **AgentValidator** (current — paired with the executor that has no bypass) | `0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb` | `0xae9fdd749b3c01462c266cefa03e6b427b66e34f09a3005afdb35b87e937b6cc` |
 | AgentValidator (retired — paired with an executor carrying the attestor rail) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` | see `BootstrapValidator.s.sol/4221/` |
 | AgentValidator (retired — superseded during the same rollout) | `0x8627CfDC1df6DcD813113FA2F400B35a99a781D4` | `0x37980bd6bd1d3c854fb06ef07af1fd207cfb67089e62666c9cd05c5877eea0d3` |
 | AgentValidator (retired — superseded during the same rollout) | `0x001E00a816fa93bC2cA07587d929Aa98C31051DD` | see `BootstrapValidator.s.sol/4221/run-1788784195752.json` |
@@ -33,6 +33,38 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 | AgentValidator (retired — mandate build, queue blocked) | `0xDBFB9DDAc98084a792d2a8884B4FEbDD4F52F506` | `0xef1090da0b8b9197bd810dfc370abdbb03cf6c4b9746859b6d2cc33b025bd32b` |
 | AgentValidator (retired — no mandate support) | `0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e` | `0x0e445f38830e3445af9f8781b302eceb2efd0cd21277c3eb1ef5ee6cd7108e79` |
 | AgentValidator (retired — stale router whitelist + non-deterministic `time.time()`) | `0xFc77C6A20B1102979f5887A5efe9611a2Ef6Afd5` | `0x80788d9ee015f11468f4e372ead51f0dd522fb70e62343e241bd23c7b3384dbf` |
+
+### 2026-09-08 (later) — mandates: consensus once, settlement in seconds
+
+| Contract | Address |
+|---|---|
+| **AgentExecutor** (EVM) | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
+| **AgentValidator** (IC) | `0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb` |
+| AgentExecutor (retired — no mandate support) | `0x758d57cF9c96bC6235c1fA3929209A1C42346E18` |
+| AgentValidator (retired — paired with the above) | `0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A` |
+
+Per-order consensus cannot be fast, and that is GenLayer's shape rather than a
+shortcut here. In GenVM's ABI an `EthSend` emission carries address, calldata,
+value and fees and **no delivery-timing field**, while `PostMessage` and
+`DeployContract` both take `on = accepted | finalized`. An Intelligent Contract
+therefore cannot ask for earlier delivery of an EVM-bound verdict; the chain
+delivers on finalization, which here is the appeal window in front of every
+trade.
+
+A mandate pays that once. `issue_trading_mandate` resolves the pool from the V2
+factory, reads its live reserves, refuses an illiquid pool or a per-trade cap
+above 10% of reserve, **builds the route program itself**, and emits
+`recordMandate` — which is `onlyValidator`, the same gate as `recordVerdict`.
+Afterwards each trade is one call to `executeSwapUnderMandate`.
+
+`setV2Factory` must be set or every mandate settlement reverts with
+`FactoryNotSet`: it is what proves a pool is the canonical pair for its tokens
+before its reserves are believed.
+
+**V3 liquidity validation was removed from the IC.** The 56 KB build was refused
+with `BlockPubdataLimitReached`; ~49 KB is what deploys. Nothing called
+`validate_liquidity_v3_add` / `_remove`, so they were the honest cut. V3 SWAP
+routing is untouched — `_simulate_leg` still prices a V3 leg through the quoter.
 
 ### 2026-09-08 — the attestation rail removed, roles split
 
@@ -62,8 +94,8 @@ ghost is a contract) and any address registered as a relaying agent
 
 | Contract | Address |
 |---|---|
-| **AgentExecutor** (EVM) | `0x758d57cF9c96bC6235c1fA3929209A1C42346E18` |
-| **AgentValidator** (IC) | `0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A` |
+| **AgentExecutor** (EVM) | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
+| **AgentValidator** (IC) | `0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb` |
 | AgentExecutor (retired — attestor rail present, later disarmed to 0) | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
 | AgentValidator (retired — paired with the above) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` |
 
@@ -81,8 +113,8 @@ Replacing one without the other leaves settlement dead.
 
 | Contract | Address |
 |---|---|
-| **AgentExecutor** (EVM) | `0x758d57cF9c96bC6235c1fA3929209A1C42346E18` |
-| **AgentValidator** (IC) | `0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A` |
+| **AgentExecutor** (EVM) | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
+| **AgentValidator** (IC) | `0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb` |
 
 Deployment order is forced by a circular dependency: the IC takes the executor's
 address as a constructor argument, so the executor must exist first, which is
@@ -383,14 +415,14 @@ verifiable in two calls:
 
 ```bash
 # executor -> IC
-cast call 0x758d57cF9c96bC6235c1fA3929209A1C42346E18 'genLayerValidator()(address)' \
+cast call 0x1BCBad3da718690fa60289DcBF15835e5C79021f 'genLayerValidator()(address)' \
   --rpc-url https://rpc.testnet-chain.genlayer.com
-# -> 0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A
+# -> 0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb
 
 # IC -> executor
-genlayer call 0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A get_config \
+genlayer call 0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb get_config \
   --rpc https://rpc-bradbury.genlayer.com
-# -> agent_executor: 0x758d57cF9c96bC6235c1fA3929209A1C42346E18
+# -> agent_executor: 0x1BCBad3da718690fa60289DcBF15835e5C79021f
 ```
 
 The current executor has **no** `approveTradeWithParams`; the retired ones below
@@ -399,7 +431,7 @@ a retired address as the current one.
 
 | Component | Contract | Address |
 |---|---|---|
-| **Settlement Gate** | `AgentExecutor` (no bypass; owner ≠ agent) | `0x758d57cF9c96bC6235c1fA3929209A1C42346E18` |
+| **Settlement Gate** | `AgentExecutor` (no bypass; owner ≠ agent) | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
 | Settlement Gate (retired — attestor rail, since disarmed) | `AgentExecutor` | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
 | Settlement Gate (retired — agent wrote its own approval) | `AgentExecutor` (multi-agent) | `0xa835c0a86dD64726eF23D83a8ca7D60b542EE2e4` |
 | Settlement Gate (retired — single agent only) | `AgentExecutor` | `0xBda36A9453003E2eEe5D6Cb07ad253e64BaB4729` |

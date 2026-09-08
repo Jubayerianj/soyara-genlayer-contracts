@@ -106,7 +106,7 @@ WANTED = {
     "_word_uint", "_word_addr", "_word_bytes32", "_keccak",
     "_SWAP_TYPE_TAG", "_V2_ADD_TYPE_TAG", "_V2_REMOVE_TYPE_TAG",
     "swap_commitment", "v2_add_commitment", "v2_remove_commitment",
-    "v3_add_commitment", "v3_remove_commitment", "_word_int",
+    "_word_int",
     "_V3_ADD_TYPE_TAG", "_V3_REMOVE_TYPE_TAG",
     "_ProgramCursor", "_decode_swap", "_decode_distribution",
     "decode_route_program", "_v2_amount_out",
@@ -293,52 +293,18 @@ def main() -> int:
     }, EXECUTOR).hex(),
         "0xa98a357b82137940e9309315904cecd862ed1fdc96506ba17c81df9f190050d8")
 
-    # 5b-ii. V3 liquidity. The lower tick is negative on purpose: Solidity
-    #        sign-extends int24 across the whole word, so an encoder that treated
-    #        ticks as unsigned would agree on every position above spot and
-    #        diverge on exactly the ranges users actually open.
-    check("v3 add commitment", "0x" + ns["v3_add_commitment"]({
-        "user": liq_user, "token0": token_a, "token1": token_b, "fee": 3000,
-        "tick_lower": -887220, "tick_upper": 887220,
-        "amount0_desired": 100 * 10**18, "amount1_desired": 200 * 10**18,
-        "amount0_min": 99 * 10**18, "amount1_min": 198 * 10**18,
-        "deadline": 1_800_000_000,
-    }, EXECUTOR).hex(),
-        "0xca6521d598a543cd272f47488f3d4bb16406b73304b6208dabe4bd47c4307f4a")
-
-    check("v3 remove commitment", "0x" + ns["v3_remove_commitment"]({
-        "user": liq_user, "token_id": 4242,
-        "token0": token_a, "token1": token_b,
-        "liquidity": 123456789,
-        "amount0_min": 49 * 10**18, "amount1_min": 98 * 10**18,
-        "deadline": 1_800_000_000,
-    }, EXECUTOR).hex(),
-        "0xdd2fd08b01d28a42b45e4b961a8867fd8efd47feb9984df910192a0988fece2d")
-
-    # Signed-word encoding, directly.
-    check("int word for -1", ns["_word_int"](-1).hex(), "ff" * 32)
-    check("int word for -887220", ns["_word_int"](-887220).hex(),
-          ((1 << 256) - 887220).to_bytes(32, "big").hex())
-    check("int word for 887220", ns["_word_int"](887220).hex(),
-          (887220).to_bytes(32, "big").hex())
-
-    # 5b-iii. The vendored keccak, on its own terms.
+    # V3 LIQUIDITY ENCODERS ARE GONE, deliberately.
     #
-    # This is the implementation that runs if the runtime's undocumented
-    # `genlayer.types.keccak` is absent from the pinned runner. It has to be
-    # exactly right, not approximately right: a commitment computed with a
-    # subtly wrong hash matches nothing and every settlement fails. Block
-    # boundaries (135/136/137 bytes around the 136-byte rate) are where a
-    # padding mistake would hide.
-    vendored = ns["_keccak256_vendored"]
-    check("vendored keccak of empty input", vendored(b"").hex(),
-          "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")
-    for probe in [b"", b"abc", b"SOYARA_SWAP_V2", b"recordVerdict(uint256,uint64)",
-                  bytes(range(256)) * 3, b"x" * 135, b"y" * 136, b"z" * 137]:
-        if vendored(probe) != keccak(probe):
-            failures.append(f"vendored keccak disagrees on a {len(probe)}-byte input")
-    else:
-        print("  ok  vendored keccak matches the reference on all probes")
+    # validate_liquidity_v3_add / _remove were removed from AgentValidator when
+    # the deployable hit GenVM's per-block pubdata limit (56 KB refused with
+    # BlockPubdataLimitReached; ~49 KB is what deploys). Nothing called them -
+    # the app routes V2 liquidity through the v2 validators and hands V3
+    # positions to the pools app - so they were the honest thing to cut.
+    #
+    # The SOLIDITY side still has v3AddHash / v3RemoveHash and its own frozen
+    # vectors in CommitmentConformance.t.sol, so the encoding stays pinned there
+    # for whenever V3 position management comes back. There is simply no Python
+    # counterpart to compare against while the IC cannot issue those verdicts.
 
     # 5c. The IC-to-EVM boundary.
     #

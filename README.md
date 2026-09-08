@@ -7,9 +7,7 @@ that enforces its verdict at settlement.
 **This repository contains contracts only.** It previously also carried the
 FlipSwap frontend, the marketing site and an example integration, which made it
 hard to review the contract artifact on its own. Those now live in the product
-repository and nothing here depends on them. What remains is the Intelligent
-Contract, the settlement executor, the AMMs they route through, their tests,
-and the deployment record.
+repository and nothing here depends on them.
 
 ## Where things are
 
@@ -31,8 +29,8 @@ together: the validator holds the executor's address, and the executor accepts
 
 | Contract | Address |
 |---|---|
-| AgentValidator (IC) | `0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A` |
-| AgentExecutor | `0x758d57cF9c96bC6235c1fA3929209A1C42346E18` |
+| AgentValidator (IC) | `0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb` |
+| AgentExecutor | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
 | AGGFlow entrypoint | `0x95feE6Cb918Ed9C621E36082EE8D998873031EaA` |
 | V2 factory / router | `0x4680BCe1632824d30D2F53656dD610736c3e312e` / `0xF456737D17C2Bbb348fd4F7D1b000D62A46FB3b5` |
 | V3 factory / router / quoter | `0xBd959038300aF0C8dd1873E497d6D0a565b4E246` / `0xdf69970B2fE416339187aA41D39882e864984CE9` / `0xca4914407868bc37ccbE324cA149DD475d39A2Bf` |

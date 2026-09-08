@@ -319,8 +319,6 @@ VERDICT_TTL_SECONDS: int = 7200
 # source, which is not the kind of thing to rely on inside a consensus round
 # where every validator must reach a byte-identical answer. A tuple iterates in
 # written order, everywhere, always.
-V3_FEE_TIERS: tuple = (500, 3000, 10000)
-V3_MAX_TICK: int = 887272
 
 # Route program opcodes and pool types — see AGGFlow.sol.
 _OP_END              = 0x00
@@ -658,56 +656,6 @@ def v2_remove_commitment(op: dict, executor: str) -> bytes:
     )
 
 
-def v3_add_commitment(op: dict, executor: str) -> bytes:
-    """Mirrors TradeHashLib.v3AddHash."""
-    return _keccak(
-        _V3_ADD_TYPE_TAG
-        + _word_uint(CHAIN_ID)
-        + _word_addr(executor)
-        + _word_addr(op["user"])
-        + _word_addr(op["token0"])
-        + _word_addr(op["token1"])
-        + _word_uint(op["fee"])
-        + _word_int(op["tick_lower"])
-        + _word_int(op["tick_upper"])
-        + _word_uint(op["amount0_desired"])
-        + _word_uint(op["amount1_desired"])
-        + _word_uint(op["amount0_min"])
-        + _word_uint(op["amount1_min"])
-        + _word_uint(op["deadline"])
-    )
-
-
-def v3_remove_commitment(op: dict, executor: str) -> bytes:
-    """Mirrors TradeHashLib.v3RemoveHash."""
-    return _keccak(
-        _V3_REMOVE_TYPE_TAG
-        + _word_uint(CHAIN_ID)
-        + _word_addr(executor)
-        + _word_addr(op["user"])
-        + _word_uint(op["token_id"])
-        + _word_addr(op["token0"])
-        + _word_addr(op["token1"])
-        + _word_uint(op["liquidity"])
-        + _word_uint(op["amount0_min"])
-        + _word_uint(op["amount1_min"])
-        + _word_uint(op["deadline"])
-    )
-
-
-# ---------------------------------------------------------------------------
-# Route program decoding
-# ---------------------------------------------------------------------------
-#
-#  The commitment binds keccak256(aggProgram). Verifying a JSON *description* of
-#  the route would leave the description and the executed bytes free to disagree,
-#  so the validators decode the program bytes themselves and check the hash. What
-#  is verified below is therefore exactly what runs.
-#
-#  Anything the grammar does not cover is refused rather than waved through: an
-#  unrecognised opcode or pool type means the route cannot be verified, and an
-#  unverifiable route must not be approved.
-
 class _ProgramCursor:
     """Byte reader mirroring AGGFlow's InputStream."""
 
@@ -827,6 +775,32 @@ def _v2_amount_out(amount_in: int, reserve_in: int, reserve_out: int, fee_ppm: i
 
 # ---------------------------------------------------------------------------
 # Contract
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# V3 LIQUIDITY VALIDATION WAS REMOVED, AND WHY
+# ---------------------------------------------------------------------------
+#
+# The deployable build hit GenVM's per-block pubdata limit at 56 KB and the
+# deploy was refused with BlockPubdataLimitReached; the largest contract that
+# has actually deployed here is about 49 KB. Something real had to go.
+#
+# validate_liquidity_v3_add / _remove and their helpers were the honest choice:
+# nothing calls them. The app routes V2 liquidity through
+# validate_liquidity_v2_add / _remove, and the agent surfaces hand V3 positions
+# to the pools app rather than settling them here. They were roughly 6.5 KB of
+# code no path reached.
+#
+# SWAP routing through V3 pools is untouched - `_simulate_leg` still prices a
+# v3 leg through the quoter, so a route that crosses a V3 pool is still verified
+# against live state. What is gone is only minting and burning V3 POSITIONS
+# through this validator.
+#
+# AgentExecutor keeps executeAddLiquidityV3 / executeRemoveLiquidityV3. They are
+# now unreachable in practice, because no verdict can be recorded for them - the
+# executor fails closed, which is the correct direction. If V3 position
+# management is ever wanted through the agent, these belong in their own
+# Intelligent Contract rather than back in here.
 # ---------------------------------------------------------------------------
 
 class AgentValidator(gl.Contract):
@@ -1752,6 +1726,21 @@ class AgentValidator(gl.Contract):
 
         # --- Phase 5: bind it all to one id and hand it to the executor ---
         expiry = self._now() + int(ttl_seconds)
+        # The id must be computable by the CALLER, before the round runs.
+        #
+        # A GenLayer write's return value cannot be recovered from its receipt,
+        # so a caller learns a round's outcome by reading it back under an
+        # identifier it already knows - exactly as swap commitments work. The
+        # first version of this derived the id from route_hash, which only this
+        # contract knows because it builds the route. The round then succeeded
+        # and the caller had nothing to look the mandate up by, so a working
+        # mandate was invisible and unusable.
+        #
+        # route_hash is therefore NOT part of the identity. It does not need to
+        # be: the id is a lookup key, and the security comes from the mandate's
+        # CONTENTS, which recordMandate writes and only this contract can call.
+        # The route is still bound - it sits inside the mandate and the executor
+        # enforces keccak256(aggProgram) == mandate.routeHash on every trade.
         mandate_id = _keccak(
             _MANDATE_TYPE_TAG
             + _word_uint(CHAIN_ID)
@@ -1759,7 +1748,6 @@ class AgentValidator(gl.Contract):
             + _word_addr(user)
             + _word_addr(token_in)
             + _word_addr(token_out)
-            + _word_bytes32("0x" + route_hash.hex())
             + _word_uint(int(nonce))
         )
         mandate_hex = "0x" + mandate_id.hex()
@@ -1823,209 +1811,6 @@ class AgentValidator(gl.Contract):
     #  V3 positions settled through the same privileged path everything else
     #  did. They now go through the verdict registry too, so the executor's
     #  V3 entry points are no longer reachable without a consensus round.
-
-    @gl.public.write
-    def validate_liquidity_v3_add(
-        self,
-        user:            str,
-        token0:          str,
-        token1:          str,
-        fee:             u256,   # V3 fee tier, e.g. 3000 = 0.30%
-        tick_lower:      str,    # signed; string because ticks are negative below spot
-        tick_upper:      str,
-        amount0_desired: str,
-        amount1_desired: str,
-        amount0_min:     str,
-        amount1_min:     str,
-        deadline:        u256,
-    ) -> dict:
-        self.validated_count = self.validated_count + u256(1)
-
-        if self.paused:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("Contract paused by owner")
-
-        check = self._check_liquidity_policy(user, token0, token1, deadline)
-        if not check["approved"]:
-            self.rejected_count = self.rejected_count + u256(1)
-            return check
-
-        try:
-            lower = int(tick_lower)
-            upper = int(tick_upper)
-            amt0  = int(amount0_desired)
-            amt1  = int(amount1_desired)
-            min0  = int(amount0_min)
-            min1  = int(amount1_min)
-        except (ValueError, TypeError):
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("tick and amount fields must be valid integer strings")
-
-        # A V3 position with an inverted or out-of-range range is not a position;
-        # the position manager would revert, after the round had been paid for.
-        if lower >= upper:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("tick_lower must be below tick_upper")
-        if lower < -V3_MAX_TICK or upper > V3_MAX_TICK:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap(f"tick range exceeds the V3 bound of +/-{V3_MAX_TICK}")
-
-        if amt0 <= 0 and amt1 <= 0:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("at least one deposit amount must be greater than zero")
-        if min0 > amt0 or min1 > amt1:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("minimum accepted amount cannot exceed the desired amount")
-
-        if int(fee) not in V3_FEE_TIERS:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap(f"fee tier {int(fee)} is not one of {list(V3_FEE_TIERS)}")
-
-        # The route fact for a V3 deposit: the pool must be one the Soyara V3
-        # factory deployed for exactly this pair and tier.
-        try:
-            pool = self._canonical_v3_pool(token0, token1, int(fee))
-        except Exception as e:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap(f"Pool could not be verified on chain: {e}")
-
-        if pool == NATIVE_ZERO.lower():
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap(
-                f"No canonical Soyara V3 pool exists for this pair at the {int(fee)} fee tier"
-            )
-
-        try:
-            llm_approved = self._consensus_review(
-                "ADD_LIQUIDITY", u256(0), amount0_desired, amount1_desired, "{}"
-            )
-        except Exception:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("Consensus unavailable — failed closed")
-
-        if not llm_approved:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("LLM coherence review did not approve this position")
-
-        commitment = v3_add_commitment(
-            {
-                "user": user, "token0": token0, "token1": token1, "fee": int(fee),
-                "tick_lower": lower, "tick_upper": upper,
-                "amount0_desired": amt0, "amount1_desired": amt1,
-                "amount0_min": min0, "amount1_min": min1,
-                "deadline": int(deadline),
-            },
-            str(self.agent_executor),
-        )
-        return self._issue_verdict(commitment, deadline, "V3 mint approved", pool)
-
-    @gl.public.write
-    def validate_liquidity_v3_remove(
-        self,
-        user:        str,
-        token_id:    str,
-        token0:      str,
-        token1:      str,
-        liquidity:   str,
-        amount0_min: str,
-        amount1_min: str,
-        deadline:    u256,
-    ) -> dict:
-        self.validated_count = self.validated_count + u256(1)
-
-        if self.paused:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("Contract paused by owner")
-
-        check = self._check_liquidity_policy(user, token0, token1, deadline)
-        if not check["approved"]:
-            self.rejected_count = self.rejected_count + u256(1)
-            return check
-
-        try:
-            position = int(token_id)
-            liq      = int(liquidity)
-            min0     = int(amount0_min)
-            min1     = int(amount1_min)
-        except (ValueError, TypeError):
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("tokenId and amount fields must be valid integer strings")
-
-        if liq <= 0:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("liquidity must be greater than zero")
-        if min0 < 0 or min1 < 0:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("minimum withdrawal amounts cannot be negative")
-
-        # The withdrawal is determined by tokenId, but the executor reads
-        # token0/token1 to enforce its whitelist, so they are inputs to whether
-        # the call is permitted and must be verified as a real pair. The fee tier
-        # is not a parameter of the executor's remove path, so the check is that
-        # SOME canonical pool exists for these two tokens rather than one tier.
-        try:
-            pool = self._any_canonical_v3_pool(token0, token1)
-        except Exception as e:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap(f"Pool could not be verified on chain: {e}")
-
-        if pool == NATIVE_ZERO.lower():
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("No canonical Soyara V3 pool exists for these tokens")
-
-        try:
-            llm_approved = self._consensus_review(
-                "REMOVE_LIQUIDITY", u256(0), liquidity, amount0_min, "{}"
-            )
-        except Exception:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("Consensus unavailable — failed closed")
-
-        if not llm_approved:
-            self.rejected_count = self.rejected_count + u256(1)
-            return self._reject_swap("LLM coherence review did not approve this withdrawal")
-
-        commitment = v3_remove_commitment(
-            {
-                "user": user, "token_id": position,
-                "token0": token0, "token1": token1,
-                "liquidity": liq, "amount0_min": min0, "amount1_min": min1,
-                "deadline": int(deadline),
-            },
-            str(self.agent_executor),
-        )
-        return self._issue_verdict(commitment, deadline, "V3 decrease-liquidity approved", pool)
-
-    def _canonical_v3_pool(self, token0: str, token1: str, fee: int) -> str:
-        """The pool the Soyara V3 factory deployed for this pair and tier, or zero."""
-        return addr(_evm_view(
-            V3_FACTORY, "getPool", (Address, Address, u24), Address,
-            (Address(addr(token0)), Address(addr(token1)), u24(fee)),
-        ))
-
-    def _any_canonical_v3_pool(self, token0: str, token1: str) -> str:
-        """The first canonical pool across the standard tiers, or zero."""
-        for tier in V3_FEE_TIERS:
-            pool = self._canonical_v3_pool(token0, token1, tier)
-            if pool != NATIVE_ZERO.lower():
-                return pool
-        return NATIVE_ZERO.lower()
-
-    # -----------------------------------------------------------------------
-    # Phase 2 — LLM coherence check (non-deterministic, reaches consensus)
-    # -----------------------------------------------------------------------
-
-    # ── Consensus wrappers ────────────────────────────────────────────────
-    #
-    # The nondeterministic call is isolated in its own method on purpose.
-    # genvm-lint marks the scope CONTAINING an inline `strict_eq(lambda: ...)`
-    # as a non-deterministic context, and storage writes are forbidden there —
-    # which is why `validate_proposal` and `issue_trading_mandate` previously
-    # failed lint with "storage writes are forbidden in non-deterministic
-    # contexts" and "nested non-deterministic blocks are forbidden". Keeping the
-    # lambda here means the callers stay deterministic and may write state.
-    #
-    # Only a BARE BOOLEAN crosses the strict_eq boundary — see _llm_review.
 
     def _consensus_review(
         self,
