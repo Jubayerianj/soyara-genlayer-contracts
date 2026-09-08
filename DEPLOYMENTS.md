@@ -18,7 +18,9 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 
 | Contract | Address | Transaction Hash |
 |---|---|---|
-| **AgentValidator** (current — verdict authenticated at settlement) | `0x8627CfDC1df6DcD813113FA2F400B35a99a781D4` | `0x37980bd6bd1d3c854fb06ef07af1fd207cfb67089e62666c9cd05c5877eea0d3` |
+| **AgentValidator** (current — verdict authenticated at settlement) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` | see `BootstrapValidator.s.sol/4221/run-latest.json` |
+| AgentValidator (retired — superseded during the same rollout) | `0x8627CfDC1df6DcD813113FA2F400B35a99a781D4` | `0x37980bd6bd1d3c854fb06ef07af1fd207cfb67089e62666c9cd05c5877eea0d3` |
+| AgentValidator (retired — superseded during the same rollout) | `0x001E00a816fa93bC2cA07587d929Aa98C31051DD` | see `BootstrapValidator.s.sol/4221/run-1788784195752.json` |
 | AgentValidator (retired — agent enforced the verdict) | `0x7ABa94668afC24463Be323f9bB65BD4b4F480d89` | `0x527fa134b17d499efc967807cdb153a9fcc2e37fbba4e446911220f0f7cdaf86` |
 | AgentValidator (failed deploy — explicit `genlayer.types` import, see below) | `0xf06FC7dA4d0dd806971d0Dd01A29bfE514BAa92B` | `0xaef0acef22ee6e7990599c14b55da695a1f9c160bd63f2592ec2e6d1fc7f471c` |
 | AgentValidator (retired — failed genvm-lint, 12 errors) | `0x78FA2A758bdB65a66F4B9C08D8DC54066d0e0395` | `0x3f70ffa33317575dbb9e3a482e2901f5b3e82bed5e67e4a75ac8949b291ec85b` |
@@ -40,7 +42,7 @@ Replacing one without the other leaves settlement dead.
 | Contract | Address |
 |---|---|
 | **AgentExecutor** (EVM) | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
-| **AgentValidator** (IC) | `0x8627CfDC1df6DcD813113FA2F400B35a99a781D4` |
+| **AgentValidator** (IC) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` |
 
 Deployment order is forced by a circular dependency: the IC takes the executor's
 address as a constructor argument, so the executor must exist first, which is
@@ -157,46 +159,60 @@ The limit is per BLOCK, not per transaction: the same 49 KB build was rejected
 once and accepted on retry a few seconds later. If a deploy fails with
 `BlockPubdataLimitReached`, retry before assuming the contract is too big.
 
-### Fast settlement: the attestation rail
+### Removed: the attestation rail
 
-A consensus round **decides in about 20 seconds**. Settlement waited ~40 minutes
-anyway, because the verdict travels to the executor as an external message and
-those are delivered only on finalization. The wait was never consensus being
-slow; it was the delivery road.
+There used to be a second settlement rail here, and it is worth recording why it
+existed and why it is gone.
 
-The attestation rail is the other road. Attestors read the verdict the IC
-recorded (available as soon as the round is accepted) and sign the SAME
-commitment under EIP-712; `AgentExecutor` verifies the quorum on chain.
+**Why it existed.** A consensus round decides in about twenty seconds, but the
+verdict only reaches `AgentExecutor` when the round *finalizes*, because it
+travels as an EVM-bound external message. On the pinned Bradbury runner
+`EthSend` takes no `on=` parameter (the `accepted`/`finalized` choice exists for
+IC-to-IC messages, not for EVM ones), so the delivery road cannot be shortened.
+The wait was never consensus being slow; it was delivery. The rail let a 2-of-2
+quorum of registered attestors read the verdict out of the IC as soon as the
+round was accepted and sign the same commitment under EIP-712, and settlement
+took **30 seconds** instead of the appeal window.
 
-**Measured end to end on Bradbury: 30 seconds**, settlement tx
-`0x3885d81b1bf93742c7f97fd8c4814e5478c26ab16b79f6a5abd44473a8f3811c`.
+**Why it is gone.** Nothing on chain tied an attestation to a verdict the IC had
+actually recorded. The policy that attestors sign only what the IC approved
+lived in the signing service, not in the contract. To the executor, M signatures
+were simply a *substitute* for a GenLayer verdict — which is the one thing this
+executor exists to refuse. A guarantee enforced only by the process that
+benefits from it is not a guarantee, and this system had already been reviewed
+twice on precisely that point.
 
-| | |
-|---|---|
-| Attestor A | `0xF186d1414B7F399572F3945D1b84cc230caB9c55` |
-| Attestor B | `0xe0C59312a00dadF7F5A19D8A11e640F5a340C581` |
-| Threshold | 2 of 2 |
+So the rail is removed, not merely disabled. `setAttestorThreshold`,
+`setVerdictAttestor`, `verdictDigest` and the `bytes[] attestations` argument on
+all five execute functions no longer exist, and `script/EnableAttestors.s.sol`
+is deleted. `_consumeVerdict` has one branch: a live verdict recorded by the
+AgentValidator IC, or the call reverts with `NoConsensusVerdict`.
 
-Attestor keys **only sign**. They never send a transaction, hold no funds, and
-belong in a separate service or an HSM rather than beside the relayer key.
+**The cost is real and is the point.** Settlement now waits out the appeal
+window, roughly 15 to 25 minutes on Bradbury. Latency is the honest price of
+consensus enforcement.
 
-**What is and is not given up.** The consensus round still decides: attestors
-sign only what the IC has already recorded as approved, and a commitment nobody
-validated has no verdict to find on either rail. What changes is the trust
-assumption at settlement, from "the validator IC wrote this" to "M of N
-attestors agree the validator IC approved this". That is weaker than the
-consensus rail and should be stated plainly. It is far stronger than what this
-system had before, where one key both authorised and executed and the approval
-covered seven fields while leaving the route and the fee for that key to choose:
+### The owner is the last party who could subvert the registry
 
-- the signature covers the **whole commitment**, route and fee included
-- it takes **M distinct signers**, not one
-- an attestor **may never be a settlement agent**, enforced on chain by
-  `RoleConflict`
+`setGenLayerValidator` is `onlyOwner`. Left unguarded, the owner could point it
+at an address it holds the key for and then call `recordVerdict` directly, which
+is the agent-enforces-the-verdict design wearing a different hat. Two checks
+close the cheap version of that:
 
-Turn it off with `setAttestorThreshold(0)`; GenLayer consensus then becomes the
-only source of authority, at the cost of the finalization wait. Enable with
-`script/EnableAttestors.s.sol`.
+- the target **must have code** (`ValidatorNotAContract`). A ghost contract
+  always does, so this costs an honest deployment nothing and denies an EOA
+  outright.
+- the target **may not be a relaying agent**, and an agent may not be made the
+  validator (`RoleConflict`), enforced from both sides.
+
+Owner trust does not reduce to zero — the owner can still pause, rescue tokens,
+and deploy a contract of its own — but a single key can no longer both authorise
+and execute, and installing a bare key where consensus belongs now reverts.
+
+**Operationally, `owner` and `authorisedAgent` should not be the same address.**
+On the current deployment they both are `0x23D542DC...`. Splitting them, ideally
+with the owner behind a multisig, is a one-transaction change and is
+recommended before mainnet.
 
 ### Finalization is a call, not a timer
 
@@ -316,32 +332,49 @@ enters the queue) is the durable answer for per-trade latency.
 | **Aggregator Entrypoint** | `AGGFlowEntrypoint` | `0xF69E64804000d28aA695eB5c594B996100fb3B49` |
 | **Aggregator Router** | `AGGFlowRouter` | `0x0624E93350bFfc5B3570589FCae68e2CaBe6c620` |
 
-### AgentExecutor — One-Time Approval Gate
+### AgentExecutor — the settlement gate
 
-> **⚠️ PENDING DEPLOYMENT** — Run the deploy script to deploy and fill in this address.
+`AgentExecutor.sol` is the on-chain enforcement contract for the
+GenLayer-to-settlement flow. It is deployed and bound to the AgentValidator IC.
 
-`AgentExecutor.sol` is the on-chain enforcement contract for the GenLayer-to-settlement flow.
+**Read the live contract before reading anything below.** The addresses in this
+file are a convenience; the chain is the source of truth, and the pairing is
+verifiable in two calls:
 
-**Deploy command:**
 ```bash
-cd dex-solidity-contracts/aggregator
-GOV_PRIVATE_KEY=0x<your_key> forge script script/deployGenlayer.sol \
-    --rpc-url https://rpc.testnet-chain.genlayer.com --broadcast
+# executor -> IC
+cast call 0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1 'genLayerValidator()(address)' \
+  --rpc-url https://rpc.testnet-chain.genlayer.com
+# -> 0xf47492A969b2bC8f99B62Bdf8958541F2234C42b
+
+# IC -> executor
+genlayer call 0xf47492A969b2bC8f99B62Bdf8958541F2234C42b get_config \
+  --rpc https://rpc-bradbury.genlayer.com
+# -> agent_executor: 0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1
 ```
 
-**After deployment, update these three files:**
-1. `frontend/flipswap/constants/addresses.js` → `CONTRACT_ADDRESSES[4221].agentExecutor = "0x<address>"`
-2. `frontend/flipswap/.env.local` → `AGENT_EXECUTOR_ADDRESS=0x<address>`
-3. `frontend/flipswap/.env.local` → `AGENT_PRIVATE_KEY=0x<deployer_key>` (same key used as `GOV_PRIVATE_KEY`)
-4. This file → update the table below
+The current executor has **no** `approveTradeWithParams`; the retired ones below
+still do, and that function is exactly the design this work removed. Do not read
+a retired address as the current one.
 
 | Component | Contract | Address |
 |---|---|---|
-| **Settlement Gate** | `AgentExecutor` (multi-agent) | `0xa835c0a86dD64726eF23D83a8ca7D60b542EE2e4` |
+| **Settlement Gate** | `AgentExecutor` (executor enforces the verdict) | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
+| Settlement Gate (retired — agent wrote its own approval) | `AgentExecutor` (multi-agent) | `0xa835c0a86dD64726eF23D83a8ca7D60b542EE2e4` |
 | Settlement Gate (retired — single agent only) | `AgentExecutor` | `0xBda36A9453003E2eEe5D6Cb07ad253e64BaB4729` |
 | Settlement Gate (retired — native-out blocked, see below) | `AgentExecutor` | `0xaE547F01f9ddCa4dB66cdbf0727f7563Fc44bC26` |
 | **Aggregator Entrypoint** | `AGGFlowEntrypoint` (new) | `0x95feE6Cb918Ed9C621E36082EE8D998873031EaA` |
 | **Aggregator Router** | `AGGFlowRouter` (new) | `0xafCAD2bf0E85e30a2b54ac6491dC81987cE7767C` |
+
+The `Core & Periphery` table above lists the **first-generation** V2 router and
+aggregator entrypoint. The executor is wired to the newer ones, which is what
+`aggFlowEntrypoint()` / `v2Router()` / `v3PositionManager()` return on chain:
+`0x95feE6Cb918Ed9C621E36082EE8D998873031EaA`,
+`0xF456737D17C2Bbb348fd4F7D1b000D62A46FB3b5`,
+`0x779380011B5F2aB40985D810B5c7641539beD870`.
+
+Redeploying the executor means redeploying the IC with it — see the matched-pair
+note above — because each holds the other's address.
 
 ### ⚠️ address(0) is NATIVE and must be exempt from the ERC-20 whitelist
 

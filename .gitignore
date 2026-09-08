@@ -1,65 +1,35 @@
-# Dependencies
-node_modules/
-.pnp
-.pnp.js
-
-# Production & Build outputs
-.next/
-dist/
-build/
+# Build artifacts and caches
 out/
-buildV1/
-.netlify/
-
-# Smart Contract build artifacts & cache
-artifacts/
 cache/
+cache_forge/
+artifacts/
 typechain/
 typechain-types/
-broadcast/
-cache_forge/
 solidity-files-cache.json
+broadcast/*/*/dry-run/
+__pycache__/
+*.pyc
 
-# Environment variables & secrets (CRITICAL)
+# Dependencies
+node_modules/
+
+# Secrets. Never commit a key.
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.env.*.local
-*.env
-*.env.*
-!*.env.example
+.env.*
 !.env.example
-
-# Private keys & certificates
 *.pem
 *.key
-*.pub
 id_rsa*
 
-# Testing & Coverage
-coverage/
-.nyc_output/
-*.lcov
+# This repository is CONTRACTS ONLY.
+# The frontend, the marketing site and example integrations live in the product
+# repository; carrying them here is what made the contract artifact hard to
+# review on its own.
+frontend/
+soyara-website/
+using-sdk-something-project/
+sdk/
 
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-# OS & Editor files
+# OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
 *.swp
-*.swo
-.vscode/
-.idea/

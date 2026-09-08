@@ -1,226 +1,118 @@
-# ⚡ Soyara / FlipSwap DEX — GenLayer Intelligent DeFi Monorepo
+# Soyara — GenLayer contracts
 
-<div align="center">
+The on-chain half of Soyara DEX on **GenLayer Bradbury** (chain `4221`): the
+GenLayer Intelligent Contract that validates a trade, and the Solidity executor
+that enforces its verdict at settlement.
 
-![License](https://img.shields.io/badge/License-MIT-blue.svg)
-![Solidity](https://img.shields.io/badge/Solidity-0.8.24-363636.svg)
-![Python](https://img.shields.io/badge/Python-3.11+-3776AB.svg)
-![GenLayer](https://img.shields.io/badge/GenLayer-Bradbury%20Testnet-00F0FF.svg)
-![Next.js](https://img.shields.io/badge/Next.js-14%2B-black.svg)
+**This repository contains contracts only.** It previously also carried the
+FlipSwap frontend, the marketing site and an example integration, which made it
+hard to review the contract artifact on its own. Those now live in the product
+repository and nothing here depends on them. What remains is the Intelligent
+Contract, the settlement executor, the AMMs they route through, their tests,
+and the deployment record.
 
-**Next-generation decentralized exchange and routing aggregator powered by GenLayer Intelligent Contracts and EVM liquidity protocols.**
+## Where things are
 
-[Architecture](#-architecture) • [Packages](#-monorepo-structure) • [Intelligent Contracts](#-genlayer-intelligent-contracts) • [Deployments](#-deployments) • [Getting Started](#-getting-started) • [Contributing](#-contributing)
+| | Path |
+|---|---|
+| **AgentValidator** (GenLayer IC, Python/GenVM) | [`genlayer-inteligent-contracts/AgentValidator.py`](genlayer-inteligent-contracts/AgentValidator.py) |
+| **AgentExecutor** (settlement, Solidity) | [`aggregator/src/AgentExecutor.sol`](aggregator/src/AgentExecutor.sol) |
+| Executor base — verdict registry, roles | [`aggregator/src/base/AgentExecutorBase.sol`](aggregator/src/base/AgentExecutorBase.sol) |
+| Commitment encoding | [`aggregator/src/libraries/TradeHashLib.sol`](aggregator/src/libraries/TradeHashLib.sol) |
+| The `SwapOrder` struct | [`aggregator/src/types/SettlementTypes.sol`](aggregator/src/types/SettlementTypes.sol) |
+| AMM aggregation (V2/V3 routing) | [`aggregator/src/entrypoint/`](aggregator/src/entrypoint/), [`aggregator/src/flow/`](aggregator/src/flow/) |
+| Underlying AMMs | [`v2 dex contracts/`](<v2 dex contracts>), [`v3 dex contracts/`](<v3 dex contracts>) |
 
-</div>
+The validator and the executor are a **matched pair** and must be deployed
+together: the validator holds the executor's address, and the executor accepts
+`recordVerdict` **only** from that validator.
 
----
+## Deployed on Bradbury
 
-## 📖 Overview
+| Contract | Address |
+|---|---|
+| AgentValidator (IC) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` |
+| AgentExecutor | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
+| AGGFlow entrypoint | `0x95feE6Cb918Ed9C621E36082EE8D998873031EaA` |
+| V2 factory / router | `0x4680BCe1632824d30D2F53656dD610736c3e312e` / `0xF456737D17C2Bbb348fd4F7D1b000D62A46FB3b5` |
+| V3 factory / router / quoter | `0xBd959038300aF0C8dd1873E497d6D0a565b4E246` / `0xdf69970B2fE416339187aA41D39882e864984CE9` / `0xca4914407868bc37ccbE324cA149DD475d39A2Bf` |
 
-**Soyara DEX** (FlipSwap) combines automated market maker (AMM) liquidity models with **GenLayer Intelligent Contracts (ICs)**. By introducing AI validator consensus into the execution pipeline, the protocol ensures that execution proposals undergo deterministic and AI-powered safety verification before settlement on-chain.
+RPC `https://rpc-bradbury.genlayer.com` · owner `0x23D542DCEFb00b1f4268E67a0EC1EF4de0A58fe2`
 
-### Key Highlights
-- **GenLayer AI Consensus**: Python-based Intelligent Contracts running on GenVM evaluate execution intents using Optimistic Democracy consensus.
-- **Hybrid Security Pipeline**: Two-stage validation combining deterministic constraints (slippage caps, whitelist controls, zero-calldata guarantees) with consensus-backed logic verification.
-- **Multi-AMM Aggregator**: Built-in AGGFlow router providing optimized trade routes across SoyaraDex V2 and V3 liquidity pools.
-- **Modern Full-Stack Experience**: High-performance Next.js application with Wagmi, Viem, RainbowKit, live indexing, and real-time swap analytics.
+## How the verdict is enforced
 
----
-
-## 📐 Architecture
-
-```
-                               ┌───────────────────────────┐
-                               │     User / Web3 Client    │
-                               └─────────────┬─────────────┘
-                                             │
-                                             ▼
-                               ┌───────────────────────────┐
-                               │      Next.js DEX App      │
-                               └─────────────┬─────────────┘
-                                             │
-                         ┌───────────────────┴───────────────────┐
-                         │                                       │
-                         ▼                                       ▼
-        ┌─────────────────────────────────┐   ┌─────────────────────────────────┐
-        │       GenLayer Testnet          │   │        EVM Execution Layer      │
-        │                                 │   │                                 │
-        │   ┌─────────────────────────┐   │   │   ┌─────────────────────────┐   │
-        │   │     AgentValidator      │   │   │   │    AgentExecutor.sol    │   │
-        │   │ (Deterministic + AI-IC) │   │   │   │   (On-Chain Enforcer)   │   │
-        │   └────────────┬────────────┘   │   │   └────────────┬────────────┘   │
-        │                │                │   │                │                │
-        │   ┌────────────▼────────────┐   │   │   ┌────────────▼────────────┐   │
-        │   │   LiquidityValidator    │   │   │   │    AGGFlowEntrypoint    │   │
-        │   │   (V2 & V3 Operations)  │   │   │   │    (Aggregator Engine)  │   │
-        │   └─────────────────────────┘   │   │   └────────────┬────────────┘   │
-        └─────────────────────────────────┘   └────────────────┼────────────────┘
-                                                               │
-                                           ┌───────────────────┴───────────────────┐
-                                           │                                       │
-                                           ▼                                       ▼
-                               ┌───────────────────────┐               ┌───────────────────────┐
-                               │   SoyaraDex V2 Pools    │               │   SoyaraDex V3 Pools    │
-                               └───────────────────────┘               └───────────────────────┘
-```
-
----
-
-## 📁 Monorepo Structure
+The executor, not a privileged agent, is what authorises a trade.
 
 ```
-.
-├── Dex Solidity contracts/
-│   ├── aggregator/                     # Foundry project for AGGFlow router & entrypoint
-│   ├── v2 dex contracts/
-│   │   ├── v2-core-master/             # SoyaraDex V2 Factory & ERC20 Pair contracts
-│   │   └── v2-periphery-master/        # SoyaraDex V2 Router & Library contracts
-│   └── v3 dex contracts/
-│       ├── v3-core-main/               # SoyaraDex V3 Factory & Pool contracts
-│       └── v3-periphery-main/          # SoyaraDex V3 Position Manager & SwapRouter
-│
-├── genlayer-inteligent-contracts/
-│   ├── AgentValidator.py               # GenLayer Intelligent Contract for swap proposals
-│   ├── LiquidityValidator.py           # GenLayer Intelligent Contract for LP operations
-│   ├── AgentExecutor.sol               # On-chain Solidity bridge & execution guard
-│   └── execution-rules.json            # Whitelists, slippage thresholds & parameter specs
-│
-├── frontend/
-│   └── flipswap/                       # Main DEX trading frontend (Next.js + Wagmi + Tailwind)
-│       ├── components/                 # UI components and swap widgets
-│       ├── server-indexer/             # Standalone event indexing service
-│       └── points-deployment/          # Contributor rewards & NFT points contracts
-│
-├── soyara website/                     # Official Soyara ecosystem landing page (Next.js)
-│
-├── DEPLOYMENTS.md                      # Network contract addresses & registry
-├── CONTRIBUTING.md                     # Open-source contribution guidelines
-└── LICENSE                             # MIT License
+user intent
+     │
+     ▼
+AgentValidator (GenVM consensus)
+     │  decodes the aggregator route program
+     │  confirms every pool against the V2/V3 factory
+     │  re-derives the output from LIVE reserves
+     │  LLM coherence review under strict_eq
+     │
+     │  external message, emitted on finalization
+     ▼
+AgentExecutor.recordVerdict(commitment, expiry)     ← onlyValidator
+     │
+     ▼
+AgentExecutor.executeSwap(order, aggProgram, attestations)
+        re-derives the commitment from the ORDER and consumes it
 ```
 
----
+The commitment is `keccak256` over the whole `SwapOrder`: user, tokenIn,
+tokenOut, amountIn, minAmountOut, **quotedAmountOut**, slippageBps, deadline,
+**router**, **feeBps**, **feeCollector**, **routeHash**, nonce — plus the chain
+id and the executor address. Change any one of them and the executor derives a
+different commitment, which no verdict backs, and settlement reverts. A relayer
+therefore cannot substitute a route, raise the fee, redirect the output, or
+settle against a quote consensus never saw. Verdicts are single use.
 
-## 🧠 GenLayer Intelligent Contracts
+There is exactly one way a verdict arrives: the AgentValidator IC records it
+over its ghost contract (`VerdictSource.GenLayerConsensus`). `_consumeVerdict`
+has no second branch — no recorded verdict means `NoConsensusVerdict` and the
+settlement reverts.
 
-GenLayer Intelligent Contracts execute in a Python runtime on the **GenVM**. Multiple validator nodes independently execute contract methods and reach consensus via **Optimistic Democracy**.
+An earlier version also accepted an M-of-N EIP-712 attestor quorum, so a trade
+could settle about thirty seconds after the round decided instead of waiting out
+the appeal window. It was removed: nothing on chain linked such a signature to a
+verdict the IC had actually recorded, so those keys amounted to a substitute for
+consensus. Settlement now waits for finalization, 15 to 25 minutes on Bradbury.
+That latency is the honest cost of the guarantee.
 
-### 1. `AgentValidator.py`
-Validates proposal metadata before executing trades:
-- **Whitelisted Assets**: Validates `tokenIn` and `tokenOut` against approved token contracts.
-- **Approved Routers**: Restricts execution destinations to registered aggregator and router addresses.
-- **Slippage Bounds**: Enforces maximum basis point thresholds (`MAX_SLIPPAGE_BPS = 300` / 3%).
-- **Equivalence Principle Consensus**: Uses `gl.eq_principle.strict_eq` to guarantee validator agreement on numeric coherence.
+The owner cannot route around this either. `setGenLayerValidator` rejects an
+address with no code (a ghost contract always has code, so an EOA can never be
+installed there) and rejects any address registered as a relaying agent, with
+the same check applied from the agent side.
 
-### 2. `LiquidityValidator.py`
-Validates automated liquidity management:
-- **SoyaraDex V2**: Verifies ratio bounds and non-zero liquidity amounts.
-- **SoyaraDex V3**: Validates fee tiers (`500`, `3000`, `10000`), price tick constraints (`tickLower < tickUpper`), and range boundaries (`[-887272, 887272]`).
+## Tests
 
-### 3. `AgentExecutor.sol`
-The EVM gatekeeper that accepts validated intents and calls liquidity routers:
-- Checks authorization modifiers and reentrancy protections.
-- Pulls user-approved tokens and forwards them directly to the settlement router.
-- Directs output tokens directly to the user's wallet address.
-
----
-
-## 🚀 Deployed Addresses
-
-export const CONTRACT_ADDRESSES = {
-  4221: {
-    factory: "0x4680BCe1632824d30D2F53656dD610736c3e312e",
-    router: "0xF456737D17C2Bbb348fd4F7D1b000D62A46FB3b5",
-    weth: "0x315374AA9b5536037Cc1Efeea2439CCC0913A77e",
-    wgen: "0x315374AA9b5536037Cc1Efeea2439CCC0913A77e",
-    WGEN: "0x315374AA9b5536037Cc1Efeea2439CCC0913A77e",
-    wrappedNative: "0x315374AA9b5536037Cc1Efeea2439CCC0913A77e",
-    WETH: "0x315374AA9b5536037Cc1Efeea2439CCC0913A77e",
-    aggregatorRouter: '0xafCAD2bf0E85e30a2b54ac6491dC81987cE7767C',
-    aggregatorEntrypoint: '0x95feE6Cb918Ed9C621E36082EE8D998873031EaA',
-    dexFeeVault: '0x48234eD645676b794a4CbC7483513e58cB04e22E',
-    // SoyaraDex V3
-    v3Factory: "0xBd959038300aF0C8dd1873E497d6D0a565b4E246",
-    v3Router: "0xdf69970B2fE416339187aA41D39882e864984CE9",
-    v3NftDescriptor: "0xef334fcAA42A17CF8f76627408Ee0cE91eBaE6E4",
-    v3NftPositionDescriptor: "0xbC5a5E695a70208Bd18B742C6731C749F1748795",
-    v3PositionManager: "0x779380011B5F2aB40985D810B5c7641539beD870",
-    v3Migrator: "0xa338b743Ec494ebB8345f4B6F27ffC902b7EF5Aa",
-    v3Quoter: "0xca4914407868bc37ccbE324cA149DD475d39A2Bf",
-    v3TickLens: "0xCa4c7EdB398684cB4C5B3fD0cc6ced30b5a5f4d3",
-    multicall: "0x6d1503E294b122Eb6B37ECe9c74d24D83f8B478b",
-    // GenLayer Intelligent Contracts
-    // AgentValidator redeployed 2026-09-04: fixed stale router whitelist (was blocking
-    // every real proposal after AGGFlowEntrypoint/AGGFlowRouter were redeployed) and
-    // removed non-deterministic time.time() usage. See DEPLOYMENTS.md.
-    agentValidator: "0x7ABa94668afC24463Be323f9bB65BD4b4F480d89",
-    liquidityValidator: "0xEFb9473B5269A79d72Df4b6E73E310791a185eeC",
-    // AgentExecutor - deployed 2026-09-04 on GenLayer Bradbury Testnet (chain 4221)
-    // Tx: broadcast/deployGenlayer.sol/4221/run-latest.json
-    // Deployer/Agent: 0x23D542DCEFb00b1f4268E67a0EC1EF4de0A58fe2
-    agentExecutor: "0xa835c0a86dD64726eF23D83a8ca7D60b542EE2e4",
-  }
-};
-
-export const INTELLIGENT_CONTRACTS = {
-  agentValidator: "0x7ABa94668afC24463Be323f9bB65BD4b4F480d89",
-  liquidityValidator: "0xEFb9473B5269A79d72Df4b6E73E310791a185eeC"
-};
-*For complete deployment details and token whitelists, refer to [DEPLOYMENTS.md](./DEPLOYMENTS.md).*
-
----
-
-## 🛠 Getting Started
-
-### Prerequisites
-- Node.js `>= 18.0.0`
-- Foundry (`forge`, `cast`)
-- Python `>= 3.11`
-- GenLayer CLI (`pip install genlayer` or official installer)
-
-### 1. Setting Up the Frontend
 ```bash
-cd frontend/flipswap
-cp .env.example .env.local
-npm install
-npm run dev
+# Solidity: 54 tests, including every parameter-tamper and replay vector
+cd aggregator && forge test
+
+# Cross-language: the Python encoder must produce byte-identical commitments
+cd genlayer-inteligent-contracts && python3 test_commitment_conformance.py
 ```
 
-### 2. Building EVM Contracts (Foundry / Hardhat)
+`test_commitment_conformance.py` also guards the pairing itself: it fails if a
+copy of the settlement source is duplicated into the IC folder, if
+`recordVerdict`/`onlyValidator` go missing, or if an agent-written approval
+function reappears.
+
+## Deploying
+
+The IC is size-limited by GenVM pubdata, so deploy the stripped build:
+
 ```bash
-# Aggregator Contracts
-cd "Dex Solidity contracts/aggregator"
-forge build
-
-# SoyaraDex V2 Core
-cd "../v2 dex contracts/v2-core-master"
-npm install
-npx hardhat compile
+cd genlayer-inteligent-contracts
+python3 build_deployable.py          # strips comments/docstrings
+genlayer deploy --contract build/AgentValidator.deployable.py --args <owner> <executor>
 ```
 
-### 3. Interacting with GenLayer Intelligent Contracts
-```bash
-# Inspect contract stats on Bradbury testnet
-genlayer call 0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e get_stats --rpc https://rpc-bradbury.genlayer.com
-```
-
----
-
-## 🔒 Security & Verification
-
-- **Prompt Injection Defense**: Intelligent Contract prompts operate strictly on typed numeric fields and enumerated parameters. Arbitrary user free-text is never passed to validator prompts.
-- **Emergency Circuit Breaker**: Contracts implement owner-level emergency pauses (`setPaused(true)`).
-- **Non-Custodial Flow**: Funds are routed directly between the user and verified liquidity pool contracts.
-
----
-
-## 🤝 Contributing
-
-Contributions from the community are welcome! Please review [CONTRIBUTING.md](./CONTRIBUTING.md) for pull request conventions and code formatting guidelines.
-
----
-
-## 📄 License
-
-This repository is licensed under the [MIT License](./LICENSE).
-# soyaraongenlayer
+Then bind the pair, from `aggregator/script/`: `BootstrapValidator.s.sol`
+points the executor at the IC. Until that runs, `recordVerdict` reverts with
+`ValidatorNotSet` and nothing can settle, which is deliberate — the executor
+never falls back to trusting the agent key.
