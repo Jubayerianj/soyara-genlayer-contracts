@@ -367,10 +367,18 @@ def main() -> int:
         check(f"EVM call '{name}' arg types", by_name[name][0], types)
         check(f"EVM call '{name}' is {'send' if is_send else 'view'}", by_name[name][1], is_send)
 
-    # Only the send path may write, and only to record a verdict. An extra send
-    # would be a second way for this contract to move value on the EVM side.
+    # Only the send path may write, and only to grant settlement authority. An
+    # extra send would be a second way for this contract to move value on the
+    # EVM side, so this list is deliberately exhaustive and adding to it should
+    # take a decision rather than a moment's inattention.
+    #
+    #   recordVerdict   authorises exactly one order
+    #   recordMandate   authorises a bounded set of trades - the same
+    #                   onlyValidator gate, the same ghost, and every parameter
+    #                   the executor later enforces (route hash, fee, collector,
+    #                   user, ceilings, pool) is fixed at the moment it is sent
     sends = sorted({n for n, _, is_send in sites if is_send})
-    check("EVM send call sites", sends, ["recordVerdict"])
+    check("EVM send call sites", sends, ["recordMandate", "recordVerdict"])
 
     solidity_sig = "recordVerdict(uint256,uint64)"
     check("recordVerdict selector", "0x" + keccak(solidity_sig.encode()).hex()[:8],

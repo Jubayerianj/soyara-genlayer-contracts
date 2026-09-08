@@ -64,6 +64,26 @@ if [ "$(lower "$OWN")" = "$(lower "$AGT")" ]; then echo "NO - both are $OWN"; fa
 echo -n "  validator is a contract     : "
 if [ "$(cast code "$BOUND" --rpc-url "$EVM_RPC")" = "0x" ]; then echo "NO"; fail=1; else echo "yes"; fi
 
+# The mandate fast path prices trades from live reserves, and it refuses to do
+# that until it can prove a pool is canonical. Without the factory every
+# mandate settlement reverts with FactoryNotSet, so this is not optional.
+echo -n "  v2Factory is set            : "
+FACT="$(cast call "$NEW_EXECUTOR" 'v2Factory()(address)' --rpc-url "$EVM_RPC" 2>/dev/null || echo 0x0)"
+if [ "$(lower "$FACT")" = "0x0000000000000000000000000000000000000000" ] || [ "$FACT" = "0x0" ]; then
+  echo "NO - run setV2Factory or the mandate path cannot price anything"; fail=1
+else
+  echo "yes ($FACT)"
+fi
+
+echo -n "  mandate path is available   : "
+if cast call "$NEW_EXECUTOR" 'isMandateLive(bytes32)(bool)' \
+     0x0000000000000000000000000000000000000000000000000000000000000000 \
+     --rpc-url "$EVM_RPC" >/dev/null 2>&1; then
+  echo "yes"
+else
+  echo "NO - this executor predates mandates, trades will use per-order consensus"; fail=1
+fi
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "VERIFICATION FAILED - do not update the address map."

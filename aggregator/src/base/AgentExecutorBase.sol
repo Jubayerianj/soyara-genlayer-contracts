@@ -52,6 +52,7 @@ import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.s
 import { Ownable }         from "@openzeppelin/contracts/access/Ownable.sol";
 import { TradeHashLib }    from "../libraries/TradeHashLib.sol";
 import { SwapOrder }       from "../types/SettlementTypes.sol";
+import { TradingMandate }  from "../types/MandateTypes.sol";
 import { IV3PositionManager } from "../interfaces/IAgentExecutorDEX.sol";
 
 abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
@@ -98,6 +99,20 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
     /// @notice Permanent one-time gate. Set the moment a commitment settles and
     ///         never cleared, so a re-recorded verdict cannot replay a trade.
     mapping(bytes32 => bool) public commitmentUsed;
+
+    /// @notice Consensus-approved trading mandates, by id.
+    ///
+    /// A mandate is how settlement becomes fast without leaving GenLayer in
+    /// charge of nothing. One consensus round pays the finalization wait once;
+    /// afterwards every trade inside the mandate settles immediately, and this
+    /// contract checks each one against it. See types/MandateTypes.sol.
+    mapping(bytes32 => TradingMandate) public mandates;
+
+    /// @notice V2 factory, used to prove a pool is the canonical pair for the
+    ///         tokens it claims to serve before its reserves are trusted for
+    ///         pricing. Without this an agent could price against a contract it
+    ///         deployed itself.
+    address public v2Factory;
 
     /// @notice AGGFlowEntrypoint for aggregated swaps
     address public aggFlowEntrypoint;
@@ -164,6 +179,10 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
     event MaxFeeBpsUpdated(uint256 bps);
 
     event GenLayerValidatorUpdated(address indexed oldValidator, address indexed newValidator);
+    event V2FactoryUpdated(address indexed factory);
+    event MandateRecorded(bytes32 indexed id, address indexed user, uint64 expiry);
+    event MandateRevoked(bytes32 indexed id);
+    event MandateSpent(bytes32 indexed id, uint256 amountIn, uint256 spentTotal);
 
     /// @notice A GenLayer consensus round approved this commitment.
     event VerdictRecorded(bytes32 indexed commitment, uint64 expiry);
@@ -196,6 +215,15 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
     ///         and a ghost is a contract, so an EOA here could only mean a key
     ///         was being installed where consensus belongs.
     error ValidatorNotAContract(address target);
+
+    error NoMandate(bytes32 id);
+    error MandateExpired(bytes32 id);
+    error MandateRevokedError(bytes32 id);
+    error MandateUserMismatch(address expected, address actual);
+    error MandateAmountExceeded(uint256 amountIn, uint256 maxAmountIn);
+    error MandateBudgetExceeded(uint256 wouldSpend, uint256 budget);
+    error NotCanonicalPool(address pool);
+    error FactoryNotSet();
 
     error RouteMismatch(bytes32 expected, bytes32 actual);
     error RouterMismatch(address expected, address actual);
@@ -322,6 +350,13 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
         emit MaxFeeBpsUpdated(_bps);
     }
 
+    /// @notice Set the V2 factory used to authenticate pools before pricing.
+    function setV2Factory(address _factory) external onlyOwner {
+        if (_factory == address(0)) revert ZeroAddress();
+        v2Factory = _factory;
+        emit V2FactoryUpdated(_factory);
+    }
+
     function setApprovedToken(address _token, bool _approved) external onlyOwner {
         approvedTokens[_token] = _approved;
         emit TokenApproved(_token, _approved);
@@ -384,6 +419,79 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
         if (msg.sender != genLayerValidator && msg.sender != owner()) revert Unauthorized();
         delete verdictExpiry[commitment];
         emit VerdictRevoked(commitment);
+    }
+
+    // ── Mandate Registry ──────────────────────────────────────────────────────
+
+    /**
+     * @notice Record a consensus-approved trading mandate.
+     *
+     * @dev Same authentication as recordVerdict: ONLY the AgentValidator IC can
+     *      call this, over its ghost contract. A mandate is a broader authority
+     *      than a single order, so it matters that the same gate protects it -
+     *      no operator key can mint one.
+     *
+     * @dev Amounts and ids cross as uint256 for the same reason recordVerdict's
+     *      commitment does: GenLayer's documented type mapping covers u256/u64
+     *      and says nothing about bytes32.
+     */
+    function recordMandate(
+        uint256 id,
+        address user,
+        address tokenIn,
+        address tokenOut,
+        uint256 maxAmountIn,
+        uint256 totalBudgetIn,
+        uint256 maxSlippageBps_,
+        uint256 maxFeeBps_,
+        address feeCollector,
+        address router,
+        uint256 routeHash,
+        address pool,
+        uint64  expiry
+    ) external onlyValidator {
+        bytes32 mid = bytes32(id);
+        if (mid == bytes32(0)) revert InvalidCommitment();
+        if (user == address(0) || tokenIn == tokenOut) revert InvalidCommitment();
+        if (maxSlippageBps_ > maxSlippageBps) revert SlippageExceeded(maxSlippageBps_, maxSlippageBps);
+        if (maxFeeBps_ > maxFeeBps) revert FeeTooHigh(maxFeeBps_, maxFeeBps);
+        if (!approvedRouters[router]) revert RouterNotApproved(router);
+
+        TradingMandate storage m = mandates[mid];
+        m.user           = user;
+        m.tokenIn        = tokenIn;
+        m.tokenOut       = tokenOut;
+        m.maxAmountIn    = maxAmountIn;
+        m.totalBudgetIn  = totalBudgetIn;
+        m.maxSlippageBps = maxSlippageBps_;
+        m.maxFeeBps      = maxFeeBps_;
+        m.feeCollector   = feeCollector;
+        m.router         = router;
+        // The route and the pool are part of the authority, not left to the
+        // agent. See MandateTypes.sol: without these a mandate reopens exactly
+        // the hole the per-order commitment closed.
+        m.routeHash      = bytes32(routeHash);
+        m.pool           = pool;
+        m.expiry         = expiry;
+        m.revoked        = false;
+        // spentIn is deliberately NOT reset: re-recording an id must never
+        // refill a budget that has already been drawn down.
+
+        emit MandateRecorded(mid, user, expiry);
+    }
+
+    /// @notice Withdraw a mandate. Open to the validator and the owner, because
+    ///         revocation can only ever subtract authority.
+    function revokeMandate(bytes32 id) external {
+        if (msg.sender != genLayerValidator && msg.sender != owner()) revert Unauthorized();
+        mandates[id].revoked = true;
+        emit MandateRevoked(id);
+    }
+
+    /// @notice True when `id` may currently authorise a trade.
+    function isMandateLive(bytes32 id) external view returns (bool) {
+        TradingMandate storage m = mandates[id];
+        return m.user != address(0) && !m.revoked && block.timestamp <= m.expiry;
     }
 
     /// @notice True when `commitment` currently carries a live consensus verdict.

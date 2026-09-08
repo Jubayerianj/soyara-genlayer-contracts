@@ -96,3 +96,17 @@ interface IV3PositionManager {
         external
         returns (uint256 amount0, uint256 amount1);
 }
+
+/// @notice The minimum V2 surface the executor needs to price a trade ITSELF,
+///         rather than trusting a quote handed to it.
+interface IV2Pair {
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+}
+
+/// @notice Used to prove a pool is the canonical pair for the tokens it claims
+///         to serve, before its reserves are believed.
+interface IV2Factory {
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+}

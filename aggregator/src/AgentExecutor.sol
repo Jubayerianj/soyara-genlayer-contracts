@@ -66,8 +66,11 @@ import { SwapOrder }         from "./types/SettlementTypes.sol";
 import {
     IAGGFlowEntrypoint,
     IUniswapV2Router,
-    IV3PositionManager
+    IV3PositionManager,
+    IV2Pair,
+    IV2Factory
 } from "./interfaces/IAgentExecutorDEX.sol";
+import { TradingMandate } from "./types/MandateTypes.sol";
 
 contract AgentExecutor is AgentExecutorBase {
     using SafeERC20 for IERC20;
@@ -193,7 +196,12 @@ contract AgentExecutor is AgentExecutorBase {
     }
 
     /// @dev Token movement and the router call, isolated from validation.
-    function _performSwap(SwapOrder calldata order, bytes calldata aggProgram)
+    /// @dev Takes `memory` rather than `calldata` so both settlement paths share
+    ///      it: `executeSwap` passes its calldata order, which converts
+    ///      implicitly, and `executeSwapUnderMandate` builds its order in memory
+    ///      from the mandate. One implementation moves the funds either way, so
+    ///      the fast and slow paths cannot drift apart on how a trade executes.
+    function _performSwap(SwapOrder memory order, bytes calldata aggProgram)
         internal
         returns (uint256 amountOut)
     {
@@ -441,5 +449,141 @@ contract AgentExecutor is AgentExecutorBase {
         );
 
         emit LiquidityRemoved(user, token0, token1, "V3");
+    }
+
+    // ── Execution: the fast path, under a consensus-approved mandate ──────────
+
+    /**
+     * @notice Settle immediately against a mandate consensus approved earlier.
+     *
+     * WHY THIS EXISTS
+     * ---------------
+     * A per-order verdict cannot be fast, and that is a property of the
+     * platform rather than of this code. A verdict reaches the EVM as a GenVM
+     * `EthSend` emission, and that emission carries only address, calldata,
+     * value and fees - there is no delivery-timing field on it. `PostMessage`
+     * and `DeployContract` both take an `on` ("accepted" | "finalized");
+     * `EthSend` does not, so the chain applies finalization and an IC cannot
+     * ask for anything sooner. On Bradbury that is the appeal window, fifteen
+     * to twenty-five minutes, in front of every single trade.
+     *
+     * A mandate moves that wait off the per-trade path. Consensus approves a
+     * bounded authority once, pays finalization once, and every trade inside
+     * that authority settles now.
+     *
+     * WHAT IS STILL ENFORCED
+     * ----------------------
+     * The relayer is trusted with nothing. User, pair, direction, per-trade
+     * ceiling, lifetime budget, fee, fee collector, router and expiry all come
+     * from the mandate, which only the validator IC can write.
+     *
+     * And the price is computed HERE. `pool` is proven against the factory to
+     * be the canonical pair for these tokens, its live reserves are read, the
+     * constant-product output is derived in this function, and `minAmountOut`
+     * must sit inside the mandate's slippage band of that number. Under the
+     * per-order design the quote arrived from the validators and this contract
+     * could only check it for internal consistency. Here the chain decides the
+     * price - so on quote honesty the fast path is stricter than the slow one.
+     */
+    function executeSwapUnderMandate(
+        bytes32 id,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        uint256 feeBps,
+        bytes calldata aggProgram
+    )
+        external
+        payable
+        onlyAgent
+        nonReentrant
+        whenNotPaused
+        returns (uint256 amountOut)
+    {
+        TradingMandate storage m = mandates[id];
+
+        // ── 1. Is this authority real, and still alive? ───────────────────────
+        if (m.user == address(0))       revert NoMandate(id);
+        if (m.revoked)                  revert MandateRevokedError(id);
+        if (block.timestamp > m.expiry) revert MandateExpired(id);
+
+        // ── 2. Is this trade inside it? ───────────────────────────────────────
+        if (amountIn == 0)                revert ZeroAmount();
+        if (amountIn > m.maxAmountIn)     revert MandateAmountExceeded(amountIn, m.maxAmountIn);
+        uint256 wouldSpend = m.spentIn + amountIn;
+        if (wouldSpend > m.totalBudgetIn) revert MandateBudgetExceeded(wouldSpend, m.totalBudgetIn);
+        if (feeBps > m.maxFeeBps)         revert FeeTooHigh(feeBps, m.maxFeeBps);
+        if (!approvedRouters[m.router])   revert RouterNotApproved(m.router);
+
+        // The route is bound to the mandate, exactly as it is bound to a
+        // per-order commitment. The agent picks the SIZE of a trade and
+        // nothing else about it.
+        bytes32 actualRoute = keccak256(aggProgram);
+        if (actualRoute != m.routeHash) revert RouteMismatch(m.routeHash, actualRoute);
+
+        // ── 3. Price it here, from reserves, not from anyone's word ───────────
+        uint256 expectedOut = _quoteV2(m.pool, m.tokenIn, m.tokenOut, amountIn, feeBps);
+        if (expectedOut == 0) revert ZeroAmount();
+        uint256 floor = (expectedOut * (10_000 - m.maxSlippageBps)) / 10_000;
+        if (minAmountOut < floor) revert QuoteInconsistent(minAmountOut, expectedOut);
+
+        // ── 4. Draw the budget down BEFORE any external call ──────────────────
+        //      so a reentrant path cannot spend the same allowance twice.
+        m.spentIn = wouldSpend;
+        emit MandateSpent(id, amountIn, wouldSpend);
+
+        // ── 5. Execute ────────────────────────────────────────────────────────
+        SwapOrder memory order = SwapOrder({
+            user:            m.user,
+            tokenIn:         m.tokenIn,
+            tokenOut:        m.tokenOut,
+            amountIn:        amountIn,
+            minAmountOut:    minAmountOut,
+            quotedAmountOut: expectedOut,
+            slippageBps:     m.maxSlippageBps,
+            deadline:        block.timestamp,
+            router:          m.router,
+            feeBps:          feeBps,
+            feeCollector:    m.feeCollector,
+            routeHash:       m.routeHash,
+            nonce:           0
+        });
+
+        amountOut = _performSwap(order, aggProgram);
+        emit SwapExecuted(m.user, m.tokenIn, m.tokenOut, amountIn, amountOut);
+    }
+
+    /**
+     * @dev Constant-product output for `amountIn`, read from the pool itself.
+     *
+     *      The factory check is not decoration. Without it an agent could pass
+     *      a pair contract it deployed with flattering reserves and have this
+     *      function bless any price at all.
+     *
+     *      The entrypoint takes its fee off the INPUT before routing, so the
+     *      calculation starts from the post-fee amount; otherwise every
+     *      expectation reads high by exactly the fee and the slippage floor is
+     *      set above what the trade can actually return.
+     */
+    function _quoteV2(
+        address pool,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 feeBps
+    ) internal view returns (uint256) {
+        if (v2Factory == address(0)) revert FactoryNotSet();
+        if (IV2Factory(v2Factory).getPair(tokenIn, tokenOut) != pool) revert NotCanonicalPool(pool);
+
+        (uint112 r0, uint112 r1,) = IV2Pair(pool).getReserves();
+        address t0 = IV2Pair(pool).token0();
+
+        (uint256 reserveIn, uint256 reserveOut) = t0 == tokenIn
+            ? (uint256(r0), uint256(r1))
+            : (uint256(r1), uint256(r0));
+        if (reserveIn == 0 || reserveOut == 0) return 0;
+
+        uint256 routeInput = (amountIn * (10_000 - feeBps)) / 10_000;
+        uint256 inWithFee  = routeInput * 997;
+        return (inWithFee * reserveOut) / (reserveIn * 1000 + inWithFee);
     }
 }

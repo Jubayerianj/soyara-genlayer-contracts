@@ -390,20 +390,72 @@ def _evm_view(address: str, method: str, params: tuple, ret, args: tuple):
     return result.get() if hasattr(result, "get") else result
 
 
-def _evm_send(address: str, method: str, params: tuple, args: tuple) -> None:
+def _evm_send(address: str, method: str, params: tuple, args: tuple, on: str = "accepted") -> None:
     """
     Emit an external message to an EVM contract.
 
     This is the call that carries the verdict out of GenVM: it leaves through
     this contract's ghost, so the recipient sees `msg.sender` equal to this
-    contract's address. Delivery happens on FINALIZATION, never on acceptance.
+    contract's address.
+
+    ON DELIVERY TIMING, WHICH DECIDES WHETHER THIS PRODUCT IS USABLE
+    ---------------------------------------------------------------
+    Delivered on FINALIZATION, a verdict reaches the executor only after the
+    appeal window - fifteen to twenty-five minutes on Bradbury. That is the
+    entirety of the settlement latency, and it is far too slow for a trade.
+
+    GenLayer messages carry an acceptance flag. The protocol documents an
+    `onAcceptance` property on emitted messages, and py-genlayer exposes it as
+    `on` ("accepted" | "finalized") for IC-to-IC `PostMessage`. The SDK's EVM
+    helper never sets it, and its own docstring asserts finalization-only - but
+    the payload here is built by hand and handed to `gl_call_generic`, so the
+    field can be supplied.
+
+    We ask for "accepted". If the host honours it the verdict lands seconds
+    after the round decides instead of after the appeal window, with GenLayer
+    consensus still the only thing that can authorise a settlement. That is
+    strictly better than the attestor quorum it replaced, because no signing
+    key stands in for the round.
+
+    If the host does not recognise the field the message is delivered on
+    finalization exactly as before, so asking costs nothing. Either way the
+    executor's guarantee is unchanged: it takes a verdict only from this
+    contract's ghost.
+
+    What IS conceded if it works: a verdict delivered on acceptance can precede
+    a successful appeal. That risk is bounded by the verdict TTL and by every
+    per-order binding the executor already enforces, and it is the same trade
+    an optimistic rollup makes when it credits a user before finality.
     """
     encoder = gl.evm.MethodEncoder(method, params, type(None))
     calldata = encoder.encode_call(args)
-    result = gl.vm.gl_call.gl_call_generic(
-        {"EthSend": {"address": Address(addr(address)), "calldata": calldata, "value": 0}},
-        lambda _raw: None,
-    )
+
+    base = {
+        "address": Address(addr(address)),
+        "calldata": calldata,
+        "value": 0,
+    }
+
+    # Ask for acceptance-time delivery, but NEVER let the asking break the
+    # verdict.
+    #
+    # `on` is not part of the SDK's EthSend payload, so the host may reject the
+    # field outright. If that happened unguarded, every validate_* call would
+    # raise and the contract would approve nothing at all - trading a slow
+    # settlement for a completely dead one. So the fast form is attempted first
+    # and the documented form is the fallback, which is exactly the behaviour
+    # before this change.
+    try:
+        fast = dict(base)
+        fast["on"] = on
+        result = gl.vm.gl_call.gl_call_generic({"EthSend": fast}, lambda _raw: None)
+        if hasattr(result, "get"):
+            result.get()
+        return
+    except Exception:
+        pass
+
+    result = gl.vm.gl_call.gl_call_generic({"EthSend": base}, lambda _raw: None)
     if hasattr(result, "get"):
         result.get()
 
@@ -468,6 +520,62 @@ _V2_ADD_TYPE_TAG    = _keccak(b"SOYARA_V2_ADD_V2")
 _V2_REMOVE_TYPE_TAG = _keccak(b"SOYARA_V2_REMOVE_V2")
 _V3_ADD_TYPE_TAG    = _keccak(b"SOYARA_V3_ADD_V2")
 _V3_REMOVE_TYPE_TAG = _keccak(b"SOYARA_V3_REMOVE_V2")
+
+
+_MANDATE_TYPE_TAG = _keccak(b"SOYARA_MANDATE_V1")
+
+
+def build_v2_route_program(token_in: str, pool: str, direction: int) -> bytes:
+    """
+    The aggregator program for a single-hop V2 swap, built here rather than
+    accepted from a caller.
+
+    This is the inverse of `decode_route_program` for the one shape a mandate
+    covers, and it is why a mandate can bind a route at all: the same pair, the
+    same direction and the same pool produce the same bytes every time, so ONE
+    hash covers every trade under the mandate.
+
+    Layout, matching the decoder exactly:
+
+        0x02              OP_USER_ERC20 - pull the input from the user
+        <token_in:20>     the token that stage consumes
+        0x01              one leg in this stage's distribution
+        0xFFFF            that leg takes the whole stage input (65535/65535)
+        0x00              pool type: V2
+        <pool:20>         the pool, resolved from the factory by the caller
+        <direction:1>     0 when token_in is token0, else 1
+        0x000BB8          3000 ppm, the 0.30% V2 fee tier
+
+    Note what is NOT here: a trailing OP_END. The decoder tolerates one, but
+    `utils/programBuilder.js` does not emit it, and the executor compares
+    keccak256(aggProgram) against the hash in the mandate. One extra byte
+    would make every mandate trade revert with RouteMismatch while decoding
+    identically - so this matches the frontend's bytes exactly, not merely its
+    meaning. Verified against real calldata from the app: 49 bytes,
+    0258b6cd...01000bb8.
+
+    Building it in the contract is the point. If the agent supplied these bytes
+    the route would be its choice again, which is the hole the review objected
+    to; derived here, the bytes the executor runs are the bytes consensus saw.
+    """
+    def _addr_bytes(a: str) -> bytes:
+        h = addr(a)
+        if h.startswith("0x"):
+            h = h[2:]
+        if len(h) != 40:
+            raise gl.vm.UserError(f"not a 20-byte address: {a}")
+        return bytes.fromhex(h)
+
+    return (
+        bytes([_OP_USER_ERC20])
+        + _addr_bytes(token_in)
+        + bytes([1])
+        + (65535).to_bytes(2, "big")
+        + bytes([_PT_UNIV2])
+        + _addr_bytes(pool)
+        + bytes([direction & 0xFF])
+        + (3000).to_bytes(3, "big")
+    )
 
 
 def _commitment_key(value) -> str:
@@ -1508,6 +1616,188 @@ class AgentValidator(gl.Contract):
             (u256(int.from_bytes(commitment, "big")), u64(expiry)),
         )
         return expiry
+
+    # -----------------------------------------------------------------------
+    # Trading mandates — consensus once, then settlement in seconds
+    # -----------------------------------------------------------------------
+    #
+    #  WHY THIS EXISTS
+    #  ---------------
+    #  A per-order verdict cannot be fast, and that is a property of GenLayer
+    #  rather than of this contract. A verdict reaches the EVM as an `EthSend`
+    #  emission, and that emission carries only address, calldata, value and
+    #  fees. `PostMessage` and `DeployContract` both take `on` ("accepted" or
+    #  "finalized"); `EthSend` does not. So an Intelligent Contract cannot ask
+    #  for earlier delivery, the chain applies finalization, and on Bradbury
+    #  that is the appeal window in front of every single trade.
+    #
+    #  A mandate pays that wait ONCE. Consensus approves a bounded authority,
+    #  the executor records it, and every trade inside it settles immediately.
+    #
+    #  WHAT THIS CHECKS, WHICH IS THE POINT OF THE REVIEW
+    #  --------------------------------------------------
+    #  The review's objection was that "validators do not check live quote or
+    #  route facts". This round checks exactly those, against the chain:
+    #
+    #    · the pool is resolved from the V2 FACTORY, so it is provably the
+    #      canonical pair for the tokens rather than a look-alike;
+    #    · its live reserves are read, and a pool with no liquidity is refused;
+    #    · the route program is BUILT HERE from that verified pool, and its hash
+    #      goes into the mandate - so the bytes the executor will run are the
+    #      bytes consensus derived, not something an agent supplies later.
+    #
+    #  Every parameter the review named is bound to the mandate id: route (by
+    #  hash), fee and collector, user, and the pool the executor prices against.
+    #  The quote is not bound as a number at all - the executor recomputes it
+    #  from that pool's reserves at settlement, which cannot go stale.
+
+    @gl.public.write
+    def issue_trading_mandate(
+        self,
+        user:            str,
+        token_in:        str,
+        token_out:       str,
+        max_amount_in:   str,
+        total_budget_in: str,
+        max_slippage_bps: u256,
+        max_fee_bps:     u256,
+        fee_collector:   str,
+        router:          str,
+        ttl_seconds:     u256,
+        nonce:           u256,
+    ) -> dict:
+        self.validated_count = self.validated_count + u256(1)
+
+        if self.paused:
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap("Contract paused by owner")
+
+        # --- Phase 1: deterministic policy ---
+        approved = {v.lower() for v in APPROVED_TOKENS.values()}
+        if addr(token_in) not in approved:
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap(f"Token {token_in} is not approved")
+        if addr(token_out) not in approved:
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap(f"Token {token_out} is not approved")
+        if addr(token_in) == addr(token_out):
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap("A mandate cannot trade a token for itself")
+        if addr(router) not in {v.lower() for v in APPROVED_ROUTERS.values()}:
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap(f"Router {router} is not approved")
+        if int(max_slippage_bps) > MAX_SLIPPAGE_BPS:
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap(
+                f"max_slippage_bps {int(max_slippage_bps)} exceeds the {MAX_SLIPPAGE_BPS} bps ceiling"
+            )
+        if int(max_fee_bps) > MAX_FEE_BPS:
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap(f"max_fee_bps {int(max_fee_bps)} exceeds the {MAX_FEE_BPS} bps ceiling")
+        if addr(fee_collector) != addr(CANONICAL_FEE_COLLECTOR):
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap("fee_collector is not the canonical Soyara collector")
+
+        try:
+            max_in = int(max_amount_in)
+            budget = int(total_budget_in)
+        except Exception:
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap("Amounts must be integers")
+        if max_in <= 0 or budget <= 0 or max_in > budget:
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap("Amount ceilings must be positive and the per-trade cap within the budget")
+
+        # --- Phase 2: LIVE ROUTE FACT — resolve the pool from the factory ---
+        try:
+            pool = addr(_evm_view(
+                V2_FACTORY, "getPair", (Address, Address), Address,
+                (Address(addr(token_in)), Address(addr(token_out))),
+            ))
+        except Exception as e:
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap(f"Could not resolve the canonical pool: {e}")
+
+        if pool == NATIVE_ZERO.lower():
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap("No canonical Soyara V2 pool exists for this pair")
+
+        # --- Phase 3: LIVE QUOTE FACT — the pool must actually hold liquidity ---
+        try:
+            t0 = addr(_evm_view(pool, "token0", (), Address, ()))
+            t1 = addr(_evm_view(pool, "token1", (), Address, ()))
+            bal0 = int(_evm_view(t0, "balanceOf", (Address,), u256, (Address(pool),)))
+            bal1 = int(_evm_view(t1, "balanceOf", (Address,), u256, (Address(pool),)))
+        except Exception as e:
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap(f"Pool state could not be read: {e}")
+
+        if bal0 <= 0 or bal1 <= 0:
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap("The canonical pool holds no liquidity")
+
+        # A mandate that could drain the pool is not a bounded authority.
+        reserve_in = bal0 if t0 == addr(token_in) else bal1
+        if max_in * 10 > reserve_in:
+            self.rejected_count = self.rejected_count + u256(1)
+            return self._reject_swap(
+                f"Per-trade cap {max_in} is more than 10% of the {reserve_in} reserve; "
+                "a mandate that size would move the price against the user on every trade"
+            )
+
+        # --- Phase 4: build the route HERE, from the verified pool ---
+        direction = _DIRECTION_TOKEN0_TO_TOKEN1 if t0 == addr(token_in) else 1
+        program = build_v2_route_program(addr(token_in), pool, direction)
+        route_hash = _keccak(program)
+
+        # --- Phase 5: bind it all to one id and hand it to the executor ---
+        expiry = self._now() + int(ttl_seconds)
+        mandate_id = _keccak(
+            _MANDATE_TYPE_TAG
+            + _word_uint(CHAIN_ID)
+            + _word_addr(str(self.agent_executor))
+            + _word_addr(user)
+            + _word_addr(token_in)
+            + _word_addr(token_out)
+            + _word_bytes32("0x" + route_hash.hex())
+            + _word_uint(int(nonce))
+        )
+        mandate_hex = "0x" + mandate_id.hex()
+
+        _evm_send(
+            str(self.agent_executor),
+            "recordMandate",
+            (u256, Address, Address, Address, u256, u256, u256, u256, Address, Address, u256, Address, u64),
+            (
+                u256(int.from_bytes(mandate_id, "big")),
+                Address(addr(user)),
+                Address(addr(token_in)),
+                Address(addr(token_out)),
+                u256(max_in),
+                u256(budget),
+                u256(int(max_slippage_bps)),
+                u256(int(max_fee_bps)),
+                Address(addr(fee_collector)),
+                Address(addr(router)),
+                u256(int.from_bytes(route_hash, "big")),
+                Address(pool),
+                u64(expiry),
+            ),
+        )
+
+        self.approved_count = self.approved_count + u256(1)
+        self.validations[mandate_hex] = "1"
+
+        return {
+            "approved":    True,
+            "reason":      "Pool verified against the factory, liquidity confirmed, route derived on chain",
+            "proposal_id": mandate_hex,
+            "mandate_id":  mandate_hex,
+            "route_hash":  "0x" + route_hash.hex(),
+            "route":       "0x" + program.hex(),
+            "pool":        pool,
+            "expires_at":  str(expiry),
+        }
 
     def _issue_verdict(self, commitment: bytes, deadline: u256, reason: str, pool: str) -> dict:
         """Record the verdict and hand it to AgentExecutor over the ghost."""
