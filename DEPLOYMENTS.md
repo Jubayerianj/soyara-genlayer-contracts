@@ -18,7 +18,8 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 
 | Contract | Address | Transaction Hash |
 |---|---|---|
-| **AgentValidator** (current — verdict authenticated at settlement) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` | see `BootstrapValidator.s.sol/4221/run-latest.json` |
+| **AgentValidator** (current — paired with the executor that has no bypass) | `0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A` | `0xae9fdd749b3c01462c266cefa03e6b427b66e34f09a3005afdb35b87e937b6cc` |
+| AgentValidator (retired — paired with an executor carrying the attestor rail) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` | see `BootstrapValidator.s.sol/4221/` |
 | AgentValidator (retired — superseded during the same rollout) | `0x8627CfDC1df6DcD813113FA2F400B35a99a781D4` | `0x37980bd6bd1d3c854fb06ef07af1fd207cfb67089e62666c9cd05c5877eea0d3` |
 | AgentValidator (retired — superseded during the same rollout) | `0x001E00a816fa93bC2cA07587d929Aa98C31051DD` | see `BootstrapValidator.s.sol/4221/run-1788784195752.json` |
 | AgentValidator (retired — agent enforced the verdict) | `0x7ABa94668afC24463Be323f9bB65BD4b4F480d89` | `0x527fa134b17d499efc967807cdb153a9fcc2e37fbba4e446911220f0f7cdaf86` |
@@ -33,6 +34,45 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 | AgentValidator (retired — no mandate support) | `0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e` | `0x0e445f38830e3445af9f8781b302eceb2efd0cd21277c3eb1ef5ee6cd7108e79` |
 | AgentValidator (retired — stale router whitelist + non-deterministic `time.time()`) | `0xFc77C6A20B1102979f5887A5efe9611a2Ef6Afd5` | `0x80788d9ee015f11468f4e372ead51f0dd522fb70e62343e241bd23c7b3384dbf` |
 
+### 2026-09-08 — the attestation rail removed, roles split
+
+The executor and the IC were redeployed again, as a pair. Two things changed.
+
+**The attestor quorum is gone from the bytecode**, not merely switched off.
+`attestorThreshold`, `setVerdictAttestor`, `setAttestorThreshold`,
+`verdictDigest` and the `bytes[] attestations` argument no longer exist;
+`_consumeVerdict` has a single branch. Calling any of them on
+`0x758d57cF...` reverts, which is the check `sdk/test/addresses.mjs` now makes
+against the live chain.
+
+**Owner and settlement agent are different keys.** On the previous deployment
+they were both `0x23D542DC...`, which meant the hot key that signs every
+settlement could also call `setAttestorThreshold` and re-arm its own bypass.
+Authorisation and relaying are now separated:
+
+| Role | Address | Notes |
+|---|---|---|
+| owner | `0xF186d1414B7F399572F3945D1b84cc230caB9c55` | cold; rotates the validator |
+| authorisedAgent | `0x23D542DCEFb00b1f4268E67a0EC1EF4de0A58fe2` | hot; relays settlements only |
+
+`setGenLayerValidator` additionally refuses an address with no code
+(`ValidatorNotAContract` — an IC always reaches the EVM through its ghost, and a
+ghost is a contract) and any address registered as a relaying agent
+(`RoleConflict`), enforced from both sides.
+
+| Contract | Address |
+|---|---|
+| **AgentExecutor** (EVM) | `0x758d57cF9c96bC6235c1fA3929209A1C42346E18` |
+| **AgentValidator** (IC) | `0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A` |
+| AgentExecutor (retired — attestor rail present, later disarmed to 0) | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
+| AgentValidator (retired — paired with the above) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` |
+
+The retired executor is left with `attestorThreshold() == 0`, so nothing can
+settle on it through the rail even though the function still exists there.
+Users hold unlimited ERC-20 approvals against it; moving to a new executor
+address means each user approves once more, which is unavoidable when the
+settlement contract changes.
+
 ### 2026-09-07 — verdict enforcement moved into the executor
 
 `AgentExecutor` and `AgentValidator` were redeployed **as a pair** and are bound
@@ -41,8 +81,8 @@ Replacing one without the other leaves settlement dead.
 
 | Contract | Address |
 |---|---|
-| **AgentExecutor** (EVM) | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
-| **AgentValidator** (IC) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` |
+| **AgentExecutor** (EVM) | `0x758d57cF9c96bC6235c1fA3929209A1C42346E18` |
+| **AgentValidator** (IC) | `0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A` |
 
 Deployment order is forced by a circular dependency: the IC takes the executor's
 address as a constructor argument, so the executor must exist first, which is
@@ -343,14 +383,14 @@ verifiable in two calls:
 
 ```bash
 # executor -> IC
-cast call 0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1 'genLayerValidator()(address)' \
+cast call 0x758d57cF9c96bC6235c1fA3929209A1C42346E18 'genLayerValidator()(address)' \
   --rpc-url https://rpc.testnet-chain.genlayer.com
-# -> 0xf47492A969b2bC8f99B62Bdf8958541F2234C42b
+# -> 0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A
 
 # IC -> executor
-genlayer call 0xf47492A969b2bC8f99B62Bdf8958541F2234C42b get_config \
+genlayer call 0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A get_config \
   --rpc https://rpc-bradbury.genlayer.com
-# -> agent_executor: 0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1
+# -> agent_executor: 0x758d57cF9c96bC6235c1fA3929209A1C42346E18
 ```
 
 The current executor has **no** `approveTradeWithParams`; the retired ones below
@@ -359,7 +399,8 @@ a retired address as the current one.
 
 | Component | Contract | Address |
 |---|---|---|
-| **Settlement Gate** | `AgentExecutor` (executor enforces the verdict) | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
+| **Settlement Gate** | `AgentExecutor` (no bypass; owner ≠ agent) | `0x758d57cF9c96bC6235c1fA3929209A1C42346E18` |
+| Settlement Gate (retired — attestor rail, since disarmed) | `AgentExecutor` | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
 | Settlement Gate (retired — agent wrote its own approval) | `AgentExecutor` (multi-agent) | `0xa835c0a86dD64726eF23D83a8ca7D60b542EE2e4` |
 | Settlement Gate (retired — single agent only) | `AgentExecutor` | `0xBda36A9453003E2eEe5D6Cb07ad253e64BaB4729` |
 | Settlement Gate (retired — native-out blocked, see below) | `AgentExecutor` | `0xaE547F01f9ddCa4dB66cdbf0727f7563Fc44bC26` |

@@ -17,13 +17,13 @@ The live executor `0x0F1E9857...` still has `attestorThreshold() == 2`, so a
 transaction closes that without waiting for the redeploy:
 
 ```bash
-cast send 0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1 \
+cast send 0x758d57cF9c96bC6235c1fA3929209A1C42346E18 \
   'setAttestorThreshold(uint256)' 0 \
   --rpc-url https://rpc.testnet-chain.genlayer.com \
   --private-key $GOV_PRIVATE_KEY
 
 # verify
-cast call 0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1 'attestorThreshold()(uint256)' \
+cast call 0x758d57cF9c96bC6235c1fA3929209A1C42346E18 'attestorThreshold()(uint256)' \
   --rpc-url https://rpc.testnet-chain.genlayer.com   # -> 0
 ```
 

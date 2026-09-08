@@ -33,7 +33,8 @@ echo "STEP 5: verifying against the chain"
 echo -n "  executor -> IC              : "
 BOUND="$(cast call "$NEW_EXECUTOR" 'genLayerValidator()(address)' --rpc-url "$EVM_RPC")"
 echo "$BOUND"
-[ "${BOUND,,}" = "${NEW_IC,,}" ] || { echo "  !! not bound to the expected IC"; fail=1; }
+lower() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+[ "$(lower "$BOUND")" = "$(lower "$NEW_IC")" ] || { echo "  !! not bound to the expected IC"; fail=1; }
 
 echo -n "  IC -> executor              : "
 genlayer call "$NEW_IC" get_config --rpc "$GL_RPC" 2>/dev/null | grep -oE "agent_executor: '0x[0-9a-fA-F]{40}'" || echo "(finalize the IC round first)"
@@ -58,7 +59,7 @@ fi
 echo -n "  owner is not the agent      : "
 OWN="$(cast call "$NEW_EXECUTOR" 'owner()(address)' --rpc-url "$EVM_RPC")"
 AGT="$(cast call "$NEW_EXECUTOR" 'authorisedAgent()(address)' --rpc-url "$EVM_RPC")"
-if [ "${OWN,,}" = "${AGT,,}" ]; then echo "NO - both are $OWN"; fail=1; else echo "yes ($OWN / $AGT)"; fi
+if [ "$(lower "$OWN")" = "$(lower "$AGT")" ]; then echo "NO - both are $OWN"; fail=1; else echo "yes ($OWN / $AGT)"; fi
 
 echo -n "  validator is a contract     : "
 if [ "$(cast code "$BOUND" --rpc-url "$EVM_RPC")" = "0x" ]; then echo "NO"; fail=1; else echo "yes"; fi

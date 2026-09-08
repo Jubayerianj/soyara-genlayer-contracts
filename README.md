@@ -31,13 +31,22 @@ together: the validator holds the executor's address, and the executor accepts
 
 | Contract | Address |
 |---|---|
-| AgentValidator (IC) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` |
-| AgentExecutor | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
+| AgentValidator (IC) | `0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A` |
+| AgentExecutor | `0x758d57cF9c96bC6235c1fA3929209A1C42346E18` |
 | AGGFlow entrypoint | `0x95feE6Cb918Ed9C621E36082EE8D998873031EaA` |
 | V2 factory / router | `0x4680BCe1632824d30D2F53656dD610736c3e312e` / `0xF456737D17C2Bbb348fd4F7D1b000D62A46FB3b5` |
 | V3 factory / router / quoter | `0xBd959038300aF0C8dd1873E497d6D0a565b4E246` / `0xdf69970B2fE416339187aA41D39882e864984CE9` / `0xca4914407868bc37ccbE324cA149DD475d39A2Bf` |
 
-RPC `https://rpc-bradbury.genlayer.com` · owner `0x23D542DCEFb00b1f4268E67a0EC1EF4de0A58fe2`
+RPC `https://rpc-bradbury.genlayer.com`
+
+| Role | Address |
+|---|---|
+| owner (cold; rotates the validator) | `0xF186d1414B7F399572F3945D1b84cc230caB9c55` |
+| authorisedAgent (hot; relays settlements only) | `0x23D542DCEFb00b1f4268E67a0EC1EF4de0A58fe2` |
+
+The two are deliberately different keys. When they were the same, the key that
+signs every settlement could also rotate the validator and change settlement
+policy, which is the concentration this design exists to remove.
 
 ## How the verdict is enforced
 
@@ -58,7 +67,7 @@ AgentValidator (GenVM consensus)
 AgentExecutor.recordVerdict(commitment, expiry)     ← onlyValidator
      │
      ▼
-AgentExecutor.executeSwap(order, aggProgram, attestations)
+AgentExecutor.executeSwap(order, aggProgram)
         re-derives the commitment from the ORDER and consumes it
 ```
 
@@ -109,7 +118,7 @@ The IC is size-limited by GenVM pubdata, so deploy the stripped build:
 ```bash
 cd genlayer-inteligent-contracts
 python3 build_deployable.py          # strips comments/docstrings
-genlayer deploy --contract build/AgentValidator.deployable.py --args <owner> <executor>
+genlayer deploy --contract build/AgentValidator.min.py --args <owner> <executor>
 ```
 
 Then bind the pair, from `aggregator/script/`: `BootstrapValidator.s.sol`
