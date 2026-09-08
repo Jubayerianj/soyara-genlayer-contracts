@@ -18,7 +18,7 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 
 | Contract | Address | Transaction Hash |
 |---|---|---|
-| **AgentValidator** (current — paired with the executor that has no bypass) | `0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb` | `0xae9fdd749b3c01462c266cefa03e6b427b66e34f09a3005afdb35b87e937b6cc` |
+| **AgentValidator** (current — paired with the executor that has no bypass) | `0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92` | `0xae9fdd749b3c01462c266cefa03e6b427b66e34f09a3005afdb35b87e937b6cc` |
 | AgentValidator (retired — paired with an executor carrying the attestor rail) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` | see `BootstrapValidator.s.sol/4221/` |
 | AgentValidator (retired — superseded during the same rollout) | `0x8627CfDC1df6DcD813113FA2F400B35a99a781D4` | `0x37980bd6bd1d3c854fb06ef07af1fd207cfb67089e62666c9cd05c5877eea0d3` |
 | AgentValidator (retired — superseded during the same rollout) | `0x001E00a816fa93bC2cA07587d929Aa98C31051DD` | see `BootstrapValidator.s.sol/4221/run-1788784195752.json` |
@@ -39,7 +39,7 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 | Contract | Address |
 |---|---|
 | **AgentExecutor** (EVM) | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
-| **AgentValidator** (IC) | `0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb` |
+| **AgentValidator** (IC) | `0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92` |
 | AgentExecutor (retired — no mandate support) | `0x758d57cF9c96bC6235c1fA3929209A1C42346E18` |
 | AgentValidator (retired — paired with the above) | `0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A` |
 
@@ -95,7 +95,7 @@ ghost is a contract) and any address registered as a relaying agent
 | Contract | Address |
 |---|---|
 | **AgentExecutor** (EVM) | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
-| **AgentValidator** (IC) | `0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb` |
+| **AgentValidator** (IC) | `0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92` |
 | AgentExecutor (retired — attestor rail present, later disarmed to 0) | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
 | AgentValidator (retired — paired with the above) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` |
 
@@ -114,7 +114,7 @@ Replacing one without the other leaves settlement dead.
 | Contract | Address |
 |---|---|
 | **AgentExecutor** (EVM) | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
-| **AgentValidator** (IC) | `0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb` |
+| **AgentValidator** (IC) | `0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92` |
 
 Deployment order is forced by a circular dependency: the IC takes the executor's
 address as a constructor argument, so the executor must exist first, which is
@@ -417,10 +417,10 @@ verifiable in two calls:
 # executor -> IC
 cast call 0x1BCBad3da718690fa60289DcBF15835e5C79021f 'genLayerValidator()(address)' \
   --rpc-url https://rpc.testnet-chain.genlayer.com
-# -> 0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb
+# -> 0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92
 
 # IC -> executor
-genlayer call 0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb get_config \
+genlayer call 0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92 get_config \
   --rpc https://rpc-bradbury.genlayer.com
 # -> agent_executor: 0x1BCBad3da718690fa60289DcBF15835e5C79021f
 ```

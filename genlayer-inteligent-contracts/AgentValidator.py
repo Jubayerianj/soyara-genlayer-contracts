@@ -388,72 +388,45 @@ def _evm_view(address: str, method: str, params: tuple, ret, args: tuple):
     return result.get() if hasattr(result, "get") else result
 
 
-def _evm_send(address: str, method: str, params: tuple, args: tuple, on: str = "accepted") -> None:
+def _evm_send(address: str, method: str, params: tuple, args: tuple) -> None:
     """
     Emit an external message to an EVM contract.
 
-    This is the call that carries the verdict out of GenVM: it leaves through
-    this contract's ghost, so the recipient sees `msg.sender` equal to this
-    contract's address.
+    This is the call that carries a verdict or a mandate out of GenVM: it leaves
+    through this contract's ghost, so the recipient sees `msg.sender` equal to
+    this contract's address.
 
-    ON DELIVERY TIMING, WHICH DECIDES WHETHER THIS PRODUCT IS USABLE
-    ---------------------------------------------------------------
-    Delivered on FINALIZATION, a verdict reaches the executor only after the
-    appeal window - fifteen to twenty-five minutes on Bradbury. That is the
-    entirety of the settlement latency, and it is far too slow for a trade.
+    NO `on` FIELD. THAT ATTEMPT COST A DEPLOYMENT.
+    ---------------------------------------------
+    Delivery happens on FINALIZATION, and an Intelligent Contract cannot ask for
+    anything sooner. That is not a guess - it is GenVM's own ABI, in
+    executor/crates/sdk-rs/src/abi/gl_call.rs:
 
-    GenLayer messages carry an acceptance flag. The protocol documents an
-    `onAcceptance` property on emitted messages, and py-genlayer exposes it as
-    `on` ("accepted" | "finalized") for IC-to-IC `PostMessage`. The SDK's EVM
-    helper never sets it, and its own docstring asserts finalization-only - but
-    the payload here is built by hand and handed to `gl_call_generic`, so the
-    field can be supplied.
+        EthSend        { address, calldata, value }
+        PostMessage    { address, calldata, value, on: On }
+        DeployContract { ..., on: On, ... }
 
-    We ask for "accepted". If the host honours it the verdict lands seconds
-    after the round decides instead of after the appeal window, with GenLayer
-    consensus still the only thing that can authorise a settlement. That is
-    strictly better than the attestor quorum it replaced, because no signing
-    key stands in for the round.
+    `PostMessage` and `DeployContract` take on = accepted|finalized. `EthSend`
+    does not, and the emitted record carries only address, calldata, value and
+    fees.
 
-    If the host does not recognise the field the message is delivered on
-    finalization exactly as before, so asking costs nothing. Either way the
-    executor's guarantee is unchanged: it takes a verdict only from this
-    contract's ghost.
+    An earlier version of this function added "on": "accepted" to the payload
+    anyway, guarded by a try/except that fell back to the plain form. The guard
+    did not save it: the IC deployed and its rounds were APPROVED, but not one
+    recordMandate ever reached the executor. An unknown key in the payload does
+    not raise a Python exception that `except Exception` can catch - the message
+    is simply never emitted. So consensus approved mandates that silently went
+    nowhere, which is worse than being slow.
 
-    What IS conceded if it works: a verdict delivered on acceptance can precede
-    a successful appeal. That risk is bounded by the verdict TTL and by every
-    per-order binding the executor already enforces, and it is the same trade
-    an optimistic rollup makes when it credits a user before finality.
+    The lesson is narrow and worth keeping: this payload is a host ABI, not a
+    dict we may decorate. Send exactly the fields it defines.
     """
     encoder = gl.evm.MethodEncoder(method, params, type(None))
     calldata = encoder.encode_call(args)
-
-    base = {
-        "address": Address(addr(address)),
-        "calldata": calldata,
-        "value": 0,
-    }
-
-    # Ask for acceptance-time delivery, but NEVER let the asking break the
-    # verdict.
-    #
-    # `on` is not part of the SDK's EthSend payload, so the host may reject the
-    # field outright. If that happened unguarded, every validate_* call would
-    # raise and the contract would approve nothing at all - trading a slow
-    # settlement for a completely dead one. So the fast form is attempted first
-    # and the documented form is the fallback, which is exactly the behaviour
-    # before this change.
-    try:
-        fast = dict(base)
-        fast["on"] = on
-        result = gl.vm.gl_call.gl_call_generic({"EthSend": fast}, lambda _raw: None)
-        if hasattr(result, "get"):
-            result.get()
-        return
-    except Exception:
-        pass
-
-    result = gl.vm.gl_call.gl_call_generic({"EthSend": base}, lambda _raw: None)
+    result = gl.vm.gl_call.gl_call_generic(
+        {"EthSend": {"address": Address(addr(address)), "calldata": calldata, "value": 0}},
+        lambda _raw: None,
+    )
     if hasattr(result, "get"):
         result.get()
 

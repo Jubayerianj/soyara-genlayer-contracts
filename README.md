@@ -4,10 +4,8 @@ The on-chain half of Soyara DEX on **GenLayer Bradbury** (chain `4221`): the
 GenLayer Intelligent Contract that validates a trade, and the Solidity executor
 that enforces its verdict at settlement.
 
-**This repository contains contracts only.** It previously also carried the
-FlipSwap frontend, the marketing site and an example integration, which made it
-hard to review the contract artifact on its own. Those now live in the product
-repository and nothing here depends on them.
+**This repository contains contracts only.** The FlipSwap frontend, the
+marketing site and example integrations live in the product repository.
 
 ## Where things are
 
@@ -29,7 +27,7 @@ together: the validator holds the executor's address, and the executor accepts
 
 | Contract | Address |
 |---|---|
-| AgentValidator (IC) | `0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb` |
+| AgentValidator (IC) | `0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92` |
 | AgentExecutor | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
 | AGGFlow entrypoint | `0x95feE6Cb918Ed9C621E36082EE8D998873031EaA` |
 | V2 factory / router | `0x4680BCe1632824d30D2F53656dD610736c3e312e` / `0xF456737D17C2Bbb348fd4F7D1b000D62A46FB3b5` |

@@ -8,7 +8,7 @@ AI-validated execution layer for the FlipSwap DEX aggregator, deployed on the **
 
 | Contract | Address |
 |---|---|
-| **AgentValidator** (GenLayer IC) | `0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb` |
+| **AgentValidator** (GenLayer IC) | `0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92` |
 | **AgentExecutor** (settlement) | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
 | **LiquidityValidator** | `0xEFb9473B5269A79d72Df4b6E73E310791a185eeC` |
 
@@ -76,7 +76,7 @@ export const CONTRACT_ADDRESSES = {
     // The previous pair (0x7ABa9466... / 0xa835c0a8...) is retired: that executor
     // still exposes approveTradeWithParams, which let the agent write its own
     // approval. Do not point new code at it. See DEPLOYMENTS.md.
-    agentValidator: "0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb",
+    agentValidator: "0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92",
     liquidityValidator: "0xEFb9473B5269A79d72Df4b6E73E310791a185eeC",
     agentExecutor: "0x1BCBad3da718690fa60289DcBF15835e5C79021f",
   }
