@@ -10,7 +10,7 @@ pragma solidity ^0.8.24;
 //  -----------------------
 //  A GenLayer verdict reaches the EVM as an external message, and those are
 //  delivered only when the consensus round FINALIZES. On Bradbury that is the
-//  appeal window, fifteen to twenty-five minutes. The py-genlayer SDK offers an
+//  appeal window, about thirty minutes. The py-genlayer SDK offers an
 //  `on` parameter ("accepted" or "finalized") for IC-to-IC messages, but the
 //  EthSend payload carries only address, calldata and value - there is no way
 //  to deliver an EVM-bound verdict earlier, and that is deliberate: an appealed

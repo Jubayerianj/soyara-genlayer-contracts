@@ -44,7 +44,7 @@ pragma solidity ^0.8.24;
 //  deploy size limit), so no verdict can ever be recorded for a V3 commitment
 //  and both revert with NoConsensusVerdict. They fail closed. They are kept
 //  only because this source must compile to the deployed bytecode; removing
-//  them means redeploying the pair.
+//  them means deploying a new executor and re-pointing the IC to it.
 //
 //  WHAT THE COMMITMENT NOW COVERS
 //  ------------------------------
@@ -489,8 +489,8 @@ contract AgentExecutor is AgentExecutorBase {
      * value and fees - there is no delivery-timing field on it. `PostMessage`
      * and `DeployContract` both take an `on` ("accepted" | "finalized");
      * `EthSend` does not, so the chain applies finalization and an IC cannot
-     * ask for anything sooner. On Bradbury that is the appeal window, fifteen
-     * to twenty-five minutes, in front of every single trade.
+     * ask for anything sooner. On Bradbury that is the appeal window, about
+     * thirty minutes, in front of every single trade.
      *
      * A mandate moves that wait off the per-trade path. Consensus approves a
      * bounded authority once, pays finalization once, and every trade inside

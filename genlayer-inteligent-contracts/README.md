@@ -93,7 +93,7 @@ what deploys; those validators were the part nothing called. What follows:
 - No verdict can exist for a V3 mint or burn. `AgentExecutor` still has
   `executeAddLiquidityV3` / `executeRemoveLiquidityV3` in its deployed bytecode,
   and both revert with `NoConsensusVerdict`: they fail closed. Removing them
-  means redeploying the pair.
+  means deploying a new executor and re-pointing the IC to it with its owner-only `set_agent_executor`; the IC itself stays.
 - The app makes no V3 liquidity call, and its validate route refuses a V3
   liquidity request before any round, pointing to the pools app.
 - V3 **swaps** are unaffected: `_simulate_leg` still prices a V3 leg through the
@@ -137,7 +137,7 @@ A round decides in roughly 20 to 30 seconds. The verdict reaches the executor
 as an EVM-bound external message, and GenVM's `EthSend` emission carries no
 delivery-timing field (only `PostMessage` and `DeployContract` take
 `on = accepted | finalized`), so it is delivered when the round **finalizes**:
-the appeal window, 15 to 25 minutes on Bradbury. Finalization is a call someone
+the appeal window, about 30 minutes on Bradbury. Finalization is a call someone
 has to make; the app's settlement queue makes it.
 
 A verdict is granted `min(deadline, now + 7200s)`. The TTL must exceed the

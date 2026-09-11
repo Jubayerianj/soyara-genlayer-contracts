@@ -45,7 +45,7 @@ echo
 # STEP 0  Disarm the attestor rail on the CURRENT executor.
 #
 # Separate from, and before, the redeploy. The steps below wait on GenLayer
-# finalization, which is 15 to 25 minutes, and the live contract should not
+# finalization, which is about 30 minutes, and the live contract should not
 # carry an armed bypass during that window.
 # ---------------------------------------------------------------------------
 CUR="$(cast call "$OLD_EXECUTOR" 'attestorThreshold()(uint256)' --rpc-url "$EVM_RPC" 2>/dev/null || echo gone)"

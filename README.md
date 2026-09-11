@@ -71,7 +71,7 @@ can write:
 
 | Rail | Authority, written by the IC | Settlement call | What the executor enforces | Latency |
 |---|---|---|---|---|
-| **consensus** | `validate_swap` → `recordVerdict(commitment, expiry)` | `executeSwap(order, aggProgram)` | Re-derives the commitment from the whole order and consumes the matching verdict. Single use. | Appeal window, 15 to 25 min |
+| **consensus** | `validate_swap` → `recordVerdict(commitment, expiry)` | `executeSwap(order, aggProgram)` | Re-derives the commitment from the whole order and consumes the matching verdict. Single use. | Appeal window, about 30 min |
 | **mandate** | `issue_trading_mandate` → `recordMandate(...)` | `executeSwapUnderMandate(id, amountIn, minAmountOut, feeBps, aggProgram)` | User, pair, direction, per-trade ceiling, lifetime budget, fee, collector, router and the route by hash; prices the trade itself from the pinned pool's live reserves. | One transaction |
 
 ```
@@ -140,7 +140,7 @@ hit GenVM's per-block pubdata limit, so no verdict can exist for a V3 mint or
 burn. `AgentExecutor` still carries `executeAddLiquidityV3` /
 `executeRemoveLiquidityV3` in its deployed bytecode; both revert with
 `NoConsensusVerdict` and are annotated as unreachable in the source, and
-removing them means redeploying the pair. The application makes no V3 liquidity
+removing them means deploying a new executor and re-pointing the IC to it with its owner-only `set_agent_executor`; the IC itself stays. The application makes no V3 liquidity
 call and manages V3 positions in its pools app. The separate `LiquidityValidator`
 contract (`0xEFb9473B...`), which authorised nothing, is retired and its source
 removed; see `DEPLOYMENTS.md`.

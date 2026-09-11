@@ -80,7 +80,7 @@ settlement while its Execute button settled the same trade directly.
 - Contracts: `LiquidityValidator.py` is removed from this repository (retired,
   authorised nothing). The executor's V3 entry points stay in its deployed
   bytecode, fail closed with `NoConsensusVerdict`, and are annotated as
-  unreachable; removing them means redeploying the pair.
+  unreachable; removing them means deploying a new executor and re-pointing the IC to it with its owner-only `set_agent_executor`; the IC itself stays.
 - Documentation: the IC README listed the removed V3 methods, and said mandates
   could not authorise settlement; the application's docs described settlement
   "via AGGFlowEntrypoint". All rewritten against the deployed contracts.
@@ -380,7 +380,8 @@ is deleted. `_consumeVerdict` has one branch: a live verdict recorded by the
 AgentValidator IC, or the call reverts with `NoConsensusVerdict`.
 
 **The cost is real and is the point.** Settlement now waits out the appeal
-window, roughly 15 to 25 minutes on Bradbury. Latency is the honest price of
+window: 30 minutes after the round's last vote on Bradbury, measured on
+2026-09-11. Latency is the honest price of
 consensus enforcement.
 
 ### The owner is the last party who could subvert the registry
@@ -416,7 +417,8 @@ does this automatically. Until it happens:
 
 `client.finalizeIdlenessTxs({ account, txIds })` performs the call; it is a
 no-op until the appeal window has elapsed, so it is safe to retry on a loop.
-Observed window on Bradbury: roughly 15 to 25 minutes. Production needs a
+Measured on Bradbury on 2026-09-11: 30 minutes after the round's last vote, in
+two separate rounds. Production needs a
 keeper doing this, or settlement waits on whoever happens to call.
 
 ### ⚠️ Critical: a write's RETURN VALUE is not recoverable from its receipt
@@ -565,8 +567,9 @@ aggregator entrypoint. The executor is wired to the newer ones, which is what
 `0xF456737D17C2Bbb348fd4F7D1b000D62A46FB3b5`,
 `0x779380011B5F2aB40985D810B5c7641539beD870`.
 
-Redeploying the executor means redeploying the IC with it — see the matched-pair
-note above — because each holds the other's address.
+Each holds the other's address, so replacing one means updating both bindings
+(`setGenLayerValidator` on the executor, `set_agent_executor` on the IC). Both
+are owner-only; replacing the executor does not require a new IC.
 
 ### ⚠️ address(0) is NATIVE and must be exempt from the ERC-20 whitelist
 

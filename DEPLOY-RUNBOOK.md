@@ -101,7 +101,7 @@ constants). A new executor address means every user approves once more.
 ## 7. Settle one real trade on each rail
 
 - **consensus**: a trade with its own `validate_swap` round. Latency is the
-  appeal window (15 to 25 minutes), because the verdict travels as an external
+  appeal window (about 30 minutes), because the verdict travels as an external
   message delivered on finalization and `EthSend` takes no `on=` parameter.
   Confirm `isVerdictLive(commitment)` flips true before settlement and that
   `executeSwap` emits `VerdictConsumed`.

@@ -36,7 +36,7 @@ pragma solidity ^0.8.24;
 //  under EIP-712 could settle a trade when no consensus verdict had arrived
 //  yet. It existed because EVM-bound external messages are delivered only on
 //  finalization (`EthSend` takes no `on=` parameter on the pinned runner), so
-//  the honest wait is the appeal window, 15 to 25 minutes on Bradbury.
+//  the honest wait is the appeal window, about 30 minutes on Bradbury.
 //
 //  That rail has been removed. Nothing on chain could link an attestation to a
 //  verdict the Intelligent Contract had actually recorded, so M signing keys
