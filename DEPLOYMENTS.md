@@ -14,11 +14,125 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 | Block Explorer | `https://explorer-bradbury.genlayer.com` |
 
 
+
+## Read this first: the deployment in service (2026-09-11)
+
+| | |
+|---|---|
+| **AgentExecutor** | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
+| **AgentValidator** (IC) | `0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92` |
+| owner (cold) / relaying agent (hot) | `0xF186d1414B7F399572F3945D1b84cc230caB9c55` / `0x23D542DCEFb00b1f4268E67a0EC1EF4de0A58fe2` |
+| executor deployed by | `0xbfa018643c0c358824d4e501cfdbbe95be32049d995beac1a04c09a4207d466b` (`aggregator/broadcast/DeployExecutorOnly.s.sol/4221/`) |
+| executor bound to this IC by | `0x453d3968d14d603bface77f23db97fb3e00994e60212fa4332e69914e9b62fba` (`setGenLayerValidator`, `aggregator/broadcast/BootstrapValidator.s.sol/4221/`) |
+
+`bash verify-deployment.sh` proves, against the chain, that the executor's
+runtime bytecode and the IC's deployed code are this repository byte for byte,
+that the pair is bound both ways, and that the executor refuses an order no
+round approved, a verdict or mandate written by anyone but the IC, and a V3
+mint. Everything below this section is history, kept so a retired address can be
+looked up rather than mistaken for the current one.
+
+**Settlement.** An agent trade settles through `AgentExecutor` on one of two
+rails, and both need an authority only the IC can write: its own single-use
+verdict (`validate_swap` → `recordVerdict` → `executeSwap`, after the appeal
+window), or a mandate an earlier round issued (`issue_trading_mandate` →
+`recordMandate` → `executeSwapUnderMandate`, one transaction). The application
+picks the rail before any round is opened, so a trade never has both.
+
+**V3 liquidity** is not on the settlement path: the IC has no V3 liquidity
+validator, the executor's V3 entry points revert with `NoConsensusVerdict`, and
+the application makes no V3 liquidity call. `LiquidityValidator`
+(`0xEFb9473B...`) is retired; see below.
+
+## Response to the third GenLayer review (2026-09-11)
+
+> "The authenticated, single-use settlement path resolves the requested
+> trust-boundary issue, but the main agent flows still default to direct
+> settlement and the V3 liquidity integration has drifted from the current
+> contract. Make the enforced path the default and align or remove the stale V3
+> calls and documentation."
+
+### 1. The enforced path is the default, and the only path, for agent flows
+
+The application's shared agent hook had a `fastMode`, on by default, in which the
+user signed an AGGFlowEntrypoint swap directly and no verdict was involved. Both
+`/ai` and `/a2a` used the default. It is removed, not switched off: the hook has
+no path to the entrypoint, and a validation result that does not name a rail
+cannot settle. Agent trades now settle only through `AgentExecutor`:
+
+- by default on the trade's own authenticated, single-use verdict; or
+- when a mandate an earlier consensus round issued already covers the exact
+  order on its best route, under that mandate, in one transaction. The mandate
+  was written by `recordMandate` (`onlyValidator`) and the executor checks and
+  prices every trade against it.
+
+The rail is decided before any round is opened, which also closed a double
+settlement: `/a2a` had queued a consensus-approved trade for automatic
+settlement while its Execute button settled the same trade directly.
+
+### 2. The V3 liquidity drift is removed
+
+- Application: the wrappers calling `validate_liquidity_v3_add` / `_remove`
+  (removed from the IC to fit the deploy size limit) are gone, as is the
+  read-only simulation that answered V3 requests from `LiquidityValidator`, a
+  contract the executor never accepted verdicts from. V3 liquidity requests are
+  refused before any round and handed to the pools app.
+- Contracts: `LiquidityValidator.py` is removed from this repository (retired,
+  authorised nothing). The executor's V3 entry points stay in its deployed
+  bytecode, fail closed with `NoConsensusVerdict`, and are annotated as
+  unreachable; removing them means redeploying the pair.
+- Documentation: the IC README listed the removed V3 methods, and said mandates
+  could not authorise settlement; the application's docs described settlement
+  "via AGGFlowEntrypoint". All rewritten against the deployed contracts.
+- Leftovers of the same drift, also removed from the application: two test
+  scripts that still settled against the retired 2026-09-07 executor (one of
+  them signing attestor verdicts for a parameter the deployed executor does not
+  have), `LiquidityValidator` in the live address map, and liquidity route
+  comments describing a `validate_proposal` flow the IC no longer has.
+
+### 3. Drift is now tested
+
+The application's `npm run test:settlement` reads the deployed IC's schema and
+fails if the app, or a code sample in its documentation, names a method the
+contract does not have; it also checks the agent hook has no direct path, that
+no code targets a retired executor or validator or signs an attestor verdict,
+and probes the executor live. `verify-deployment.sh` here does the same for the
+contracts themselves.
+
+### Verified end to end
+
+Both rails were run through the application's own API routes
+(`scripts/rails-e2e.mjs`) against this deployment. The routes hold no
+authority: every transaction below that moved funds was accepted by
+`AgentExecutor` because the IC had written the authority it checked.
+
+| | Consensus rail (the default) | Mandate rail |
+|---|---|---|
+| Round | `validate_swap` [`0x8dd0bbdd…`](https://explorer-bradbury.genlayer.com/tx/0x8dd0bbdd6e0bd4c698d0c170fd9d59319163a4f72a637891a159f17550b3d067), AGREE, last vote 2026-09-11 05:11:19 UTC | `issue_trading_mandate` [`0xd90a2864…`](https://explorer-bradbury.genlayer.com/tx/0xd90a286461dc4efd1e4598afaade26b8aeccc83050768b1f2bfe39fe16a46db7), AGREE, last vote 2026-09-10 18:56:51 UTC |
+| Authority reaches the executor | `VerdictRecorded` in [`0xa70afc42…`](https://explorer-bradbury.genlayer.com/tx/0xa70afc4233bb25cd35704554673b1895cc5d950d24146eb70eec0ca695724ce7), block 21395587, 05:41:19 UTC | `MandateRecorded` in [`0x09044e4f…`](https://explorer-bradbury.genlayer.com/tx/0x09044e4f214202636b063e3522653026bcfaba64dac4709f63a1872e566462c1), block 21346881, 19:26:51 UTC |
+| Settlement | `executeSwap` [`0x939d5212…`](https://explorer-bradbury.genlayer.com/tx/0x939d5212f2bb306cac241930c64bae135ce1c066c0e84e7e888bf9b50c0eb66d), block 21395595: `VerdictConsumed`, `SwapExecuted` (2 USDC → 1.9930 USDT) | `executeSwapUnderMandate` [`0x5049aad7…`](https://explorer-bradbury.genlayer.com/tx/0x5049aad71b468707b24f7b14ffa360b62efebf28cf4e9880bfd8f0d4a1b5eeba), block 21393274: `MandateSpent`, `SwapExecuted` (1 USDC → 0.9965 USDT); no round was opened for this trade, and it settled 6 s after it was validated |
+| Afterwards | the settled order replayed as an `eth_call` from the agent reverts `CommitmentAlreadyUsed` | 1 of the mandate's 20 USDC budget spent, recorded on chain |
+
+Neither authority was written by a key this project holds. Each arrived in a
+transaction sent by GenLayer's consensus contracts (`0x610ad38a…`,
+`0x1a7ab060…`, through `0x0112bf6e…`), none of which derive from any key in the
+application's environment. Both landed exactly 30 minutes after the round's last
+vote, which is Bradbury's finality window: the consensus rail pays it per trade,
+the mandate rail once per mandate.
+
+Also passing against the live chain on 2026-09-11: `bash verify-deployment.sh`;
+`forge test` (67); `genvm-lint` on `AgentValidator.py`; and in the application,
+`npm run test:regression`, `npm run test:settlement`, `npm run test:swarm` (58)
+and `node scripts/swarm-e2e.mjs` (30, live rounds).
+
 ### Intelligent Contracts (ICs)
 
 | Contract | Address | Transaction Hash |
 |---|---|---|
-| **AgentValidator** (current — paired with the executor that has no bypass) | `0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92` | `0xae9fdd749b3c01462c266cefa03e6b427b66e34f09a3005afdb35b87e937b6cc` |
+| **AgentValidator** (current, paired with executor `0x1BCBad3d...`) | `0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92` | deployed code verified by `verify-deployment.sh` |
+| AgentValidator (retired: mandate build whose `EthSend` carried an unsupported `on` field, so no `recordMandate` was ever emitted) | `0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb` | see `BootstrapValidator.s.sol/4221/` |
+| AgentValidator (retired: bound to executor `0x1BCBad3d...` first during the mandate rollout, superseded the same day) | `0x7aBa03DD415A096845A9C0ce8893E86EF74f8a98` | see `BootstrapValidator.s.sol/4221/run-1788874579501.json` |
+| AgentValidator (retired: paired with executor `0x758d57cF...`, no mandate support) | `0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A` | `0xae9fdd749b3c01462c266cefa03e6b427b66e34f09a3005afdb35b87e937b6cc` |
 | AgentValidator (retired — paired with an executor carrying the attestor rail) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` | see `BootstrapValidator.s.sol/4221/` |
 | AgentValidator (retired — superseded during the same rollout) | `0x8627CfDC1df6DcD813113FA2F400B35a99a781D4` | `0x37980bd6bd1d3c854fb06ef07af1fd207cfb67089e62666c9cd05c5877eea0d3` |
 | AgentValidator (retired — superseded during the same rollout) | `0x001E00a816fa93bC2cA07587d929Aa98C31051DD` | see `BootstrapValidator.s.sol/4221/run-1788784195752.json` |
@@ -29,7 +143,7 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 | AgentValidator (retired — queue exhausted, see PendingQueueFull below) | `0x683cBF11F807aB184ed2B4a5dDDC9E49dbBa0f51` | `0x874ff1cb09c15abb3b5e0817911879e00f2b92ba4807e6614a46197c1606661f` |
 | AgentValidator (retired — determinism fix, no persisted verdicts) | `0x440FB164C93cC5657a1b1F53e8B4E1113c43AB9D` | `0x53d3a96a97976070b246e49d25e36a5b03917c456168268c3c1d5dd673a09711` |
 | AgentValidator (retired — mandates, but non-deterministic strict_eq payload) | `0x7B6B4aFC5098fFe85124D4242577f06DCe497d0b` | `0x0b9a274730b29e4be04af221344f0dfb3379845863a548adca3a6ebd17658961` |
-| **LiquidityValidator** | `0xEFb9473B5269A79d72Df4b6E73E310791a185eeC` | `0x6029755fe523a1fcb2c87f20a3c9cc3fcc12f04f57b6db203a40b8c718fcdf23` |
+| LiquidityValidator (retired: the executor never accepted its answers, so it authorised nothing; the app no longer calls it and its source is removed) | `0xEFb9473B5269A79d72Df4b6E73E310791a185eeC` | `0x6029755fe523a1fcb2c87f20a3c9cc3fcc12f04f57b6db203a40b8c718fcdf23` |
 | AgentValidator (retired — mandate build, queue blocked) | `0xDBFB9DDAc98084a792d2a8884B4FEbDD4F52F506` | `0xef1090da0b8b9197bd810dfc370abdbb03cf6c4b9746859b6d2cc33b025bd32b` |
 | AgentValidator (retired — no mandate support) | `0x2CA6e67846a9B30E1E175Ee4D1bd8b90f4c12C6e` | `0x0e445f38830e3445af9f8781b302eceb2efd0cd21277c3eb1ef5ee6cd7108e79` |
 | AgentValidator (retired — stale router whitelist + non-deterministic `time.time()`) | `0xFc77C6A20B1102979f5887A5efe9611a2Ef6Afd5` | `0x80788d9ee015f11468f4e372ead51f0dd522fb70e62343e241bd23c7b3384dbf` |
@@ -40,6 +154,7 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 |---|---|
 | **AgentExecutor** (EVM) | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
 | **AgentValidator** (IC) | `0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92` |
+| AgentValidator deployed with it first, since retired (its `EthSend` carried an `on` field GenVM does not define, so no `recordMandate` was emitted; the executor was rebound to `0xd1D809A1...`) | `0x0c4F0F784cC06fb6964e2C9Ab4704ebfB4d64cFb` |
 | AgentExecutor (retired — no mandate support) | `0x758d57cF9c96bC6235c1fA3929209A1C42346E18` |
 | AgentValidator (retired — paired with the above) | `0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A` |
 
@@ -94,8 +209,8 @@ ghost is a contract) and any address registered as a relaying agent
 
 | Contract | Address |
 |---|---|
-| **AgentExecutor** (EVM) | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
-| **AgentValidator** (IC) | `0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92` |
+| AgentExecutor (EVM), deployed this day, since retired | `0x758d57cF9c96bC6235c1fA3929209A1C42346E18` |
+| AgentValidator (IC), deployed this day, since retired | `0x0a7125fdFAf4092b10Be8f509ce76A2AE7f5735A` |
 | AgentExecutor (retired — attestor rail present, later disarmed to 0) | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
 | AgentValidator (retired — paired with the above) | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` |
 
@@ -113,8 +228,12 @@ Replacing one without the other leaves settlement dead.
 
 | Contract | Address |
 |---|---|
-| **AgentExecutor** (EVM) | `0x1BCBad3da718690fa60289DcBF15835e5C79021f` |
-| **AgentValidator** (IC) | `0xd1D809A1210cc039AEdBF5cD04628416Ad0e6a92` |
+| AgentExecutor (EVM), deployed this day, since retired | `0x0F1E98571BADd0fF59a34140Fe1e820DaDF907E1` |
+| AgentValidator (IC), deployed this day, since retired | `0xf47492A969b2bC8f99B62Bdf8958541F2234C42b` |
+
+(These two tables were once overwritten with the current addresses by a global
+find-and-replace. The addresses above are the ones actually deployed on the
+day; the pair in service is at the top of this file.)
 
 Deployment order is forced by a circular dependency: the IC takes the executor's
 address as a constructor argument, so the executor must exist first, which is
@@ -471,15 +590,19 @@ its informational `APPROVED_ROUTERS` map. That is harmless — validation checks
 `router` parameter (the AGGFlowEntrypoint), never the executor — and corrects
 itself on the next IC deploy.
 
-**Architecture enforced by AgentExecutor:**
+**Architecture enforced by AgentExecutor (current):**
 ```
-GenLayer AgentValidator (consensus write tx, @gl.public.write)
-    ↓ approved = true
-/api/agent-execute (server-side, AGENT_PRIVATE_KEY)
-    → AgentExecutor.approveTradeWithParams(user, tokenIn, tokenOut, amountIn, minOut, slippage, deadline)
-    → AgentExecutor.executeSwap(...)  ← checks+deletes hash, reverts TradeNotApproved if tampered
-        → AGGFlowEntrypoint → V2/V3 DEX
+AgentValidator IC ── validate_swap ──────────► recordVerdict(commitment, expiry)   onlyValidator
+                 └─ issue_trading_mandate ───► recordMandate(id, ... routeHash, pool, expiry)
+settlement agent (onlyAgent, relays only)
+    → executeSwap(order, aggProgram)                re-derives the commitment, consumes the verdict
+    → executeSwapUnderMandate(id, amountIn, ...)    checks the trade against the mandate, prices it
+        → AGGFlowEntrypoint → V2/V3 pools → output to the user
 ```
+
+The design this replaced had the settlement agent call
+`approveTradeWithParams` to write its own approval before `executeSwap`. That
+function does not exist on the current executor.
 
 
 ### ⚠️ `minAmountOut` must come from integer math, never from a display string
@@ -550,7 +673,10 @@ longer reads an amount of `3`.
 > Read decimals from that file (or on-chain), never from memory of what these
 > symbols mean elsewhere.
 
-### Settlement re-quotes against live reserves before binding the approval
+### (Historical, before 2026-09-07) Settlement re-quoted against live reserves before binding the approval
+
+Superseded: the validated quote is now part of the approved order, and the
+executor enforces the floor against it. Kept for the record.
 
 `minAmountOut` is fixed when the quote is generated and then sits in the client's
 React state. A proposal left on screen — or one held across a hot reload — keeps a
@@ -579,12 +705,13 @@ would re-prompt the wallet before every swap, which defeats the delegation.
 
 That is safe because the ERC-20 allowance is plumbing, not the gate:
 
-- `AgentExecutor` binds a one-time hash per trade —
-  `keccak256(abi.encode(user, tokenIn, tokenOut, amountIn, minAmountOut, slippageBps, deadline))` —
-  via `approveTradeWithParams`, and **consumes** it in `executeSwap`.
-- That hash is only ever bound after GenLayer's `AgentValidator` approved the
-  proposal, so the agent can move funds only through a trade consensus authorised.
-- Any parameter mismatch reverts with `TradeNotApproved`; the hash cannot replay.
+- `AgentExecutor` moves funds only against an authority the AgentValidator IC
+  wrote: a verdict for the order's own commitment (route, fee, collector,
+  recipient, quote, deadline, nonce), consumed on use, or a mandate for this
+  user, pair and direction, checked and priced per trade.
+- No key an operator holds can write either one (`onlyValidator`).
+- A changed parameter lands on a commitment no verdict backs
+  (`NoConsensusVerdict`); a second attempt reverts with `CommitmentAlreadyUsed`.
 
 Redeploying `AgentExecutor` invalidates every existing allowance — that is the one
 legitimate reason users must approve again.
@@ -607,7 +734,10 @@ and are display estimates only. Routable: `USDC/WGEN`, `USDC/USDT`, `WGEN/USDT`.
 
 ---
 
-## Response to the GenLayer review
+## Response to the first GenLayer review (historical)
+
+Kept as a record. Where it describes `approveTradeWithParams` or a `check_mandate`
+view, that design is gone: see the top of this file for what is deployed.
 
 > "The requested enforced GenLayer-to-settlement flow is still incomplete: the
 > current app validates through a read simulation and settles directly through

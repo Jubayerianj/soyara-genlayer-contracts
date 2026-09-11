@@ -1,34 +1,17 @@
-# Redeploying the enforcing pair
+# Redeploying the pair
 
 The executor and the AgentValidator IC are a matched pair: the IC takes the
 executor's address as a constructor argument, and the executor accepts
-`recordVerdict` only from the IC. Replacing one without the other leaves
-settlement dead. This is the whole sequence.
+`recordVerdict` and `recordMandate` only from the IC. Replacing one without the
+other leaves settlement dead. This is the whole sequence; `deploy-mandate-pair.sh`
+and `bind-and-verify.sh` script it.
 
-Chain `4221`. EVM RPC `https://rpc.testnet-chain.genlayer.com`,
-GenLayer RPC `https://rpc-bradbury.genlayer.com`.
+Chain `4221`. EVM RPC `https://rpc.testnet-chain.genlayer.com` (or
+`https://rpc-bradbury.genlayer.com`), GenLayer RPC `https://rpc-bradbury.genlayer.com`.
 
----
-
-## 0. Optional but immediate: disarm the bypass on the CURRENT deployment
-
-The live executor `0x0F1E9857...` still has `attestorThreshold() == 2`, so a
-2-of-2 attestor quorum can settle a commitment GenLayer never approved. One
-transaction closes that without waiting for the redeploy:
-
-```bash
-cast send 0x758d57cF9c96bC6235c1fA3929209A1C42346E18 \
-  'setAttestorThreshold(uint256)' 0 \
-  --rpc-url https://rpc.testnet-chain.genlayer.com \
-  --private-key $GOV_PRIVATE_KEY
-
-# verify
-cast call 0x758d57cF9c96bC6235c1fA3929209A1C42346E18 'attestorThreshold()(uint256)' \
-  --rpc-url https://rpc.testnet-chain.genlayer.com   # -> 0
-```
-
-After this, GenLayer consensus is the only authority on the deployed contract.
-The redeploy below makes that structural rather than a setting.
+The deployment in service is listed in `DEPLOYMENTS.md`, and
+`bash verify-deployment.sh` proves it matches this source. There is no bypass
+on it to disarm: the attestor rail is absent from its bytecode.
 
 ---
 
@@ -40,7 +23,7 @@ that can install a validator it controls and settle against its own verdicts.
 
 ```bash
 cd aggregator
-GOV_PRIVATE_KEY=0x...  EXECUTOR_OWNER=0x<multisig-or-second-key> \
+GOV_PRIVATE_KEY=0x<agent>  EXECUTOR_OWNER=0x<owner> \
 forge script script/DeployExecutorOnly.s.sol \
   --rpc-url https://rpc.testnet-chain.genlayer.com --broadcast
 ```
@@ -49,83 +32,79 @@ Note the printed `AgentExecutor:` address as `$NEW_EXECUTOR`. At this point
 `recordVerdict` reverts with `ValidatorNotSet` (`0x6bb49bc4`) and nothing can
 settle. That window is safe by construction.
 
-## 2. Deploy the Intelligent Contract against it
+## 2. Point it at the V2 factory
 
-The annotated source is ~80 KB and exceeds the GenVM pubdata limit, so deploy
-the stripped build.
+The mandate rail prices every trade from a pool it first proves canonical
+through the factory. Without this, every mandate settlement reverts with
+`FactoryNotSet`.
+
+```bash
+cast send $NEW_EXECUTOR 'setV2Factory(address)' 0x4680BCe1632824d30D2F53656dD610736c3e312e \
+  --rpc-url https://rpc.testnet-chain.genlayer.com --private-key $OWNER_KEY
+```
+
+## 3. Deploy the Intelligent Contract against it
+
+The annotated source exceeds GenVM's per-block pubdata limit, so deploy the
+stripped build.
 
 ```bash
 cd ../genlayer-inteligent-contracts
-python3 build_deployable.py            # -> build/AgentValidator.min.py, ~49 KB
+python3 build_deployable.py            # -> build/AgentValidator.min.py, ~48 KB
+genvm-lint check build/AgentValidator.min.py
 
 genlayer deploy --contract build/AgentValidator.min.py \
-  --args <owner> $NEW_EXECUTOR
+  --args <owner> $NEW_EXECUTOR --rpc https://rpc-bradbury.genlayer.com
 ```
 
-## 3. Finalize the deploy round
+If the deploy is refused with `BlockPubdataLimitReached`, retry before assuming
+the contract is too big: the limit is per block.
 
-A decided transaction sits in `Accepted` until someone finalizes it, and nothing
-does this automatically. Until it happens the IC is not callable. Poll until:
+## 4. Finalize the deploy round
+
+A decided transaction sits in `Accepted` until someone finalizes it. Until then
+the IC is not callable. Poll until:
 
 ```bash
 genlayer call $NEW_IC get_config --rpc https://rpc-bradbury.genlayer.com
 # -> agent_executor: $NEW_EXECUTOR
 ```
 
-## 4. Bind the executor to the IC
+## 5. Bind the executor to the IC
 
 ```bash
 cd ../aggregator
-PRIVATE_KEY=0x...  AGENT_EXECUTOR=$NEW_EXECUTOR  GENLAYER_VALIDATOR=$NEW_IC \
+PRIVATE_KEY=$OWNER_KEY  AGENT_EXECUTOR=$NEW_EXECUTOR  GENLAYER_VALIDATOR=$NEW_IC \
 forge script script/BootstrapValidator.s.sol \
   --rpc-url https://rpc.testnet-chain.genlayer.com --broadcast
 ```
 
-`setGenLayerValidator` now rejects an address with no code and an address
+`setGenLayerValidator` rejects an address with no code and an address
 registered as a relaying agent, so this fails loudly rather than quietly
 installing a key where consensus belongs.
-
-## 5. Update the address map in all four places
-
-`$NEW_EXECUTOR` and `$NEW_IC` must land in:
-
-| File | Field |
-|---|---|
-| `frontend/flipswap/constants/addresses.js` | `agentExecutor`, `agentValidator` |
-| `frontend/flipswap/.env.local` | `AGENT_EXECUTOR_ADDRESS` |
-| `sdk/src/addresses.js` | `agentExecutor`, `agentValidator` |
-| `DEPLOYMENTS.md`, `dex-contracts/README.md`, `genlayer-inteligent-contracts/README.md` | the address tables |
-
-`ATTESTOR_PRIVATE_KEYS` can be deleted from `.env.local`; nothing reads it now.
-
-Next.js reads `.env.local` only at startup, so restart the dev server.
 
 ## 6. Verify against the chain, not against this document
 
 ```bash
-cd sdk && node test/addresses.mjs
+EXECUTOR=$NEW_EXECUTOR IC=$NEW_IC bash verify-deployment.sh
 ```
 
-That suite asserts, against the live deployment: every shipped address has code,
-the executor exposes `genLayerValidator`, it is bound to the IC the SDK ships,
-the validator is a contract rather than an EOA, the validator is not the
-settlement agent, and `attestorThreshold` **no longer answers at all**. The last
-one fails on any pre-fix executor, which is the point.
+It proves the executor's runtime bytecode and the IC's deployed code are this
+source byte for byte, that the pair is bound both ways, that owner and agent
+differ, and that the executor refuses an unapproved order, a verdict or
+mandate from anyone but the IC, and a V3 mint.
 
-Then confirm the pairing by hand:
+Then update the address maps (this repository's `README.md`, `DEPLOYMENTS.md`
+and `genlayer-inteligent-contracts/README.md`, and the application's address
+constants). A new executor address means every user approves once more.
 
-```bash
-cast call $NEW_EXECUTOR 'genLayerValidator()(address)' \
-  --rpc-url https://rpc.testnet-chain.genlayer.com          # -> $NEW_IC
+## 7. Settle one real trade on each rail
 
-genlayer call $NEW_IC get_config --rpc https://rpc-bradbury.genlayer.com
-# -> agent_executor: $NEW_EXECUTOR
-```
-
-## 7. Settle one real trade end to end
-
-Latency is now the full appeal window, 15 to 25 minutes, because the verdict
-travels as an external message delivered on finalization and `EthSend` takes no
-`on=` parameter. Expect the trade to sit on the settlement queue. Confirm
-`isVerdictLive(commitment)` flips true before settlement, and that the
-`VerdictConsumed` event reports `GenLayerConsensus`.
+- **consensus**: a trade with its own `validate_swap` round. Latency is the
+  appeal window (15 to 25 minutes), because the verdict travels as an external
+  message delivered on finalization and `EthSend` takes no `on=` parameter.
+  Confirm `isVerdictLive(commitment)` flips true before settlement and that
+  `executeSwap` emits `VerdictConsumed`.
+- **mandate**: `issue_trading_mandate` once, wait for `isMandateLive(id)`, then
+  settle with `executeSwapUnderMandate`, which emits `MandateSpent` and settles
+  in one transaction.

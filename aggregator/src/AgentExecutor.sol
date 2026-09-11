@@ -32,7 +32,19 @@ pragma solidity ^0.8.24;
 //       │  4. Pull tokens, delegate to router
 //       ▼
 //  AGGFlowEntrypoint (aggregated swaps)
-//  V2 Router / V3 PositionManager (liquidity)
+//  V2 Router (liquidity)
+//
+//  The second swap rail, executeSwapUnderMandate, is at the bottom of this
+//  file: the IC records a bounded mandate once (recordMandate, onlyValidator)
+//  and each trade inside it is checked and priced here.
+//
+//  V3 LIQUIDITY IS NOT REACHABLE ON THE DEPLOYED PAIR. executeAddLiquidityV3
+//  and executeRemoveLiquidityV3 remain in this contract, but the AgentValidator
+//  IC it is paired with has no V3 liquidity validator (removed to fit GenVM's
+//  deploy size limit), so no verdict can ever be recorded for a V3 commitment
+//  and both revert with NoConsensusVerdict. They fail closed. They are kept
+//  only because this source must compile to the deployed bytecode; removing
+//  them means redeploying the pair.
 //
 //  WHAT THE COMMITMENT NOW COVERS
 //  ------------------------------
@@ -351,6 +363,10 @@ contract AgentExecutor is AgentExecutorBase {
 
     /**
      * @notice Settle a consensus-approved V3 mint-position operation.
+     * @dev UNREACHABLE ON THE DEPLOYED PAIR: the paired AgentValidator has no V3
+     *      liquidity validator, so no verdict exists for any V3 commitment and
+     *      this reverts with NoConsensusVerdict. See the note at the top of the
+     *      file.
      * @dev mintParams.recipient is always overridden to `user` — the NFT goes
      *      directly to the user regardless of what the agent passed in params.
      */
@@ -406,6 +422,15 @@ contract AgentExecutor is AgentExecutorBase {
 
     /**
      * @notice Settle a consensus-approved V3 decrease-liquidity + collect.
+     *
+     * @dev UNREACHABLE ON THE DEPLOYED PAIR, like executeAddLiquidityV3: no
+     *      validator can record a V3 verdict, so this reverts with
+     *      NoConsensusVerdict. It is also not a finished integration. Before a
+     *      V3 validator could be paired with it, it would need the position NFT
+     *      to be approved to this contract (decreaseLiquidity is owner-gated on
+     *      the position manager), `tokenId` checked against
+     *      `decreaseParams.tokenId`, and token0/token1 read from the position
+     *      rather than taken from the caller.
      *
      * @param token0  token0 of the position — required for whitelist enforcement
      * @param token1  token1 of the position — required for whitelist enforcement

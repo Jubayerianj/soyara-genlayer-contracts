@@ -567,6 +567,8 @@ abstract contract AgentExecutorBase is ReentrancyGuard, Ownable {
         );
     }
 
+    /// @dev The two V3 helpers remain in the deployed bytecode, but no deployed
+    ///      validator records verdicts for V3 commitments; see AgentExecutor.sol.
     function getLiquidityV3AddHash(
         address user,
         IV3PositionManager.MintParams calldata params

@@ -114,6 +114,10 @@ library TradeHashLib {
     }
 
     // ── V3 Liquidity ──────────────────────────────────────────────────────────
+    //
+    // Kept for the deployed bytecode and its frozen conformance vectors. The
+    // paired AgentValidator has no V3 liquidity validator, so no verdict is
+    // ever recorded against these commitments.
 
     /// @notice Commitment for a V3 mint (add liquidity) operation.
     function v3AddHash(

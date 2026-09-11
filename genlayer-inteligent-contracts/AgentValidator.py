@@ -489,6 +489,9 @@ def _keccak(data: bytes) -> bytes:
 _SWAP_TYPE_TAG      = _keccak(b"SOYARA_SWAP_V2")
 _V2_ADD_TYPE_TAG    = _keccak(b"SOYARA_V2_ADD_V2")
 _V2_REMOVE_TYPE_TAG = _keccak(b"SOYARA_V2_REMOVE_V2")
+# The two V3 tags are unused: the V3 liquidity validators that consumed them
+# were removed (see the note above the contract class). They remain because they
+# are in the deployed code, and this file must build to that code byte for byte.
 _V3_ADD_TYPE_TAG    = _keccak(b"SOYARA_V3_ADD_V2")
 _V3_REMOVE_TYPE_TAG = _keccak(b"SOYARA_V3_REMOVE_V2")
 
@@ -1778,12 +1781,13 @@ class AgentValidator(gl.Contract):
         }
 
     # -----------------------------------------------------------------------
-    # V3 liquidity validation
+    # LLM coherence review
     # -----------------------------------------------------------------------
     #
-    #  V3 positions settled through the same privileged path everything else
-    #  did. They now go through the verdict registry too, so the executor's
-    #  V3 entry points are no longer reachable without a consensus round.
+    #  Shared by validate_swap and the V2 liquidity validators. (There is no
+    #  V3 liquidity validator in this contract - see the note above the class.
+    #  With none, no verdict can exist for a V3 commitment, and AgentExecutor's
+    #  V3 entry points revert with NoConsensusVerdict: they fail closed.)
 
     def _consensus_review(
         self,
