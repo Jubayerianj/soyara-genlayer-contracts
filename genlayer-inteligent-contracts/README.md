@@ -138,7 +138,8 @@ as an EVM-bound external message, and GenVM's `EthSend` emission carries no
 delivery-timing field (only `PostMessage` and `DeployContract` take
 `on = accepted | finalized`), so it is delivered when the round **finalizes**:
 the appeal window, about 30 minutes on Bradbury. Finalization is a call someone
-has to make; the app's settlement queue makes it.
+has to make, in order per contract; the app's keeper drains the queue (see
+DEPLOYMENTS.md, "Finalization is a call, not a timer, and it goes in order").
 
 A verdict is granted `min(deadline, now + 7200s)`. The TTL must exceed the
 appeal window: a 900-second TTL once expired every verdict before it arrived.

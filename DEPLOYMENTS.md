@@ -406,20 +406,33 @@ On the current deployment they both are `0x23D542DC...`. Splitting them, ideally
 with the owner behind a multisig, is a one-transaction change and is
 recommended before mainnet.
 
-### Finalization is a call, not a timer
+### Finalization is a call, not a timer, and it goes in order
 
-A decided transaction sits in `Accepted` until someone finalizes it. Nothing
-does this automatically. Until it happens:
+A decided transaction sits in `Accepted` for its appeal window (measured on
+Bradbury on 2026-09-11: 30 minutes after the round's last vote), then in
+`READY_TO_FINALIZE` until someone finalizes it. Nothing does that for an idle
+contract. Until it happens:
 
 - a deployed IC is not callable, and
-- **an external message is never delivered** — which is exactly how the verdict
+- **an external message is never delivered**, which is exactly how the verdict
   reaches `AgentExecutor.recordVerdict`.
 
-`client.finalizeIdlenessTxs({ account, txIds })` performs the call; it is a
-no-op until the appeal window has elapsed, so it is safe to retry on a loop.
-Measured on Bradbury on 2026-09-11: 30 minutes after the round's last vote, in
-two separate rounds. Production needs a
-keeper doing this, or settlement waits on whoever happens to call.
+Two rules decide whether a finalize succeeds:
+
+- **In order, per contract.** A round cannot be finalized while an older round
+  to the same contract is unfinalized (`FinalizationNotAllowed()`). On
+  2026-09-11 one undecided round left at the head of the AgentValidator queue
+  held every round behind it, approved trades included, for six hours.
+- **The call that fits the state.** `finalizeTransaction(txId)` for a round that
+  has finished (`READY_TO_FINALIZE`, `UNDETERMINED`, a timeout);
+  `finalizeIdlenessTxs([txId])` only for a round that stopped progressing
+  mid-vote, which restarts it with a new leader rather than finalizing it.
+
+The application's keeper (`drainFinalizationQueue` in `lib/genlayer.js`) drains
+the AgentValidator queue from its head with the right call for each state,
+simulating every finalize first so nothing doomed is broadcast. It runs after
+every new round, on every settlement tick, and once a minute from any open page
+of the app. Anyone may finalize, so any visitor keeps everyone's trades moving.
 
 ### ⚠️ Critical: a write's RETURN VALUE is not recoverable from its receipt
 
