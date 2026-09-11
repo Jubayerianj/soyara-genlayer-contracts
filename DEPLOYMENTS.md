@@ -438,8 +438,12 @@ the AgentValidator queue from its head with the right call for each state,
 simulating every finalize first so nothing doomed is broadcast. The app server
 runs it every 30 seconds (`lib/settlementKeeper.js`) and after every new round,
 then settles each approved trade whose verdict has landed, so a trade finishes
-with every browser tab closed. Anyone may finalize, so any visitor keeps
-everyone's trades moving too.
+with every browser tab closed. Where the app cannot keep a timer running, a
+separate always-on server does the same job
+([soyaradex-server](https://github.com/Jubayerianj/soyaradex-server)); it
+settled a live trade on its own on 2026-09-11
+(`0xf2e4ec85bf3e49495f228b93e18e00f7f94a6df5c6f5dd212659b91446abbfd8`). Anyone
+may finalize, so any visitor keeps everyone's trades moving too.
 
 ### ⚠️ Sign consensus writes with gas headroom
 
