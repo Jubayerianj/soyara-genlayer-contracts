@@ -430,9 +430,33 @@ Two rules decide whether a finalize succeeds:
 
 The application's keeper (`drainFinalizationQueue` in `lib/genlayer.js`) drains
 the AgentValidator queue from its head with the right call for each state,
-simulating every finalize first so nothing doomed is broadcast. It runs after
-every new round, on every settlement tick, and once a minute from any open page
-of the app. Anyone may finalize, so any visitor keeps everyone's trades moving.
+simulating every finalize first so nothing doomed is broadcast. The app server
+runs it every 30 seconds (`lib/settlementKeeper.js`) and after every new round,
+then settles each approved trade whose verdict has landed, so a trade finishes
+with every browser tab closed. Anyone may finalize, so any visitor keeps
+everyone's trades moving too.
+
+### ⚠️ Sign consensus writes with gas headroom
+
+genlayer-js 1.1.8 signs every ConsensusMain write (`addTransaction`,
+`finalizeTransaction`, `finalizeIdlenessTxs`) with exactly what
+`eth_estimateGas` returned. The gas `addTransaction` needs is not fixed: it
+draws the round's validators. On 2026-09-11 one `validate_swap` submission
+needed between 1,174,804 and 1,187,109 gas across twelve consecutive Bradbury
+blocks, against an estimate of 1,176,262. A limit equal to the estimate reverts
+whenever the including block needs a little more; the revert carries no reason
+and no round starts. Three submissions in a row failed this way
+(`0xc3859e4bb1254173ce6bb89fb346b8da33c2eae2bca1e3f4bc46b4093b430171`,
+`0x6d55c8fb4c934749438364d61c5680da3539e4cb27492099b8261400c0459594`,
+`0x59a4b5e8e6151ebe2c9cdabbce52a2532515624108f091156f7cf48928e51ffe`). Each
+replays cleanly against the previous block, and against its own block with a
+higher limit.
+
+The app wraps the signing account (`withGasHeadroom` in `lib/genlayer.js`) so
+every consensus write is signed with 30% over the estimate. Unused gas is
+refunded, and at Bradbury's gas price (about 0.16 gwei) the higher limit costs
+nothing. The next submission used 1,114,896 of a 1,529,140 limit and started its
+round (`0xf16c0455b30c0c1ab3f5497e5a1662c321e988798ab5b790bbf872b04d19e64a`).
 
 ### ⚠️ Critical: a write's RETURN VALUE is not recoverable from its receipt
 
