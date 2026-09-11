@@ -409,9 +409,14 @@ recommended before mainnet.
 ### Finalization is a call, not a timer, and it goes in order
 
 A decided transaction sits in `Accepted` for its appeal window (measured on
-Bradbury on 2026-09-11: 30 minutes after the round's last vote), then in
-`READY_TO_FINALIZE` until someone finalizes it. Nothing does that for an idle
-contract. Until it happens:
+Bradbury on 2026-09-11: 30 minutes after the round's last vote). Then it has to
+be finalized, and that is a call. GenLayer's network makes the call for a
+decided round at the head of a contract's queue: an automated account
+(`0x3f88aae86c58227c6832e22a325a871803084527`, 1.36M transactions) finalized one
+of ours at 13:05:57Z on 2026-09-11, the second its window closed, while our own
+keeper was offline. It does not finalize a round that ended undecided or timed
+out, and one of those at the head blocks everything behind it. Until a round is
+finalized:
 
 - a deployed IC is not callable, and
 - **an external message is never delivered**, which is exactly how the verdict
