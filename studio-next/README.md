@@ -10,7 +10,7 @@ Soyara's agent trading, judged and settled by one Intelligent Contract on
 | Runner | `py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng` (SDK v0.3.0) |
 | Deploy tx | `0x73cb1c77b90503bda92a9713642e18449e9a09056727d03a3ccb98a462295333` |
 | Owner (can only pause) | `0xb453fAb699009A46D637F7DcC03D0A634c33B169` |
-| App | [app.soyara.xyz/ai?net=studio-next](https://app.soyara.xyz/ai?net=studio-next) |
+| App | [app.soyara.xyz/ai?net=studio-next](https://app.soyara.xyz/ai?net=studio-next) (chat desk), [app.soyara.xyz/a2a/user?net=studio-next](https://app.soyara.xyz/a2a/user?net=studio-next) (seven-agent swarm) |
 
 `deployment.json` is the full record, including the four pool anchor
 transactions.
