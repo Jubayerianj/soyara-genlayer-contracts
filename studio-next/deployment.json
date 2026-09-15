@@ -1,0 +1,19 @@
+{
+  "network": "GenLayer Studio Next",
+  "chainId": 61997,
+  "rpc": "https://studio-dev.genlayer.com/api",
+  "explorer": "https://explorer-studio-dev.genlayer.com",
+  "contract": "SoyaraAgentDex",
+  "address": "0x3b6Cf2C48297afCf50Bc3e843a9F335B8407f8D6",
+  "owner": "0xb453fAb699009A46D637F7DcC03D0A634c33B169",
+  "runner": "py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng",
+  "sourceSha256": "61a04db3629a5f3bc191fd264ac3c3fd0551806e1afe69091b04767a2abd0946",
+  "deployTx": "0x73cb1c77b90503bda92a9713642e18449e9a09056727d03a3ccb98a462295333",
+  "anchorTxs": {
+    "USDC/USDT": "0x3b4edea8cb500bc9961ea2133bcfc221dc0ca51a39c549d11bf06a5be90dcbad",
+    "ETH/USDC": "0xd6fd0bd6e16dc802275d89ac61dc303869ed1804de58ded40b5ff187141e3920",
+    "ETH/USDT": "0x48485fd1dfac4e5c74579e2011266d12912dad14d279f6363687754230475129",
+    "WGEN/USDC": "0x372f4becec36e96217884e99473a9b8859ffd8bb095eb4ef24f6062c3945d980"
+  },
+  "deployedAt": "2026-09-15T10:28:09.945Z"
+}

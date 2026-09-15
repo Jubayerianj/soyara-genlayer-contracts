@@ -4,6 +4,35 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 
 ---
 
+## 0. GenLayer Studio Next (Consensus v0.6)
+
+| Parameter | Value |
+|---|---|
+| Chain ID | `61997` |
+| RPC | `https://studio-dev.genlayer.com/api` (`studio-next.genlayer.com` is a browser alias) |
+| Explorer | `https://explorer-studio-dev.genlayer.com` |
+| **SoyaraAgentDex** (IC) | `0x3b6Cf2C48297afCf50Bc3e843a9F335B8407f8D6` |
+| deploy tx | `0x73cb1c77b90503bda92a9713642e18449e9a09056727d03a3ccb98a462295333` |
+| owner (pause only) | `0xb453fAb699009A46D637F7DcC03D0A634c33B169` |
+| runner | `py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng` (SDK v0.3.0) |
+
+Studio Next has no EVM layer: an EVM deployment is refused with
+`UnsupportedEvmDeployment`, and an Intelligent Contract cannot call an EVM
+contract there. The Bradbury pair below (AgentValidator deciding, AgentExecutor
+settling through V2/V3 pools) therefore cannot run on it. `SoyaraAgentDex`
+judges and settles in one contract instead: it holds test balances, four pools
+priced against the live Bradbury V2 pairs, and mandates. Its consensus swap and
+its mandate round read those Bradbury pools over JSON-RPC in every validator;
+trades under a mandate are deterministic.
+
+Source, deployment record, fee profile and scripts:
+[`dex-contracts/studio-next/`](dex-contracts/studio-next/). `npm run verify`
+there checks the deployed code byte for byte and the pools against Bradbury;
+`npm run e2e` runs both rails, and its latest transactions are listed in that
+README. Retired Studio Next deployments: `0xf7DA1Bde8af830aDCfBecf922097Ee0F6b09b4E2`
+(no single-read desk view), `0xEf3ED991197eFE7c7904A23D54f38Eb1105Db082`
+(`gl.vm.get_timestamp()` fails on this runner).
+
 ## 1. GenLayer Bradbury Testnet (AI Consensus Layer)
 
 | Parameter | Value |

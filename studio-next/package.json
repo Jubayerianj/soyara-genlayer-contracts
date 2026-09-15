@@ -1,0 +1,16 @@
+{
+  "name": "soyara-studio-next",
+  "private": true,
+  "type": "module",
+  "description": "Deploy and verify SoyaraAgentDex on GenLayer Studio Next (Consensus v0.6, chain 61997)",
+  "scripts": {
+    "test": "python3 test_soyara_agent_dex.py",
+    "deploy": "node deploy.mjs",
+    "e2e": "node e2e.mjs",
+    "verify": "node verify.mjs",
+    "profile": "node profile.mjs"
+  },
+  "dependencies": {
+    "genlayer-js": "2.0.0-rc.1"
+  }
+}

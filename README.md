@@ -19,10 +19,23 @@ agent, the `/a2a` agent swarm, the pools app) lives in the product repository.
 | AMM aggregation (V2/V3 routing) | [`aggregator/src/entrypoint/`](aggregator/src/entrypoint/), [`aggregator/src/flow/`](aggregator/src/flow/) |
 | Underlying AMMs | [`v2 dex contracts/`](<v2 dex contracts>), [`v3 dex contracts/`](<v3 dex contracts>) |
 | **Proof that the chain is this source** | [`verify-deployment.sh`](verify-deployment.sh) |
+| **SoyaraAgentDex** (Studio Next: judges and settles in one IC) | [`studio-next/SoyaraAgentDex.py`](studio-next/SoyaraAgentDex.py) |
 
 The validator and the executor are a **matched pair** and must be deployed
 together: the validator holds the executor's address, and the executor accepts
 `recordVerdict` and `recordMandate` **only** from that validator.
+
+## Deployed on Studio Next
+
+GenLayer Studio Next (Consensus v0.6, chain `61997`) has no EVM layer, so the
+executor and the AMMs cannot be deployed there. On Studio Next one Intelligent
+Contract judges and settles:
+**SoyaraAgentDex** `0x3b6Cf2C48297afCf50Bc3e843a9F335B8407f8D6`, in
+[`studio-next/`](studio-next/). Every validator checks its consensus trades and
+mandates against the live Bradbury V2 pools below, and each validator's LLM
+checks a mandate's caps against the user's own words. See
+[`studio-next/README.md`](studio-next/README.md) for the rails, the verified
+transactions and `npm run verify`.
 
 ## Deployed on Bradbury
 

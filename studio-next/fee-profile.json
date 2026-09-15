@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "chainId": 61997,
+  "network": "studio-next",
+  "contract": "0x3b6Cf2C48297afCf50Bc3e843a9F335B8407f8D6",
+  "measuredAt": "2026-09-15T10:31:00.060Z",
+  "methods": {
+    "claim_test_tokens": {
+      "leaderTimeunitsAllocation": "100",
+      "validatorTimeunitsAllocation": "200",
+      "executionBudgetPerRound": "230191200000000",
+      "totalMessageFees": "0",
+      "rotationsPerRound": "3"
+    },
+    "anchor_pool": {
+      "leaderTimeunitsAllocation": "200",
+      "validatorTimeunitsAllocation": "400",
+      "executionBudgetPerRound": "231103800000000",
+      "totalMessageFees": "0",
+      "rotationsPerRound": "3"
+    },
+    "swap": {
+      "leaderTimeunitsAllocation": "200",
+      "validatorTimeunitsAllocation": "400",
+      "executionBudgetPerRound": "231120000000000",
+      "totalMessageFees": "0",
+      "rotationsPerRound": "3"
+    },
+    "issue_mandate": {
+      "leaderTimeunitsAllocation": "200",
+      "validatorTimeunitsAllocation": "400",
+      "executionBudgetPerRound": "231802200000000",
+      "totalMessageFees": "0",
+      "rotationsPerRound": "3"
+    },
+    "swap_under_mandate": {
+      "leaderTimeunitsAllocation": "100",
+      "validatorTimeunitsAllocation": "200",
+      "executionBudgetPerRound": "230199750000000",
+      "totalMessageFees": "0",
+      "rotationsPerRound": "3"
+    },
+    "revoke_mandate": {
+      "leaderTimeunitsAllocation": "100",
+      "validatorTimeunitsAllocation": "200",
+      "executionBudgetPerRound": "230180850000000",
+      "totalMessageFees": "0",
+      "rotationsPerRound": "3"
+    }
+  }
+}
