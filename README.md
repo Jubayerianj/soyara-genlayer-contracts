@@ -27,6 +27,8 @@ together: the validator holds the executor's address, and the executor accepts
 
 ## Deployed on Studio Next
 
+[Demo video: a five minute walkthrough of every feature](https://x.com/SoyaraXyz/status/2099880248217370821).
+
 GenLayer Studio Next (Consensus v0.6, chain `61997`) has no EVM layer, so the
 executor and the AMMs cannot be deployed there. On Studio Next one Intelligent
 Contract judges and settles:

@@ -6,6 +6,8 @@ This document lists all active smart contracts, Intelligent Contracts, and infra
 
 ## 0. GenLayer Studio Next (Consensus v0.6)
 
+[Demo video: a five minute walkthrough of every feature](https://x.com/SoyaraXyz/status/2099880248217370821).
+
 | Parameter | Value |
 |---|---|
 | Chain ID | `61997` |
